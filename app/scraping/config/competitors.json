@@ -1,0 +1,41 @@
+{
+  "competitors": [
+    {
+      "name": "acme_cloud",
+      "entity_name": "Acme Cloud",
+      "scraper_type": "configurable",
+      "base_url": "https://www.example.com",
+      "enabled": true,
+      "region": "global",
+      "pages": {
+        "pricing": "/pricing",
+        "products": "/products",
+        "marketing": "/",
+        "events": "/events"
+      },
+      "selectors": {
+        "pricing": [".pricing-card", ".plan-card", ".price-table .row"],
+        "products": [".product-card", ".feature-list li", ".products-grid article"],
+        "marketing": ["h1", ".hero-title", ".value-prop"],
+        "events": [".event-card", ".press-release", ".news-item"]
+      }
+    },
+    {
+      "name": "nova_saas",
+      "entity_name": "Nova SaaS",
+      "scraper_type": "saas",
+      "base_url": "https://www.example.org",
+      "enabled": true,
+      "region": "US",
+      "pages": {
+        "pricing": "/pricing",
+        "products": "/platform",
+        "marketing": "/",
+        "events": "/newsroom"
+      },
+      "selectors": {
+        "marketing": [".hero h1", ".hero p", ".banner-title"]
+      }
+    }
+  ]
+}

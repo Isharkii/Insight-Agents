@@ -1,0 +1,73 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: insight_backend
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-local}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://${POSTGRES_USER:-insight}:${POSTGRES_PASSWORD:-insight_pass}@postgres:5432/${POSTGRES_DB:-insight_agent}}
+      SQL_ECHO: ${SQL_ECHO:-false}
+      APP_MODULE: ${APP_MODULE:-app.main:app}
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-1}
+      PORT: 8000
+      UPLOAD_STORAGE_DIR: ${UPLOAD_STORAGE_DIR:-data/uploads}
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - backend_uploads:/app/data/uploads
+    networks:
+      - insight_net
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: insight_postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-insight_agent}
+      POSTGRES_USER: ${POSTGRES_USER:-insight}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-insight_pass}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-insight} -d ${POSTGRES_DB:-insight_agent}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - insight_net
+
+  pgadmin:
+    image: dpage/pgadmin4:8
+    container_name: insight_pgadmin
+    profiles: ["dev-tools"]
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@local.dev}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-admin}
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    networks:
+      - insight_net
+
+volumes:
+  postgres_data:
+  pgadmin_data:
+  backend_uploads:
+
+networks:
+  insight_net:
+    driver: bridge

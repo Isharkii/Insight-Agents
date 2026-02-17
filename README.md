@@ -22,7 +22,7 @@ If you prefer split URLs, use `LOCAL_DATABASE_URL` instead of `DATABASE_URL`.
 ## 2) Install dependencies
 
 ```powershell
-py -m pip install "SQLAlchemy>=2.0" alembic "psycopg[binary]>=3.1"
+py -m pip install -r requirements.txt
 ```
 
 ## 3) Generate and run migrations
@@ -120,3 +120,19 @@ py -m alembic heads
 ```
 
 If `current` equals `head`, your local schema is up to date.
+
+## 8) Competitor scraping framework
+
+The competitor scraping pipeline is available at:
+
+- `POST /ingest-competitors`
+- Optional query filter: `competitor=<name>`
+- CLI: `py scripts/run_competitor_scrape.py --competitor acme_cloud`
+
+Config-driven competitor registration is in:
+
+- `app/scraping/config/competitors.json`
+
+Architecture notes:
+
+- `docs/competitor-scraping-framework.md`

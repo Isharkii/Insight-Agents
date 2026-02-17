@@ -1,8 +1,7 @@
 ﻿"""
-Model package exports.
+Compatibility model module.
 
-Import all SQLAlchemy models here so metadata registration and Alembic
-autogeneration work without extra imports.
+Allows importing core models from `db.models.models`.
 """
 
 from db.models.analytical_metric import AnalyticalMetric
@@ -11,10 +10,4 @@ from db.models.client import Client
 from db.models.dataset import Dataset
 from db.models.insight import Insight
 
-__all__ = [
-    "Client",
-    "Dataset",
-    "AnalyticalMetric",
-    "Insight",
-    "CanonicalInsightRecord",
-]
+__all__ = ["Client", "Dataset", "AnalyticalMetric", "Insight", "CanonicalInsightRecord"]
