@@ -1,0 +1,121 @@
+# =========================
+# 🧠 PYTHON BASICS
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+.eggs/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# =========================
+# 🔐 ENV + SECRETS
+# =========================
+.env
+.env.*
+*.env
+*.pem
+*.key
+*.crt
+secrets.json
+config.local.json
+
+# API keys (extra safety)
+*.apikey
+*.token
+
+# =========================
+# 📊 JUPYTER NOTEBOOKS
+# =========================
+.ipynb_checkpoints/
+
+# =========================
+# 🤖 ML / AI AGENT FILES
+# =========================
+
+# Model weights
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.onnx
+*.h5
+*.safetensors
+
+# Large embeddings or vector stores
+chroma/
+faiss_index/
+vector_store/
+*.index
+*.faiss
+
+# HuggingFace cache
+.cache/
+huggingface/
+
+# Logs
+logs/
+*.log
+
+# Temporary outputs
+outputs/
+predictions/
+generated/
+
+# =========================
+# 🐳 DOCKER
+# =========================
+.dockerignore
+docker-compose.override.yml
+
+# =========================
+# 🖥 VS CODE
+# =========================
+.vscode/
+.history/
+
+# =========================
+# 🗂 OS FILES
+# =========================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# =========================
+# 🧪 TESTING
+# =========================
+.pytest_cache/
+coverage/
+htmlcov/
+.tox/
+
+# =========================
+# 🗄 DATABASE FILES
+# =========================
+*.sqlite3
+*.db
+
+# =========================
+# ⚡ STREAMLIT / FASTAPI
+# =========================
+.streamlit/secrets.toml
+
+# =========================
+# 📦 DATA FILES (Optional)
+# =========================
+# Uncomment if datasets are large
+ data/
+ datasets/
+ *.csv
+ *.parquet

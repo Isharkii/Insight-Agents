@@ -1,0 +1,3 @@
+Alembic migration environment for InsightAgent.
+
+Use `alembic revision --autogenerate -m "message"` to generate new migrations.
