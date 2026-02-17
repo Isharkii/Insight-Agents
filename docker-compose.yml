@@ -9,7 +9,7 @@ services:
         required: false
     environment:
       ENVIRONMENT: ${ENVIRONMENT:-local}
-      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://${POSTGRES_USER:-insight}:${POSTGRES_PASSWORD:-insight_pass}@postgres:5432/${POSTGRES_DB:-insight_agent}}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://${POSTGRES_USER:-insight}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-insight_agent}}
       SQL_ECHO: ${SQL_ECHO:-false}
       APP_MODULE: ${APP_MODULE:-app.main:app}
       WEB_CONCURRENCY: ${WEB_CONCURRENCY:-1}
@@ -31,7 +31,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-insight_agent}
       POSTGRES_USER: ${POSTGRES_USER:-insight}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-insight_pass}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
@@ -51,7 +51,7 @@ services:
     profiles: ["dev-tools"]
     environment:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@local.dev}
-      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-admin}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:?Set PGADMIN_DEFAULT_PASSWORD}
       PGADMIN_CONFIG_SERVER_MODE: "False"
     ports:
       - "${PGADMIN_PORT:-5050}:80"

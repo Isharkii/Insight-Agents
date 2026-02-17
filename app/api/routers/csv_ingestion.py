@@ -6,13 +6,14 @@ CSV ingestion HTTP endpoints.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_csv_upload
 from app.schemas.csv_ingestion import CSVIngestionSummaryResponse, CSVValidationErrorResponse
 from app.services.csv_ingestion_service import (
     CSVHeaderValidationError,
+    CSVSchemaMappingError,
     CSVPersistenceError,
     CSVIngestionService,
     get_csv_ingestion_service,
@@ -25,6 +26,8 @@ router = APIRouter(tags=["ingestion"])
 @router.post("/upload-csv", response_model=CSVIngestionSummaryResponse)
 def upload_csv(
     file: UploadFile = Depends(get_csv_upload),
+    client_name: str | None = Query(default=None, description="Optional client name to scope mapping config"),
+    mapping_config_name: str | None = Query(default=None, description="Optional explicit mapping config name"),
     db: Session = Depends(get_db),
     ingestion_service: CSVIngestionService = Depends(get_csv_ingestion_service),
 ) -> CSVIngestionSummaryResponse:
@@ -33,7 +36,17 @@ def upload_csv(
     """
 
     try:
-        summary = ingestion_service.ingest_csv(upload_file=file, db=db)
+        summary = ingestion_service.ingest_csv(
+            upload_file=file,
+            db=db,
+            client_name=client_name,
+            mapping_config_name=mapping_config_name,
+        )
+    except CSVSchemaMappingError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=exc.to_dict(),
+        ) from exc
     except CSVHeaderValidationError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

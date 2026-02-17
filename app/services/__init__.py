@@ -9,6 +9,7 @@ from app.services.competitor_scraping_service import (
 from app.services.csv_ingestion_service import (
     CSVHeaderValidationError,
     CSVIngestionService,
+    CSVSchemaMappingError,
     CSVPersistenceError,
     get_csv_ingestion_service,
 )
@@ -16,14 +17,25 @@ from app.services.external_ingestion_service import (
     ExternalIngestionService,
     get_external_ingestion_service,
 )
+from app.services.ingestion_orchestrator_service import (
+    FastAPIBackgroundTaskExecutor,
+    IngestionOrchestratorService,
+    IngestionTaskExecutor,
+    get_ingestion_orchestrator_service,
+)
 
 __all__ = [
     "CompetitorScrapingService",
     "get_competitor_scraping_service",
     "CSVHeaderValidationError",
     "CSVIngestionService",
+    "CSVSchemaMappingError",
     "CSVPersistenceError",
     "get_csv_ingestion_service",
     "ExternalIngestionService",
     "get_external_ingestion_service",
+    "IngestionTaskExecutor",
+    "FastAPIBackgroundTaskExecutor",
+    "IngestionOrchestratorService",
+    "get_ingestion_orchestrator_service",
 ]

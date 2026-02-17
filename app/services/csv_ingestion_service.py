@@ -10,6 +10,7 @@ import csv
 import io
 import logging
 from functools import lru_cache
+from typing import Mapping
 
 from fastapi import UploadFile
 from sqlalchemy.exc import SQLAlchemyError
@@ -17,8 +18,10 @@ from sqlalchemy.orm import Session
 
 from app.config import get_csv_ingestion_settings
 from app.domain.canonical_insight import CanonicalInsightInput, IngestionSummary, RowValidationError
-from app.mappers.canonical_mapper import ColumnMapper, MissingRequiredColumnsError
+from app.mappers.schema_mapper import MappingResolution, SchemaMapper
 from app.repositories.canonical_insight_repository import CanonicalInsightRepository
+from app.repositories.mapping_config_repository import MappingConfigRepository
+from app.validators.mapping_validator import MappingErrorDetail, SchemaMappingError
 from app.validators.csv_validator import CSVRowValidator
 
 logger = logging.getLogger(__name__)
@@ -36,6 +39,31 @@ class CSVPersistenceError(RuntimeError):
     """
 
 
+class CSVSchemaMappingError(CSVHeaderValidationError):
+    """
+    Raised when CSV schema mapping resolution fails with structured details.
+    """
+
+    def __init__(self, *, message: str, errors: list[MappingErrorDetail]) -> None:
+        super().__init__(message)
+        self.errors = tuple(errors)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "message": str(self),
+            "errors": [
+                {
+                    "code": error.code,
+                    "message": error.message,
+                    "canonical_field": error.canonical_field,
+                    "source_column": error.source_column,
+                    "context": error.context,
+                }
+                for error in self.errors
+            ],
+        }
+
+
 class CSVIngestionService:
     """
     Coordinates CSV parsing, mapping, validation, and persistence.
@@ -47,13 +75,13 @@ class CSVIngestionService:
         batch_size: int,
         max_validation_errors: int,
         log_validation_errors: bool,
-        mapper: ColumnMapper | None = None,
+        mapper: SchemaMapper | None = None,
         validator: CSVRowValidator | None = None,
     ) -> None:
         self._batch_size = max(1, batch_size)
         self._max_validation_errors = max(1, max_validation_errors)
         self._log_validation_errors = log_validation_errors
-        self._mapper = mapper or ColumnMapper()
+        self._mapper = mapper or SchemaMapper()
         self._validator = validator or CSVRowValidator()
 
     def ingest_csv(
@@ -61,6 +89,9 @@ class CSVIngestionService:
         *,
         upload_file: UploadFile,
         db: Session,
+        client_name: str | None = None,
+        mapping_config_name: str | None = None,
+        manual_mapping: Mapping[str, str] | None = None,
     ) -> IngestionSummary:
         """
         Stream a CSV file, skip invalid rows, and persist valid rows in batches.
@@ -83,10 +114,13 @@ class CSVIngestionService:
             if not headers:
                 raise CSVHeaderValidationError("CSV header row is missing.")
 
-            try:
-                mapping = self._mapper.build_mapping(headers)
-            except MissingRequiredColumnsError as exc:
-                raise CSVHeaderValidationError(str(exc)) from exc
+            mapping = self._resolve_mapping(
+                db=db,
+                headers=headers,
+                client_name=client_name,
+                mapping_config_name=mapping_config_name,
+                manual_mapping=manual_mapping,
+            )
 
             for row_number, raw_row in enumerate(reader, start=2):
                 if self._validator.is_completely_empty_row(raw_row):
@@ -111,6 +145,18 @@ class CSVIngestionService:
                     rows_failed += 1
                     for error in row_errors:
                         self._record_error(captured_errors, error)
+                    continue
+                if parsed_row is None:
+                    rows_failed += 1
+                    self._record_error(
+                        captured_errors,
+                        RowValidationError(
+                            row_number=row_number,
+                            column=None,
+                            message="Row could not be parsed into canonical shape.",
+                            value=None,
+                        ),
+                    )
                     continue
 
                 batch.append(parsed_row)
@@ -155,13 +201,37 @@ class CSVIngestionService:
         if not batch:
             return 0
 
+        records = [self._mapper.to_canonical_record(row) for row in batch]
         try:
-            inserted = repository.bulk_insert(batch)
+            inserted = repository.bulk_insert_models(records)
             db.commit()
             return inserted
         except SQLAlchemyError as exc:
             db.rollback()
             raise CSVPersistenceError("Failed to persist valid CSV rows.") from exc
+
+    def _resolve_mapping(
+        self,
+        *,
+        db: Session,
+        headers: list[str],
+        client_name: str | None,
+        mapping_config_name: str | None,
+        manual_mapping: Mapping[str, str] | None,
+    ) -> MappingResolution:
+        mapping_repository = MappingConfigRepository(db)
+        mapping_config = mapping_repository.get_active(
+            name=mapping_config_name,
+            client_name=client_name,
+        )
+        try:
+            return self._mapper.resolve_mapping(
+                headers=headers,
+                manual_overrides=manual_mapping,
+                mapping_config=mapping_config,
+            )
+        except SchemaMappingError as exc:
+            raise CSVSchemaMappingError(message=exc.message, errors=list(exc.errors)) from exc
 
     def _record_error(
         self,

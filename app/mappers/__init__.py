@@ -9,11 +9,14 @@ from app.mappers.canonical_mapper import (
     ColumnMapping,
     MissingRequiredColumnsError,
 )
+from app.mappers.schema_mapper import MappingResolution, SchemaMapper
 
 __all__ = [
     "CANONICAL_FIELDS",
     "REQUIRED_CANONICAL_FIELDS",
     "ColumnMapper",
     "ColumnMapping",
+    "MappingResolution",
     "MissingRequiredColumnsError",
+    "SchemaMapper",
 ]

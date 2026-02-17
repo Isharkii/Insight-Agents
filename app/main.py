@@ -9,6 +9,7 @@ from app.api.routers import (
     competitor_scraping_router,
     csv_ingestion_router,
     external_ingestion_router,
+    ingestion_orchestrator_router,
 )
 
 
@@ -35,6 +36,7 @@ def create_app() -> FastAPI:
     application.include_router(competitor_scraping_router)
     application.include_router(csv_ingestion_router)
     application.include_router(external_ingestion_router)
+    application.include_router(ingestion_orchestrator_router)
 
     @application.get("/health")
     def healthcheck() -> dict[str, str]:

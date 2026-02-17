@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Index, String, func
+from sqlalchemy import DateTime, Index, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -74,6 +74,14 @@ class CanonicalInsightRecord(Base):
     )
 
     __table_args__ = (
+        UniqueConstraint(
+            "source_type",
+            "entity_name",
+            "category",
+            "metric_name",
+            "timestamp",
+            name="uq_canonical_insight_records_dedupe",
+        ),
         Index("ix_canonical_insight_records_source_type", "source_type"),
         Index("ix_canonical_insight_records_entity_name", "entity_name"),
         Index("ix_canonical_insight_records_category", "category"),

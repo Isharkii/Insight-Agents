@@ -136,3 +136,18 @@ Config-driven competitor registration is in:
 Architecture notes:
 
 - `docs/competitor-scraping-framework.md`
+
+## 9) Dynamic CSV schema mapping
+
+CSV ingestion now supports dynamic schema mapping with:
+
+- Fuzzy column auto-detection
+- Manual override mappings
+- DB-backed mapping configs (`mapping_configs` table)
+- Structured mapping errors for invalid/missing canonical mappings
+
+Use optional query params on `POST /upload-csv`:
+
+- `client_name=<client>` to load an active client-scoped mapping config
+- `mapping_config_name=<config>` to load a specific active mapping config
+- Architecture notes: `docs/dynamic-schema-mapping.md`
