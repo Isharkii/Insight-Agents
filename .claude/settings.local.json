@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest:*)",
+      "Bash(python3 -m pytest:*)",
+      "Bash(where:*)",
+      "Bash(py -m pytest tests/test_kpi_service.py -v)",
+      "Bash(py -c:*)"
+    ]
+  }
+}
