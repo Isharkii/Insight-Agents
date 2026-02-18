@@ -1,27 +1,23 @@
-"""
-agent/nodes/llm_node.py
+"""LLM node for final structured insight synthesis.
 
-LLM Node: builds a structured prompt via SynthesisPromptBuilder, calls the
-LLM through generate_with_retry(), and writes the validated SynthesisOutput
-JSON to state["final_response"].
-
-Prompt construction  → llm_synthesis.prompt_builder.SynthesisPromptBuilder
-Adapter selection    → llm_synthesis.adapter.OpenAILLMAdapter / MockLLMAdapter
-Generation + retry   → llm_synthesis.retry.generate_with_retry
-Output validation    → llm_synthesis.validator.validate_llm_output
-                       (called internally by generate_with_retry)
+Builds the synthesis prompt, calls the LLM through retry+validation,
+and writes the final serialized response to ``state[\"final_response\"]``.
 """
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any
+
+from pydantic import ValidationError
 
 from agent.state import AgentState
 from db.config import load_env_files
 from llm_synthesis.adapter import BaseLLMAdapter, MockLLMAdapter, OpenAILLMAdapter
 from llm_synthesis.prompt_builder import SynthesisPromptBuilder
 from llm_synthesis.retry import generate_with_retry
+from llm_synthesis.schema import InsightOutput
 from llm_synthesis.validator import validate_llm_output  # noqa: F401  (used via generate_with_retry)
 
 _prompt_builder = SynthesisPromptBuilder()
@@ -39,8 +35,8 @@ def _resolve_kpi_data(state: AgentState) -> Any:
 def _build_adapter() -> BaseLLMAdapter:
     """Instantiate the adapter selected by the LLM_ADAPTER env var.
 
-    LLM_ADAPTER=mock   → MockLLMAdapter  (testing, no API key required)
-    LLM_ADAPTER=openai → OpenAILLMAdapter (default)
+    LLM_ADAPTER=mock   -> MockLLMAdapter  (testing, no API key required)
+    LLM_ADAPTER=openai -> OpenAILLMAdapter (default)
     """
     adapter_name = os.getenv("LLM_ADAPTER", "openai").strip().lower()
     if adapter_name == "mock":
@@ -54,17 +50,32 @@ def _build_adapter() -> BaseLLMAdapter:
     )
 
 
+def _validate_final_response_contract(final_response: str) -> None:
+    """Ensure serialized output conforms to the InsightOutput contract."""
+    try:
+        payload = json.loads(final_response)
+        InsightOutput.model_validate(payload)
+    except (json.JSONDecodeError, TypeError, ValidationError) as exc:
+        raise ValueError(
+            f"Final response must match InsightOutput schema: {exc}"
+        ) from exc
+
+
 def llm_node(state: AgentState) -> AgentState:
-    """LangGraph node: synthesise upstream outputs into a structured insight.
+    """LangGraph node: synthesize upstream outputs into a structured insight.
 
     Flow:
-        1. Build prompt via SynthesisPromptBuilder (single prompt-building path).
-        2. Call generate_with_retry() → validated SynthesisOutput.
-        3. Serialise to JSON and store in state["final_response"].
+        1. Build prompt via SynthesisPromptBuilder.
+        2. Call generate_with_retry() -> validated InsightOutput.
+        3. Serialize to JSON and validate final response contract.
+        4. Store in ``state[\"final_response\"]``.
 
     Writes:
-        state["final_response"] (str) — SynthesisOutput JSON on success,
-                                        error message string on failure.
+        state["final_response"] (str): InsightOutput JSON on success,
+            error message string on generation failure.
+
+    Raises:
+        ValueError: If the final serialized output does not match InsightOutput.
     """
     load_env_files()
 
@@ -82,6 +93,9 @@ def llm_node(state: AgentState) -> AgentState:
     try:
         synthesis = generate_with_retry(adapter, prompt)
         final_response = synthesis.model_dump_json()
+        _validate_final_response_contract(final_response)
+    except ValueError:
+        raise
     except Exception as exc:  # noqa: BLE001
         final_response = f"LLM generation failed: {exc}"
 

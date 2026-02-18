@@ -1,16 +1,24 @@
 """Validation layer for raw LLM synthesis output.
 
-Parses and validates JSON strings against the SynthesisOutput schema,
-raising structured errors on failure.
+Parses and validates JSON strings against the InsightOutput schema.
 """
 
 import json
 import re
-from typing import List
+from typing import Any, Dict, List
 
 from pydantic import ValidationError
 
-from llm_synthesis.schema import SynthesisOutput
+from llm_synthesis.schema import InsightOutput
+
+_REQUIRED_KEYS = (
+    "insight",
+    "evidence",
+    "impact",
+    "recommended_action",
+    "priority",
+    "confidence_score",
+)
 
 
 class LLMOutputValidationError(Exception):
@@ -61,19 +69,25 @@ def _strip_markdown_fences(text: str) -> str:
     return stripped
 
 
-def validate_llm_output(raw_response: str) -> SynthesisOutput:
+def _compress_to_insight_output(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Project payloads into the InsightOutput keys only."""
+    return {key: data.get(key) for key in _REQUIRED_KEYS}
+
+
+def validate_llm_output(raw_response: str) -> InsightOutput:
     """Parse and validate a raw LLM response string.
 
     Steps:
         1. Strip optional markdown fences.
         2. Parse as JSON.
-        3. Validate against SynthesisOutput Pydantic model.
+        3. Project payload into InsightOutput keys.
+        4. Validate against InsightOutput Pydantic model.
 
     Args:
         raw_response: The raw string returned by the LLM adapter.
 
     Returns:
-        A validated SynthesisOutput instance.
+        A validated InsightOutput instance.
 
     Raises:
         LLMOutputValidationError: If JSON parsing or schema validation fails.
@@ -90,9 +104,19 @@ def validate_llm_output(raw_response: str) -> SynthesisOutput:
             raw_response=raw_response,
         ) from exc
 
-    # Step 2: Schema validation
+    # Step 2: Object shape
+    if not isinstance(data, dict):
+        raise LLMOutputValidationError(
+            stage="schema",
+            errors=["top-level JSON must be an object"],
+            raw_response=raw_response,
+        )
+
+    # Step 3: Schema validation
     try:
-        return SynthesisOutput.model_validate(data)
+        normalized = _compress_to_insight_output(data)
+        parsed = InsightOutput.model_validate(normalized)
+        return InsightOutput.model_validate({k: getattr(parsed, k) for k in _REQUIRED_KEYS})
     except ValidationError as exc:
         errors = [
             f"{'.'.join(str(loc) for loc in e['loc'])}: {e['msg']}"

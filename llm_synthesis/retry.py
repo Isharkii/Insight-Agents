@@ -8,7 +8,7 @@ import logging
 from typing import List
 
 from llm_synthesis.adapter import BaseLLMAdapter
-from llm_synthesis.schema import SynthesisOutput
+from llm_synthesis.schema import InsightOutput
 from llm_synthesis.validator import LLMOutputValidationError, validate_llm_output
 
 logger = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ def generate_with_retry(
     adapter: BaseLLMAdapter,
     prompt: str,
     max_retries: int = 2,
-) -> SynthesisOutput:
+) -> InsightOutput:
     """Generate LLM output with retry on formatting errors.
 
     Calls ``adapter.generate()`` and validates the response. If validation
@@ -58,7 +58,7 @@ def generate_with_retry(
             first failure. Total attempts = 1 + max_retries.
 
     Returns:
-        A validated ``SynthesisOutput`` instance.
+        A validated ``InsightOutput`` instance.
 
     Raises:
         LLMOutputValidationError: If a non-retryable validation error occurs.

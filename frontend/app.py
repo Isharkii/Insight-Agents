@@ -11,7 +11,9 @@ import json
 from typing import Optional
 
 import pandas as pd
+from pydantic import ValidationError
 import streamlit as st
+from llm_synthesis.schema import InsightOutput
 
 # ── Page config (must be first Streamlit call) ─────────────────────────────
 st.set_page_config(
@@ -204,41 +206,36 @@ def _render_segments(result: dict) -> None:
 
 def _render_insights(result: dict) -> None:
     response: Optional[str] = result.get("final_response")
-    priority: Optional[dict] = result.get("prioritization")
 
     if not response:
         st.info("No insight response available yet.")
         return
 
-    # Try to parse as SynthesisOutput JSON; fall back to raw text
-    parsed: Optional[dict] = None
+    # Try to parse as InsightOutput JSON; fall back to raw text
+    parsed: Optional[InsightOutput] = None
     try:
-        parsed = json.loads(response)
-    except (json.JSONDecodeError, TypeError):
+        payload = json.loads(response)
+        parsed = InsightOutput.model_validate(payload)
+    except (json.JSONDecodeError, TypeError, ValidationError):
         pass
 
-    if priority:
-        pcols = st.columns(2)
-        pcols[0].metric("Priority Level", priority.get("priority_level", "—").title())
-        focus = priority.get("recommended_focus", "—")
-        pcols[1].info(f"**Focus:** {focus}")
-
     if parsed:
-        st.subheader("Executive Summary")
-        st.write(parsed.get("executive_summary", "—"))
+        st.subheader("Insight")
+        st.write(parsed.insight or "—")
 
-        st.subheader("Key Findings")
-        for finding in parsed.get("key_findings", []):
-            st.markdown(f"- {finding}")
+        st.subheader("Evidence")
+        st.write(parsed.evidence or "—")
 
-        st.subheader("Primary Risk")
-        st.warning(parsed.get("primary_risk", "—"))
+        st.subheader("Impact")
+        st.warning(parsed.impact or "—")
 
-        st.subheader("Recommended Actions")
-        for action in parsed.get("recommended_actions", []):
-            st.markdown(f"- {action}")
+        st.subheader("Recommended Action")
+        st.markdown(f"- {parsed.recommended_action or '—'}")
 
-        conf = parsed.get("confidence_score")
+        st.subheader("Priority")
+        st.write(parsed.priority or "—")
+
+        conf = parsed.confidence_score
         if conf is not None:
             st.progress(float(conf), text=f"Confidence: {conf:.0%}")
     else:

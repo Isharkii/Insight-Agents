@@ -3,25 +3,17 @@
 import json
 from typing import Dict
 
-from llm_synthesis.schema import SynthesisOutput
+from llm_synthesis.schema import InsightOutput
 
-_SCHEMA_JSON = json.dumps(SynthesisOutput.model_json_schema(), indent=2)
+_SCHEMA_JSON = json.dumps(InsightOutput.model_json_schema(), indent=2)
 
 _EXAMPLE_OUTPUT = json.dumps(
     {
-        "executive_summary": "Revenue declined 12% QoQ driven by churn in mid-market segment.",
-        "key_findings": [
-            "Mid-market churn rose from 4% to 9%",
-            "CAC increased 18% with no corresponding LTV gain",
-            "Forecast projects continued decline without intervention",
-        ],
-        "primary_risk": "Accelerating mid-market churn threatening ARR base.",
-        "recommended_actions": [
-            "Launch targeted retention campaign for mid-market accounts",
-            "Review pricing structure for mid-market tier",
-            "Investigate onboarding drop-off points",
-        ],
-        "priority_level": "Critical",
+        "insight": "Revenue declined 12% QoQ driven by churn in the mid-market segment.",
+        "evidence": "Mid-market churn rose from 4% to 9%; CAC increased 18% with no corresponding LTV gain.",
+        "impact": "If unaddressed, ARR pressure is likely to continue over upcoming quarters.",
+        "recommended_action": "Launch a targeted retention plan for at-risk mid-market accounts.",
+        "priority": "Critical",
         "confidence_score": 0.85,
     },
     indent=2,
@@ -34,6 +26,7 @@ STRICT RULES:
 - Do NOT compute, calculate, or derive any new numbers.
 - Use ONLY the data provided below. Do not infer beyond what is given.
 - Return strictly valid JSON matching the schema defined below.
+- Output exactly one JSON object with only the schema fields.
 - Do NOT include any text outside the JSON object.
 - Do NOT wrap the JSON in markdown code fences.
 """
@@ -50,8 +43,8 @@ class SynthesisPromptBuilder:
     """Builds a deterministic structured prompt for LLM synthesis.
 
     Combines upstream node outputs into a single prompt that
-    instructs the LLM to synthesize findings into a structured
-    JSON response matching SynthesisOutput schema.
+    instructs the LLM to synthesize insights into a structured
+    JSON response matching InsightOutput schema.
     """
 
     def build_prompt(

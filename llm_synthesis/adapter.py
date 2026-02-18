@@ -9,8 +9,6 @@ import os
 from abc import ABC, abstractmethod
 from typing import Optional
 
-from llm_synthesis.schema import SynthesisOutput
-
 
 class BaseLLMAdapter(ABC):
     """Abstract base for all LLM adapters."""
@@ -88,40 +86,34 @@ class OpenAILLMAdapter(BaseLLMAdapter):
 
 
 # ---------------------------------------------------------------------------
-# Fixed mock response that conforms to SynthesisOutput schema
+# Fixed mock response used for local testing.
 # ---------------------------------------------------------------------------
-_MOCK_RESPONSE = SynthesisOutput(
-    executive_summary="Mock summary for testing purposes.",
-    key_findings=[
-        "Finding A identified in test data",
-        "Finding B identified in test data",
-    ],
-    primary_risk="No real risk — this is a test fixture.",
-    recommended_actions=[
-        "Verify integration with upstream nodes",
-        "Run end-to-end pipeline test",
-    ],
-    priority_level="Low",
-    confidence_score=0.95,
-)
+_MOCK_RESPONSE = {
+    "insight": "Mock insight for testing purposes.",
+    "evidence": "Finding A identified in test data; Finding B identified in test data.",
+    "impact": "No real risk - this is a test fixture.",
+    "recommended_action": "Verify integration with upstream nodes.",
+    "priority": "Low",
+    "confidence_score": 0.95,
+}
 
-_MOCK_RESPONSE_JSON = _MOCK_RESPONSE.model_dump_json(indent=2)
+_MOCK_RESPONSE_JSON = json.dumps(_MOCK_RESPONSE, indent=2)
 
 
 class MockLLMAdapter(BaseLLMAdapter):
     """Deterministic adapter that returns a fixed valid JSON response.
 
     Used for local testing and CI pipelines where no LLM API
-    is available. The response always conforms to SynthesisOutput.
+    is available.
     """
 
     def generate(self, prompt: str) -> str:
         """Return a fixed JSON string regardless of input.
 
         Args:
-            prompt: Ignored — present only to satisfy the interface.
+            prompt: Ignored - present only to satisfy the interface.
 
         Returns:
-            A valid SynthesisOutput JSON string.
+            A valid JSON string that can be normalized into InsightOutput.
         """
         return _MOCK_RESPONSE_JSON
