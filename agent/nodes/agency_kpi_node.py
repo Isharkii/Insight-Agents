@@ -1,10 +1,8 @@
 """
-agent/nodes/saas_kpi_node.py
+agent/nodes/agency_kpi_node.py
 
-SaaS KPI Fetch Node: retrieves persisted ComputedKPI records and stores only
-SaaS-relevant KPI payloads in state.saas_kpi_data.
-
-No risk logic, no forecasting, no math.
+Agency KPI Fetch Node: retrieves persisted ComputedKPI records and stores only
+agency-relevant KPI payloads in state.agency_kpi_data.
 """
 
 from __future__ import annotations
@@ -16,12 +14,14 @@ from agent.state import AgentState
 from db.repositories.kpi_repository import KPIRepository
 from db.session import SessionLocal
 
-_SAAS_METRICS: frozenset[str] = frozenset({
-    "mrr",
-    "churn_rate",
-    "ltv",
-    "growth_rate",
-    "arpu",
+_AGENCY_METRICS: frozenset[str] = frozenset({
+    "retainer_revenue",
+    "project_revenue",
+    "total_revenue",
+    "client_churn",
+    "utilization_rate",
+    "revenue_per_employee",
+    "client_ltv",
 })
 
 
@@ -34,25 +34,24 @@ def _query_start() -> datetime:
 
 
 def _serialize_row(row: Any) -> dict[str, Any]:
-    """Convert a ComputedKPI ORM row to a plain JSON-safe dict."""
     computed = row.computed_kpis or {}
     return {
         "entity_name": row.entity_name,
         "period_start": row.period_start.isoformat(),
         "period_end": row.period_end.isoformat(),
         "computed_kpis": {
-            k: v
-            for k, v in computed.items()
-            if k in _SAAS_METRICS
+            key: value
+            for key, value in computed.items()
+            if key in _AGENCY_METRICS
         },
         "created_at": row.created_at.isoformat(),
     }
 
 
-def saas_kpi_fetch_node(state: AgentState) -> AgentState:
+def agency_kpi_fetch_node(state: AgentState) -> AgentState:
     """
-    LangGraph node: fetch SaaS KPI records for the entity and write them to
-    state["saas_kpi_data"].
+    LangGraph node: fetch agency KPI records and store them in
+    state["agency_kpi_data"].
     """
     entity_name: str | None = state.get("entity_name") or None
     period_end = _now_utc()
@@ -72,22 +71,22 @@ def saas_kpi_fetch_node(state: AgentState) -> AgentState:
                 if payload["computed_kpis"]:
                     records.append(payload)
 
-        saas_kpi_data: dict[str, Any] = {
+        agency_kpi_data: dict[str, Any] = {
             "records": records,
             "fetched_for": entity_name,
             "period_start": period_start.isoformat(),
             "period_end": period_end.isoformat(),
-            "metrics": sorted(_SAAS_METRICS),
+            "metrics": sorted(_AGENCY_METRICS),
         }
 
     except Exception as exc:  # noqa: BLE001
-        saas_kpi_data = {
+        agency_kpi_data = {
             "records": [],
             "fetched_for": entity_name,
             "period_start": period_start.isoformat(),
             "period_end": period_end.isoformat(),
-            "metrics": sorted(_SAAS_METRICS),
+            "metrics": sorted(_AGENCY_METRICS),
             "error": str(exc),
         }
 
-    return {**state, "saas_kpi_data": saas_kpi_data}
+    return {**state, "agency_kpi_data": agency_kpi_data}

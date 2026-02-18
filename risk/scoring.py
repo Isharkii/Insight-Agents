@@ -5,8 +5,41 @@ Business Risk Index model implementing BaseRiskModel.
 Computes a weighted, normalized risk score from KPI and forecast inputs.
 """
 
+import json
+from functools import lru_cache
+from pathlib import Path
+
 from risk.base import BaseRiskModel
 from risk.normalizer import RiskNormalizer
+
+
+_BUSINESS_RULES_PATH = Path(__file__).resolve().parents[1] / "config" / "business_rules.yaml"
+
+
+@lru_cache(maxsize=1)
+def _load_business_rules() -> dict:
+    try:
+        raw = _BUSINESS_RULES_PATH.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _as_dict(value: object) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_float(value: object, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+_RISK_SCORING_RULES = _as_dict(_as_dict(_load_business_rules().get("risk")).get("scoring"))
+_WEIGHTS = _as_dict(_RISK_SCORING_RULES.get("weights"))
+_NORMALIZATION_BOUNDS = _as_dict(_RISK_SCORING_RULES.get("normalization_bounds"))
 
 
 class BusinessRiskModel(BaseRiskModel):
@@ -20,16 +53,19 @@ class BusinessRiskModel(BaseRiskModel):
     """
 
     # Scoring weights — must sum to 1.0
-    REVENUE_WEIGHT: float = 0.25
-    CHURN_WEIGHT: float = 0.25
-    FORECAST_WEIGHT: float = 0.20
-    DEVIATION_WEIGHT: float = 0.15
-    ACCELERATION_WEIGHT: float = 0.15
+    REVENUE_WEIGHT: float = _as_float(_WEIGHTS.get("revenue_weight"), 0.25)
+    CHURN_WEIGHT: float = _as_float(_WEIGHTS.get("churn_weight"), 0.25)
+    FORECAST_WEIGHT: float = _as_float(_WEIGHTS.get("forecast_weight"), 0.20)
+    DEVIATION_WEIGHT: float = _as_float(_WEIGHTS.get("deviation_weight"), 0.15)
+    ACCELERATION_WEIGHT: float = _as_float(_WEIGHTS.get("acceleration_weight"), 0.15)
 
     # Upper bounds used for positive-range normalization
-    MAX_DEVIATION_PCT: float = 1.0
-    MAX_SLOPE: float = 1.0
-    MAX_CHURN_ACCELERATION: float = 1.0
+    MAX_DEVIATION_PCT: float = _as_float(_NORMALIZATION_BOUNDS.get("max_deviation_pct"), 1.0)
+    MAX_SLOPE: float = _as_float(_NORMALIZATION_BOUNDS.get("max_slope"), 1.0)
+    MAX_CHURN_ACCELERATION: float = _as_float(
+        _NORMALIZATION_BOUNDS.get("max_churn_acceleration"),
+        1.0,
+    )
 
     def __init__(self) -> None:
         """Initialize the model with a shared RiskNormalizer instance."""

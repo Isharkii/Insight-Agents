@@ -6,6 +6,9 @@ Deterministic, rule-based root cause engine for SaaS business metrics.
 
 from __future__ import annotations
 
+import json
+from functools import lru_cache
+from pathlib import Path
 from typing import List
 
 from root_cause.base import BaseRootCauseEngine
@@ -15,12 +18,44 @@ from root_cause.base import BaseRootCauseEngine
 # Severity thresholds
 # ---------------------------------------------------------------------------
 
+_BUSINESS_RULES_PATH = Path(__file__).resolve().parents[1] / "config" / "business_rules.yaml"
+
+
+@lru_cache(maxsize=1)
+def _load_business_rules() -> dict:
+    try:
+        raw = _BUSINESS_RULES_PATH.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _as_dict(value: object) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_float(value: object, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+_ROOT_CAUSE_RULES = _as_dict(_load_business_rules().get("root_cause"))
+_SEVERITY_RULES = _as_dict(_ROOT_CAUSE_RULES.get("severity_thresholds"))
+
 _SEVERITY_BANDS: list[tuple[float, str]] = [
-    (80.0, "critical"),
-    (60.0, "high"),
-    (30.0, "moderate"),
-    (0.0,  "low"),
+    (_as_float(_SEVERITY_RULES.get("critical"), 80.0), "critical"),
+    (_as_float(_SEVERITY_RULES.get("high"), 60.0), "high"),
+    (_as_float(_SEVERITY_RULES.get("moderate"), 30.0), "moderate"),
+    (0.0, "low"),
 ]
+
+_HIGH_BUSINESS_RISK_THRESHOLD: float = _as_float(
+    _ROOT_CAUSE_RULES.get("high_business_risk_threshold"),
+    70.0,
+)
 
 
 def _severity(risk_score: float) -> str:
@@ -133,7 +168,7 @@ class SaaSRootCauseEngine(BaseRootCauseEngine):
             triggered.append("negative_growth_trend")
 
         # Rule 5 – High business risk (additive, never primary alone)
-        if risk_score > 70:
+        if risk_score > _HIGH_BUSINESS_RISK_THRESHOLD:
             triggered.append("high_business_risk")
 
         # ----------------------------------------------------------------

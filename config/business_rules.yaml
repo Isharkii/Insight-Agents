@@ -1,0 +1,52 @@
+{
+  "risk": {
+    "scoring": {
+      "weights": {
+        "revenue_weight": 0.25,
+        "churn_weight": 0.25,
+        "forecast_weight": 0.20,
+        "deviation_weight": 0.15,
+        "acceleration_weight": 0.15
+      },
+      "normalization_bounds": {
+        "max_deviation_pct": 1.0,
+        "max_slope": 1.0,
+        "max_churn_acceleration": 1.0
+      }
+    }
+  },
+  "root_cause": {
+    "high_business_risk_threshold": 70.0,
+    "severity_thresholds": {
+      "critical": 80.0,
+      "high": 60.0,
+      "moderate": 30.0
+    },
+    "ecommerce": {
+      "traffic_stable_threshold": 5.0
+    }
+  },
+  "forecast": {
+    "trend_classifier": {
+      "strong_up_threshold": 0.05,
+      "weak_up_threshold": 0.01,
+      "weak_down_threshold": -0.01,
+      "strong_down_threshold": -0.05
+    }
+  },
+  "segmentation": {
+    "labeling": {
+      "thresholds": {
+        "growth_high": 0.10,
+        "growth_stable_low": 0.0,
+        "growth_stable_high": 0.10,
+        "growth_negative": 0.0,
+        "churn_low": 0.05,
+        "churn_high": 0.10,
+        "risk_low": 0.30,
+        "risk_moderate_high": 0.60,
+        "risk_high": 0.60
+      }
+    }
+  }
+}

@@ -2,6 +2,18 @@
 app/services/csv_ingestion_service.py
 
 Service layer for CSV ingestion workflow orchestration.
+
+After a successful ingestion (rows_processed > 0), the service triggers
+the downstream analytics pipeline in this order:
+
+    1. KPIOrchestrator.run()                       — recomputes KPIs (90-day window)
+    2. ForecastOrchestrator.generate_forecast()    — generates metric forecast
+    3. RiskOrchestrator.generate_risk_score()      — scores business risk
+    4. SegmentationOrchestrator.run_segmentation() — clusters entity data
+
+Each step is independent: a failure is logged at WARNING level and does not
+affect subsequent steps or the ingestion result. KPIOrchestrator commits
+internally; Forecast / Risk / Segmentation are committed explicitly here.
 """
 
 from __future__ import annotations
@@ -9,6 +21,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Mapping
 
@@ -21,10 +34,28 @@ from app.domain.canonical_insight import CanonicalInsightInput, IngestionSummary
 from app.mappers.schema_mapper import MappingResolution, SchemaMapper
 from app.repositories.canonical_insight_repository import CanonicalInsightRepository
 from app.repositories.mapping_config_repository import MappingConfigRepository
+from app.services.kpi_orchestrator import KPIOrchestrator, KPIRunResult
 from app.validators.mapping_validator import MappingErrorDetail, SchemaMappingError
 from app.validators.csv_validator import CSVRowValidator
+from forecast.orchestrator import ForecastOrchestrator
+from risk.orchestrator import RiskOrchestrator
+from segmentation.orchestrator import SegmentationOrchestrator
 
 logger = logging.getLogger(__name__)
+
+# Primary metric to seed the forecast pipeline per business type.
+# ForecastOrchestrator returns {"error": "Insufficient data."} when fewer
+# than 2 values are supplied — expected on first ingestion; not an error.
+_PRIMARY_METRIC_BY_BUSINESS_TYPE: dict[str, str] = {
+    "saas": "mrr",
+    "ecommerce": "revenue",
+    "agency": "total_revenue",
+}
+
+
+# ---------------------------------------------------------------------------
+# Exceptions
+# ---------------------------------------------------------------------------
 
 
 class CSVHeaderValidationError(ValueError):
@@ -64,6 +95,11 @@ class CSVSchemaMappingError(CSVHeaderValidationError):
         }
 
 
+# ---------------------------------------------------------------------------
+# Service
+# ---------------------------------------------------------------------------
+
+
 class CSVIngestionService:
     """
     Coordinates CSV parsing, mapping, validation, and persistence.
@@ -92,11 +128,26 @@ class CSVIngestionService:
         client_name: str | None = None,
         mapping_config_name: str | None = None,
         manual_mapping: Mapping[str, str] | None = None,
+        business_type: str | None = None,
     ) -> IngestionSummary:
         """
         Stream a CSV file, skip invalid rows, and persist valid rows in batches.
-        """
 
+        When ``client_name`` and ``business_type`` are both provided and at
+        least one row is persisted, the downstream analytics pipeline is
+        triggered automatically (KPI → Forecast → Risk → Segmentation).
+        Analytics failures do not affect the returned IngestionSummary.
+
+        Args:
+            upload_file:          File to ingest.
+            db:                   Active SQLAlchemy session (caller owns lifecycle).
+            client_name:          Logical entity name; doubles as entity_name for
+                                  analytics orchestrators.
+            mapping_config_name:  Optional named mapping config to look up.
+            manual_mapping:       Optional column-to-canonical overrides.
+            business_type:        One of "saas", "ecommerce", "agency". Required
+                                  to trigger the analytics pipeline.
+        """
         raw_file = upload_file.file
         raw_file.seek(0)
         text_stream: io.TextIOWrapper | None = None
@@ -175,11 +226,12 @@ class CSVIngestionService:
                     batch=batch,
                 )
 
-            return IngestionSummary(
+            summary = IngestionSummary(
                 rows_processed=rows_processed,
                 rows_failed=rows_failed,
                 validation_errors=captured_errors,
             )
+
         except UnicodeDecodeError as exc:
             raise CSVHeaderValidationError("CSV must be UTF-8 encoded.") from exc
         except csv.Error as exc:
@@ -190,6 +242,168 @@ class CSVIngestionService:
                     text_stream.detach()
                 except ValueError:
                     pass
+
+        # Trigger analytics pipeline once ingestion is confirmed complete.
+        if rows_processed > 0 and client_name and business_type:
+            self._trigger_analytics_pipeline(
+                entity_name=client_name,
+                business_type=business_type,
+                db=db,
+            )
+
+        return summary
+
+    # ------------------------------------------------------------------
+    # Post-ingestion analytics trigger
+    # ------------------------------------------------------------------
+
+    def _trigger_analytics_pipeline(
+        self,
+        *,
+        entity_name: str,
+        business_type: str,
+        db: Session,
+    ) -> None:
+        """Fire downstream orchestrators after a successful ingestion.
+
+        Each step runs inside its own try/except so a failure in one step
+        does not prevent subsequent steps from running. Failures are logged
+        at WARNING level and never propagate to the caller.
+
+        Transaction contract:
+          - KPIOrchestrator commits internally (inside _persist).
+          - ForecastOrchestrator, RiskOrchestrator, SegmentationOrchestrator
+            do NOT commit — explicit commit / rollback is applied here.
+        """
+        now = datetime.now(tz=timezone.utc)
+        period_start = now - timedelta(days=90)
+
+        kpi_result: KPIRunResult | None = None
+        forecast_data_for_risk: dict = {}
+
+        # --- Step 1: KPI recomputation ---
+        try:
+            kpi_result = KPIOrchestrator().run(
+                entity_name=entity_name,
+                business_type=business_type,
+                period_start=period_start,
+                period_end=now,
+                db=db,
+            )
+            logger.info(
+                "Post-ingestion KPI computed entity=%r business_type=%r "
+                "record_id=%s has_errors=%s",
+                entity_name,
+                business_type,
+                kpi_result.record_id,
+                kpi_result.has_errors,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Post-ingestion KPI computation failed entity=%r business_type=%r: %s",
+                entity_name,
+                business_type,
+                exc,
+            )
+
+        # --- Step 2: Forecast generation ---
+        # Pass a single-element series derived from the KPI result.
+        # ForecastOrchestrator returns {"error": "Insufficient data."} when
+        # fewer than 2 values are supplied — this is expected on first ingestion
+        # and does not trigger a DB write, so no commit / rollback is needed.
+        try:
+            metric_name = _PRIMARY_METRIC_BY_BUSINESS_TYPE.get(
+                business_type, "revenue"
+            )
+            values = _extract_primary_metric_values(kpi_result, metric_name)
+            forecast_result = ForecastOrchestrator(db).generate_forecast(
+                entity_name=entity_name,
+                metric_name=metric_name,
+                values=values,
+            )
+            if "error" in forecast_result:
+                logger.info(
+                    "Post-ingestion forecast deferred entity=%r metric=%r: %s",
+                    entity_name,
+                    metric_name,
+                    forecast_result["error"],
+                )
+            else:
+                db.commit()
+                forecast_data_for_risk = forecast_result
+                logger.info(
+                    "Post-ingestion forecast generated entity=%r metric=%r trend=%s",
+                    entity_name,
+                    metric_name,
+                    forecast_result.get("trend"),
+                )
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            logger.warning(
+                "Post-ingestion forecast generation failed entity=%r: %s",
+                entity_name,
+                exc,
+            )
+
+        # --- Step 3: Risk scoring ---
+        # kpi_data signals (deltas) are not directly derivable from one ingestion
+        # batch; pass empty dict so the orchestrator applies its 0.0 defaults.
+        try:
+            risk_result = RiskOrchestrator(db).generate_risk_score(
+                entity_name=entity_name,
+                kpi_data={},
+                forecast_data=forecast_data_for_risk,
+            )
+            db.commit()
+            logger.info(
+                "Post-ingestion risk scored entity=%r score=%s level=%s",
+                entity_name,
+                risk_result.get("risk_score"),
+                risk_result.get("risk_level"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            logger.warning(
+                "Post-ingestion risk scoring failed entity=%r: %s",
+                entity_name,
+                exc,
+            )
+
+        # --- Step 4: Segmentation ---
+        # Build a single-record list from the KPI metrics as a best-effort seed.
+        # n_clusters must be <= n_records; skip when records are empty.
+        try:
+            seg_records = _build_segmentation_records(kpi_result)
+            n_clusters = min(3, len(seg_records))
+            if n_clusters < 1:
+                logger.info(
+                    "Post-ingestion segmentation skipped entity=%r: "
+                    "insufficient records for clustering",
+                    entity_name,
+                )
+            else:
+                seg_result = SegmentationOrchestrator(session=db).run_segmentation(
+                    entity_name=entity_name,
+                    records=seg_records,
+                    n_clusters=n_clusters,
+                )
+                db.commit()
+                logger.info(
+                    "Post-ingestion segmentation completed entity=%r n_clusters=%s",
+                    entity_name,
+                    seg_result.get("n_clusters"),
+                )
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            logger.warning(
+                "Post-ingestion segmentation failed entity=%r: %s",
+                entity_name,
+                exc,
+            )
+
+    # ------------------------------------------------------------------
+    # Ingestion internals
+    # ------------------------------------------------------------------
 
     def _persist_batch(
         self,
@@ -251,12 +465,72 @@ class CSVIngestionService:
             captured_errors.append(error)
 
 
+# ---------------------------------------------------------------------------
+# Module-level helpers for analytics trigger (no business logic)
+# ---------------------------------------------------------------------------
+
+
+def _extract_primary_metric_values(
+    kpi_result: KPIRunResult | None,
+    metric_name: str,
+) -> list[float]:
+    """Return a single-element list from the named KPI metric value.
+
+    ForecastOrchestrator needs at least 2 values for meaningful regression.
+    Returning one value (or an empty list on first ingestion) causes the
+    orchestrator to respond with an "Insufficient data." error dict —
+    the correct signal to defer forecasting until more history exists.
+
+    Args:
+        kpi_result:  Result from KPIOrchestrator.run(), or None if KPI failed.
+        metric_name: Metric key to extract from the KPI payload.
+
+    Returns:
+        A list of zero or one floats.
+    """
+    if kpi_result is None:
+        return []
+    entry = kpi_result.metrics.get(metric_name, {})
+    value = entry.get("value")
+    if not isinstance(value, (int, float)):
+        return []
+    return [float(value)]
+
+
+def _build_segmentation_records(
+    kpi_result: KPIRunResult | None,
+) -> list[dict]:
+    """Build a flat metric record list from a KPI result for segmentation.
+
+    Extracts numeric metric values into a single dict and wraps it in a list.
+    The SegmentationOrchestrator's FeatureEngineer accepts this shape.
+
+    Args:
+        kpi_result: Result from KPIOrchestrator.run(), or None if KPI failed.
+
+    Returns:
+        A list of zero or one metric dicts.
+    """
+    if kpi_result is None:
+        return []
+    flat: dict = {}
+    for metric_name, entry in kpi_result.metrics.items():
+        value = entry.get("value")
+        if isinstance(value, (int, float)):
+            flat[metric_name] = float(value)
+    return [flat] if flat else []
+
+
+# ---------------------------------------------------------------------------
+# Factory
+# ---------------------------------------------------------------------------
+
+
 @lru_cache(maxsize=1)
 def get_csv_ingestion_service() -> CSVIngestionService:
     """
     Build and cache the ingestion service with env-driven settings.
     """
-
     settings = get_csv_ingestion_settings()
     return CSVIngestionService(
         batch_size=settings.batch_size,

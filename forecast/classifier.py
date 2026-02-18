@@ -7,6 +7,37 @@ No forecasting logic, no I/O, no side effects.
 
 from __future__ import annotations
 
+import json
+from functools import lru_cache
+from pathlib import Path
+
+
+_BUSINESS_RULES_PATH = Path(__file__).resolve().parents[1] / "config" / "business_rules.yaml"
+
+
+@lru_cache(maxsize=1)
+def _load_business_rules() -> dict:
+    try:
+        raw = _BUSINESS_RULES_PATH.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _as_dict(value: object) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_float(value: object, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+_TREND_RULES = _as_dict(_as_dict(_load_business_rules().get("forecast")).get("trend_classifier"))
+
 
 class TrendClassifier:
     """
@@ -27,10 +58,10 @@ class TrendClassifier:
         < -5 %                 |  strong_downtrend
     """
 
-    STRONG_UP_THRESHOLD:   float = 0.05   #  +5 %
-    WEAK_UP_THRESHOLD:     float = 0.01   #  +1 %
-    WEAK_DOWN_THRESHOLD:   float = -0.01  #  -1 %
-    STRONG_DOWN_THRESHOLD: float = -0.05  #  -5 %
+    STRONG_UP_THRESHOLD: float = _as_float(_TREND_RULES.get("strong_up_threshold"), 0.05)
+    WEAK_UP_THRESHOLD: float = _as_float(_TREND_RULES.get("weak_up_threshold"), 0.01)
+    WEAK_DOWN_THRESHOLD: float = _as_float(_TREND_RULES.get("weak_down_threshold"), -0.01)
+    STRONG_DOWN_THRESHOLD: float = _as_float(_TREND_RULES.get("strong_down_threshold"), -0.05)
 
     def classify(self, slope: float, average_value: float) -> str:
         """

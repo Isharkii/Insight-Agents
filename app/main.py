@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
 
 from fastapi import FastAPI
 
 from app.api.routers import (
+    bi_export_router,
     competitor_scraping_router,
     csv_ingestion_router,
     external_ingestion_router,
     ingestion_orchestrator_router,
+    kpi_router,
 )
+from app.scheduler.jobs import build_scheduler
 
 
 def _configure_logging() -> None:
@@ -25,6 +30,19 @@ def _configure_logging() -> None:
     )
 
 
+@asynccontextmanager
+async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
+    """Start the background scheduler on boot; shut it down gracefully on exit."""
+    scheduler = build_scheduler()
+    scheduler.start()
+    logging.getLogger(__name__).info("Scheduler started with %d jobs", len(scheduler.get_jobs()))
+    try:
+        yield
+    finally:
+        scheduler.shutdown(wait=True)
+        logging.getLogger(__name__).info("Scheduler shut down")
+
+
 def create_app() -> FastAPI:
     """
     Create and configure the FastAPI application.
@@ -32,11 +50,17 @@ def create_app() -> FastAPI:
 
     _configure_logging()
 
-    application = FastAPI(title="InsightAgent API", version="1.0.0")
+    application = FastAPI(
+        title="InsightAgent API",
+        version="1.0.0",
+        lifespan=_lifespan,
+    )
     application.include_router(competitor_scraping_router)
     application.include_router(csv_ingestion_router)
     application.include_router(external_ingestion_router)
     application.include_router(ingestion_orchestrator_router)
+    application.include_router(kpi_router)
+    application.include_router(bi_export_router)
 
     @application.get("/health")
     def healthcheck() -> dict[str, str]:

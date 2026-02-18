@@ -5,24 +5,56 @@ Applies deterministic threshold-based rules to cluster profiles
 to assign human-readable business labels. No ML or DB access.
 """
 
+import json
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
+
+
+_BUSINESS_RULES_PATH = Path(__file__).resolve().parents[1] / "config" / "business_rules.yaml"
+
+
+@lru_cache(maxsize=1)
+def _load_business_rules() -> dict:
+    try:
+        raw = _BUSINESS_RULES_PATH.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _as_dict(value: object) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_float(value: object, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+_LABELING_THRESHOLDS = _as_dict(
+    _as_dict(_as_dict(_load_business_rules().get("segmentation")).get("labeling")).get("thresholds")
+)
 
 
 # ------------------------------------------------------------------
 # Thresholds (single source of truth — adjust here only)
 # ------------------------------------------------------------------
 
-_GROWTH_HIGH: float = 0.10       # > 10 % growth
-_GROWTH_STABLE_LOW: float = 0.0  # >= 0 % (non-negative)
-_GROWTH_STABLE_HIGH: float = 0.10  # <= 10 % (not high)
-_GROWTH_NEGATIVE: float = 0.0    # < 0 %
+_GROWTH_HIGH: float = _as_float(_LABELING_THRESHOLDS.get("growth_high"), 0.10)  # > 10 % growth
+_GROWTH_STABLE_LOW: float = _as_float(_LABELING_THRESHOLDS.get("growth_stable_low"), 0.0)  # >= 0 % (non-negative)
+_GROWTH_STABLE_HIGH: float = _as_float(_LABELING_THRESHOLDS.get("growth_stable_high"), 0.10)  # <= 10 % (not high)
+_GROWTH_NEGATIVE: float = _as_float(_LABELING_THRESHOLDS.get("growth_negative"), 0.0)  # < 0 %
 
-_CHURN_LOW: float = 0.05         # <= 5 % churn
-_CHURN_HIGH: float = 0.10        # > 10 % churn
+_CHURN_LOW: float = _as_float(_LABELING_THRESHOLDS.get("churn_low"), 0.05)  # <= 5 % churn
+_CHURN_HIGH: float = _as_float(_LABELING_THRESHOLDS.get("churn_high"), 0.10)  # > 10 % churn
 
-_RISK_LOW: float = 0.30          # <= 30
-_RISK_MODERATE_HIGH: float = 0.60  # <= 60
-_RISK_HIGH: float = 0.60         # > 60
+_RISK_LOW: float = _as_float(_LABELING_THRESHOLDS.get("risk_low"), 0.30)  # <= 30
+_RISK_MODERATE_HIGH: float = _as_float(_LABELING_THRESHOLDS.get("risk_moderate_high"), 0.60)  # <= 60
+_RISK_HIGH: float = _as_float(_LABELING_THRESHOLDS.get("risk_high"), 0.60)  # > 60
 
 # ------------------------------------------------------------------
 # Labels
