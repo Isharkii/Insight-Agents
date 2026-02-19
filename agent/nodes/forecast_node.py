@@ -23,15 +23,22 @@ _DEFAULT_METRICS: list[str] = ["revenue", "growth_rate", "sales"]
 
 _METRICS_BY_BUSINESS_TYPE: dict[str, list[str]] = {
     "saas": ["mrr", "churn_rate", "ltv", "growth_rate"],
-    "retail": ["revenue", "units_sold", "gross_margin", "inventory_turnover"],
-    "food_service": ["revenue", "covers", "avg_check", "food_cost_pct"],
-    "finance": ["aum", "net_interest_margin", "loan_growth", "npa_ratio"],
-    "healthcare": ["patient_volume", "revenue_per_patient", "bed_occupancy"],
-    "logistics": ["shipment_volume", "on_time_delivery_pct", "revenue"],
-    "real_estate": ["occupancy_rate", "noi", "revenue", "vacancy_rate"],
-    "education": ["enrollment", "revenue", "retention_rate"],
-    "manufacturing": ["units_produced", "revenue", "defect_rate"],
-    "hospitality": ["occupancy_rate", "adr", "revpar", "revenue"],
+    "ecommerce": [
+        "revenue",
+        "aov",
+        "conversion_rate",
+        "cac",
+        "purchase_frequency",
+        "ltv",
+        "growth_rate",
+    ],
+    "agency": [
+        "total_revenue",
+        "client_churn",
+        "utilization_rate",
+        "revenue_per_employee",
+        "client_ltv",
+    ],
 }
 
 

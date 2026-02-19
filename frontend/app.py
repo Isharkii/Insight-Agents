@@ -13,7 +13,7 @@ from typing import Optional
 import pandas as pd
 from pydantic import ValidationError
 import streamlit as st
-from llm_synthesis.schema import InsightOutput
+from llm_synthesis.schema import FinalInsightResponse
 
 # ── Page config (must be first Streamlit call) ─────────────────────────────
 st.set_page_config(
@@ -207,40 +207,32 @@ def _render_segments(result: dict) -> None:
 def _render_insights(result: dict) -> None:
     response: Optional[str] = result.get("final_response")
 
-    if not response:
-        st.info("No insight response available yet.")
-        return
-
-    # Try to parse as InsightOutput JSON; fall back to raw text
-    parsed: Optional[InsightOutput] = None
+    parsed: FinalInsightResponse
     try:
+        if not response:
+            raise ValueError("Pipeline response is missing final_response.")
         payload = json.loads(response)
-        parsed = InsightOutput.model_validate(payload)
-    except (json.JSONDecodeError, TypeError, ValidationError):
-        pass
+        parsed = FinalInsightResponse.model_validate(payload)
+    except (json.JSONDecodeError, TypeError, ValidationError, ValueError) as exc:
+        parsed = FinalInsightResponse.failure(reason=str(exc))
 
-    if parsed:
-        st.subheader("Insight")
-        st.write(parsed.insight or "—")
+    st.subheader("Insight")
+    st.write(parsed.insight)
 
-        st.subheader("Evidence")
-        st.write(parsed.evidence or "—")
+    st.subheader("Evidence")
+    st.write(parsed.evidence)
 
-        st.subheader("Impact")
-        st.warning(parsed.impact or "—")
+    st.subheader("Impact")
+    st.warning(parsed.impact)
 
-        st.subheader("Recommended Action")
-        st.markdown(f"- {parsed.recommended_action or '—'}")
+    st.subheader("Recommended Action")
+    st.markdown(f"- {parsed.recommended_action}")
 
-        st.subheader("Priority")
-        st.write(parsed.priority or "—")
+    st.subheader("Priority")
+    st.write(parsed.priority)
 
-        conf = parsed.confidence_score
-        if conf is not None:
-            st.progress(float(conf), text=f"Confidence: {conf:.0%}")
-    else:
-        # Plain-text fallback (legacy llm_node responses)
-        st.markdown(response)
+    conf = parsed.confidence_score
+    st.progress(float(conf), text=f"Confidence: {conf:.0%}")
 
     with st.expander("Raw agent state"):
         safe = {k: v for k, v in result.items() if k != "final_response"}
@@ -280,3 +272,4 @@ with tab_insights:
         _render_insights(result)
     else:
         st.info("Run an analysis from the sidebar to see insights.")
+

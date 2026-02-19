@@ -1,0 +1,7 @@
+# Development and operations tooling.
+# Install on top of core (and optional when needed for full feature testing).
+
+pytest>=8.0,<9.0
+alembic>=1.13,<2.0
+
+# No linting tools are currently configured in this repository.

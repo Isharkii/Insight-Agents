@@ -30,7 +30,7 @@ def business_router_node(state: AgentState) -> str:
     Raises:
         ValueError: If state.business_type is not a supported value.
     """
-    business_type: str = state.get("business_type", "")
+    business_type: str = str(state.get("business_type", "")).lower()
     route: str | None = _ROUTE_MAP.get(business_type)
 
     if route is None:

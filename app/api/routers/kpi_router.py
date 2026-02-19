@@ -4,7 +4,9 @@ app/api/routers/kpi_router.py
 KPI recompute endpoint.
 
 Triggers the full analytics pipeline for a given entity:
-    KPIOrchestrator → ForecastOrchestrator → RiskOrchestrator → SegmentationOrchestrator
+    KPIOrchestrator → ForecastOrchestrator → RiskOrchestrator
+
+Segmentation is optional and must be explicitly requested.
 
 Each step is independent; failures are collected and returned in the response
 without aborting subsequent steps or returning a non-2xx status.
@@ -34,7 +36,6 @@ from app.services.kpi_orchestrator import (
 from db.session import get_db
 from forecast.orchestrator import ForecastOrchestrator
 from risk.orchestrator import RiskOrchestrator
-from segmentation.orchestrator import SegmentationOrchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ router = APIRouter(tags=["kpi"])
 class KPIRecomputeRequest(BaseModel):
     entity_name: str
     business_type: str
+    include_segmentation: bool = False
 
 
 class KPIRecomputeResponse(BaseModel):
@@ -78,7 +80,8 @@ def recompute_kpis(
     """
     Trigger the full analytics pipeline for one entity.
 
-    All four orchestrators run sequentially. A failure in any step is
+    KPI / Forecast / Risk run sequentially. Segmentation runs only when
+    ``include_segmentation=True``. A failure in any step is
     captured in ``pipeline_errors`` and does not prevent subsequent steps
     from executing. The response always returns HTTP 200 when the request
     itself is valid; per-step failures are surfaced inside the payload.
@@ -160,24 +163,27 @@ def recompute_kpis(
         pipeline_errors.append(f"risk: {exc}")
         logger.warning("Risk scoring failed entity=%r: %s", body.entity_name, exc)
 
-    # --- Step 4: Segmentation ---
-    try:
-        seg_records = _build_segmentation_records(kpi_result)
-        n_clusters = min(3, len(seg_records))
-        if n_clusters < 1:
-            pipeline_errors.append("segmentation: insufficient records for clustering")
-        else:
-            seg_result = SegmentationOrchestrator(session=db).run_segmentation(
-                entity_name=body.entity_name,
-                records=seg_records,
-                n_clusters=n_clusters,
-            )
-            db.commit()
-            seg_summary = {"n_clusters": seg_result.get("n_clusters")}
-    except Exception as exc:  # noqa: BLE001
-        db.rollback()
-        pipeline_errors.append(f"segmentation: {exc}")
-        logger.warning("Segmentation failed entity=%r: %s", body.entity_name, exc)
+    # --- Step 4: Segmentation (explicit only) ---
+    if body.include_segmentation:
+        try:
+            from segmentation.orchestrator import SegmentationOrchestrator
+
+            seg_records = _build_segmentation_records(kpi_result)
+            n_clusters = min(3, len(seg_records))
+            if n_clusters < 1:
+                pipeline_errors.append("segmentation: insufficient records for clustering")
+            else:
+                seg_result = SegmentationOrchestrator(session=db).run_segmentation(
+                    entity_name=body.entity_name,
+                    records=seg_records,
+                    n_clusters=n_clusters,
+                )
+                db.commit()
+                seg_summary = {"n_clusters": seg_result.get("n_clusters")}
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            pipeline_errors.append(f"segmentation: {exc}")
+            logger.warning("Segmentation failed entity=%r: %s", body.entity_name, exc)
 
     return KPIRecomputeResponse(
         entity_name=body.entity_name,

@@ -93,7 +93,7 @@ _MOCK_RESPONSE = {
     "evidence": "Finding A identified in test data; Finding B identified in test data.",
     "impact": "No real risk - this is a test fixture.",
     "recommended_action": "Verify integration with upstream nodes.",
-    "priority": "Low",
+    "priority": "low",
     "confidence_score": 0.95,
 }
 

@@ -9,13 +9,16 @@ No clustering, no ML, no feature engineering.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from agent.state import AgentState
+from app.failure_codes import OPTIONAL_FAILURES
 from segmentation.repository import SegmentInsightRepository
 from db.session import SessionLocal
 
 _repository = SegmentInsightRepository()
+logger = logging.getLogger(__name__)
 
 
 def _serialize_row(row: Any) -> dict[str, Any]:
@@ -58,6 +61,11 @@ def segmentation_node(state: AgentState) -> AgentState:
         if row is not None:
             segmentation: dict[str, Any] = {**_serialize_row(row), "found": True}
         else:
+            if "missing_segmentation" in OPTIONAL_FAILURES:
+                logger.warning(
+                    "Optional failure code=missing_segmentation entity=%r: no segmentation snapshot found",
+                    entity_name,
+                )
             segmentation = {
                 "entity_name": entity_name,
                 "period_end": None,
@@ -68,6 +76,12 @@ def segmentation_node(state: AgentState) -> AgentState:
             }
 
     except Exception as exc:  # noqa: BLE001
+        if "missing_segmentation" in OPTIONAL_FAILURES:
+            logger.warning(
+                "Optional failure code=missing_segmentation entity=%r: %s",
+                entity_name,
+                exc,
+            )
         segmentation = {
             "entity_name": entity_name,
             "period_end": None,

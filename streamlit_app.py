@@ -6,6 +6,7 @@ import io
 import json
 import os
 import hashlib
+import logging
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,9 @@ from pydantic import ValidationError
 from llm_synthesis.schema import InsightOutput
 
 st.set_page_config(page_title="InsightAgent", page_icon="IA", layout="wide")
+logger = logging.getLogger(__name__)
+FinalInsightResponse = InsightOutput
+_FINAL_RESPONSE_KEYS = frozenset(FinalInsightResponse.model_fields.keys())
 
 
 @st.cache_resource(show_spinner=False)
@@ -89,64 +93,73 @@ def _extract_output(state: dict[str, Any]) -> InsightOutput:
         raise ValueError(f"Pipeline output is not valid InsightOutput: {exc}") from exc
 
 
+def _ensure_final_response_contract(response: Any) -> FinalInsightResponse:
+    if not isinstance(response, FinalInsightResponse):
+        raise RuntimeError("Invalid response contract.")
+    try:
+        serialized = response.model_dump_json()
+        payload = json.loads(serialized)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError("Invalid response contract.") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("Invalid response contract.")
+    if set(payload.keys()) != _FINAL_RESPONSE_KEYS:
+        raise RuntimeError("Invalid response contract.")
+    try:
+        FinalInsightResponse.model_validate(payload)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError("Invalid response contract.") from exc
+    return response
+
+
 def run_pipeline(
     data: bytes | None,
     prompt: str,
     filename: str | None = None,
     client_id: str | None = None,
     client_config: Optional[dict[str, Any]] = None,
-) -> dict[str, Any]:
+) -> FinalInsightResponse:
     """Thin frontend adapter that delegates all processing to backend layers."""
-    handles = _load_backend_handles()
-    graph = handles["graph"]
-    intent_node = handles["intent_node"]
-    csv_service = handles["csv_service"]
-    session_factory = handles["session_factory"]
+    try:
+        handles = _load_backend_handles()
+        graph = handles["graph"]
+        intent_node = handles["intent_node"]
+        csv_service = handles["csv_service"]
+        session_factory = handles["session_factory"]
 
-    seed_state = intent_node({"user_query": prompt})
-    business_type = seed_state.get("business_type")
-    entity_name = seed_state.get("entity_name")
+        seed_state = intent_node({"user_query": prompt})
+        business_type = seed_state.get("business_type")
+        entity_name = seed_state.get("entity_name")
 
-    allowed_business_types = {"saas", "ecommerce", "agency"}
-    ingest_business_type = business_type if business_type in allowed_business_types else None
-    ingest_entity_name = entity_name or client_id or None
+        allowed_business_types = {"saas", "ecommerce", "agency"}
+        ingest_business_type = business_type if business_type in allowed_business_types else None
+        ingest_entity_name = entity_name or client_id or None
 
-    ingestion_summary: dict[str, Any] | None = None
-    if data is not None:
-        upload = UploadFile(filename=filename or "upload.csv", file=io.BytesIO(data))
-        try:
-            with session_factory() as db:
-                summary = csv_service.ingest_csv(
-                    upload_file=upload,
-                    db=db,
-                    client_name=ingest_entity_name,
-                    business_type=ingest_business_type,
-                )
-            ingestion_summary = {
-                "rows_processed": summary.rows_processed,
-                "rows_failed": summary.rows_failed,
-                "validation_error_count": len(summary.validation_errors),
-            }
-        finally:
-            upload.file.close()
+        if data is not None:
+            upload = UploadFile(filename=filename or "upload.csv", file=io.BytesIO(data))
+            try:
+                with session_factory() as db:
+                    csv_service.ingest_csv(
+                        upload_file=upload,
+                        db=db,
+                        client_name=ingest_entity_name,
+                        business_type=ingest_business_type,
+                    )
+            finally:
+                upload.file.close()
 
-    invoke_state: dict[str, Any] = {"user_query": prompt}
-    if ingest_business_type:
-        invoke_state["business_type"] = ingest_business_type
-    if ingest_entity_name:
-        invoke_state["entity_name"] = ingest_entity_name
+        invoke_state: dict[str, Any] = {"user_query": prompt}
+        if ingest_business_type:
+            invoke_state["business_type"] = ingest_business_type
+        if ingest_entity_name:
+            invoke_state["entity_name"] = ingest_entity_name
 
-    state = graph.invoke(invoke_state)
-    output = _extract_output(state)
-
-    return {
-        "output": output,
-        "output_json": output.model_dump(),
-        "raw_state": state,
-        "ingestion_summary": ingestion_summary,
-        "client_id": client_id,
-        "client_config": client_config,
-    }
+        state = graph.invoke(invoke_state)
+        result = _extract_output(state).model_dump()
+        return _ensure_final_response_contract(FinalInsightResponse(**result))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Pipeline execution failed client_id=%r", client_id)
+        return _ensure_final_response_contract(FinalInsightResponse.failure(str(exc)))
 
 
 def _first_available(mapping: dict[str, Any], keys: list[str]) -> Any:
@@ -368,24 +381,16 @@ if st.session_state.pipeline_error:
 elif st.session_state.pipeline_result is None:
     st.info("Run analysis to view results.")
 else:
-    result = st.session_state.pipeline_result
-    output: InsightOutput = result["output"]
-    raw_state: dict[str, Any] = result.get("raw_state", {})
-    selected_client_id = result.get("client_id")
-    loaded_client_config = result.get("client_config")
+    output: FinalInsightResponse = st.session_state.pipeline_result
+    raw_state: dict[str, Any] = {}
+    selected_client_id: str | None = None
 
-    if result.get("ingestion_summary") is not None:
-        st.caption(f"Ingestion: {result['ingestion_summary']}")
-    if selected_client_id is not None:
-        st.caption(f"Client: {selected_client_id}")
-    if loaded_client_config is not None:
-        st.caption("Client configuration loaded.")
     if st.session_state.execution_time_s is not None:
         st.caption(f"Execution time: {st.session_state.execution_time_s:.2f}s")
     if st.session_state.used_cached_run:
         st.caption("Using previous result (inputs unchanged).")
 
-    st.json(result["output_json"])
+    st.json(output.model_dump())
     st.markdown(f"**Insight:** {output.insight}")
     st.markdown(f"**Evidence:** {output.evidence}")
     st.markdown(f"**Impact:** {output.impact}")
@@ -450,69 +455,4 @@ else:
         )
 
     with st.expander("Show Internal Analysis"):
-        st.markdown("**Extracted Data Features**")
-
-        kpi_payload = (
-            raw_state.get("saas_kpi_data")
-            or raw_state.get("ecommerce_kpi_data")
-            or raw_state.get("agency_kpi_data")
-        )
-        kpi_metrics = None
-        if isinstance(kpi_payload, dict):
-            records = kpi_payload.get("records")
-            if isinstance(records, list) and records:
-                latest = records[-1]
-                if isinstance(latest, dict):
-                    kpi_metrics = latest.get("computed_kpis")
-            if kpi_metrics is None:
-                kpi_metrics = kpi_payload.get("computed_kpis")
-
-        anomalies = _first_available(
-            raw_state,
-            ["detected_anomalies", "anomalies"],
-        )
-        trends = _first_available(
-            raw_state,
-            ["trends"],
-        )
-        if trends is None and isinstance(raw_state.get("forecast_data"), dict):
-            trends = _first_available(raw_state["forecast_data"], ["trend", "trends"])
-
-        st.markdown("KPI metrics:")
-        st.json(kpi_metrics if kpi_metrics is not None else "Not returned by backend")
-        st.markdown("Detected anomalies:")
-        st.json(anomalies if anomalies is not None else "Not returned by backend")
-        st.markdown("Trends:")
-        st.json(trends if trends is not None else "Not returned by backend")
-
-        st.markdown("**Extracted Prompt Features**")
-        intent = _first_available(
-            raw_state,
-            ["intent", "detected_intent", "business_type"],
-        )
-        risk_focus = _first_available(
-            raw_state,
-            ["risk_focus"],
-        )
-        if risk_focus is None and isinstance(raw_state.get("prioritization"), dict):
-            risk_focus = _first_available(raw_state["prioritization"], ["risk_focus"])
-        opportunity_focus = _first_available(
-            raw_state,
-            ["opportunity_focus"],
-        )
-        if opportunity_focus is None and isinstance(raw_state.get("prioritization"), dict):
-            opportunity_focus = _first_available(
-                raw_state["prioritization"],
-                ["opportunity_focus", "recommended_focus"],
-            )
-
-        st.markdown("Intent:")
-        st.json(intent if intent is not None else "Not returned by backend")
-        st.markdown("Risk focus:")
-        st.json(risk_focus if risk_focus is not None else "Not returned by backend")
-        st.markdown("Opportunity focus:")
-        st.json(opportunity_focus if opportunity_focus is not None else "Not returned by backend")
-
-        if loaded_client_config is not None:
-            st.markdown("**Client Configuration**")
-            st.json(loaded_client_config)
+        st.json({"final_insight_response": output.model_dump()})

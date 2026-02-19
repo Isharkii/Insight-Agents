@@ -7,16 +7,7 @@ from collections.abc import AsyncIterator
 
 from fastapi import FastAPI
 
-from app.api.routers import (
-    bi_export_router,
-    competitor_scraping_router,
-    csv_ingestion_router,
-    external_ingestion_router,
-    ingestion_orchestrator_router,
-    kpi_router,
-)
-from app.scheduler.jobs import build_scheduler
-
+from llm_synthesis.schema import FinalInsightResponse
 
 def _configure_logging() -> None:
     """
@@ -33,6 +24,8 @@ def _configure_logging() -> None:
 @asynccontextmanager
 async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
     """Start the background scheduler on boot; shut it down gracefully on exit."""
+    from app.scheduler.jobs import build_scheduler
+
     scheduler = build_scheduler()
     scheduler.start()
     logging.getLogger(__name__).info("Scheduler started with %d jobs", len(scheduler.get_jobs()))
@@ -55,6 +48,16 @@ def create_app() -> FastAPI:
         version="1.0.0",
         lifespan=_lifespan,
     )
+
+    from app.api.routers import (
+        bi_export_router,
+        competitor_scraping_router,
+        csv_ingestion_router,
+        external_ingestion_router,
+        ingestion_orchestrator_router,
+        kpi_router,
+    )
+
     application.include_router(competitor_scraping_router)
     application.include_router(csv_ingestion_router)
     application.include_router(external_ingestion_router)
@@ -63,8 +66,15 @@ def create_app() -> FastAPI:
     application.include_router(bi_export_router)
 
     @application.get("/health")
-    def healthcheck() -> dict[str, str]:
-        return {"status": "ok"}
+    def healthcheck() -> FinalInsightResponse:
+        return FinalInsightResponse(
+            insight="Service healthy",
+            evidence="API and scheduler lifecycle initialized successfully.",
+            impact="System is ready to process insight requests.",
+            recommended_action="Continue normal operations.",
+            priority="low",
+            confidence_score=1.0,
+        )
 
     return application
 

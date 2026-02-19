@@ -5,20 +5,11 @@ Parses and validates JSON strings against the InsightOutput schema.
 
 import json
 import re
-from typing import Any, Dict, List
+from typing import Any, List
 
 from pydantic import ValidationError
 
 from llm_synthesis.schema import InsightOutput
-
-_REQUIRED_KEYS = (
-    "insight",
-    "evidence",
-    "impact",
-    "recommended_action",
-    "priority",
-    "confidence_score",
-)
 
 
 class LLMOutputValidationError(Exception):
@@ -69,19 +60,13 @@ def _strip_markdown_fences(text: str) -> str:
     return stripped
 
 
-def _compress_to_insight_output(data: Dict[str, Any]) -> Dict[str, Any]:
-    """Project payloads into the InsightOutput keys only."""
-    return {key: data.get(key) for key in _REQUIRED_KEYS}
-
-
 def validate_llm_output(raw_response: str) -> InsightOutput:
     """Parse and validate a raw LLM response string.
 
     Steps:
         1. Strip optional markdown fences.
         2. Parse as JSON.
-        3. Project payload into InsightOutput keys.
-        4. Validate against InsightOutput Pydantic model.
+        3. Validate against InsightOutput Pydantic model.
 
     Args:
         raw_response: The raw string returned by the LLM adapter.
@@ -112,11 +97,9 @@ def validate_llm_output(raw_response: str) -> InsightOutput:
             raw_response=raw_response,
         )
 
-    # Step 3: Schema validation
+    # Step 3: Schema validation (rejects unknown fields via model config)
     try:
-        normalized = _compress_to_insight_output(data)
-        parsed = InsightOutput.model_validate(normalized)
-        return InsightOutput.model_validate({k: getattr(parsed, k) for k in _REQUIRED_KEYS})
+        return InsightOutput.model_validate(data)
     except ValidationError as exc:
         errors = [
             f"{'.'.join(str(loc) for loc in e['loc'])}: {e['msg']}"

@@ -15,6 +15,7 @@ from typing import Any, Protocol
 from fastapi import BackgroundTasks, UploadFile
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.failure_codes import OPTIONAL_FAILURES
 from app.services.competitor_scraping_service import (
     CompetitorScrapingService,
     get_competitor_scraping_service,
@@ -273,6 +274,11 @@ class IngestionOrchestratorService:
                 db.commit()
 
                 summaries = self._competitor_service.ingest(db=db, competitor=competitor)
+                if not summaries and "missing_scraping" in OPTIONAL_FAILURES:
+                    logger.warning(
+                        "Optional failure code=missing_scraping competitor=%r: no scraping summaries produced",
+                        competitor,
+                    )
                 result_payload = {
                     "competitor_summaries": [
                         {

@@ -42,6 +42,18 @@ def _as_float(value: object, default: float) -> float:
         return default
 
 
+def _require_float(payload: dict, key: str, payload_name: str) -> float:
+    if key not in payload:
+        raise ValueError(f"Missing required {payload_name} signal '{key}'.")
+    value = payload[key]
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Invalid {payload_name} signal '{key}': expected numeric value."
+        ) from exc
+
+
 _ROOT_CAUSE_RULES = _as_dict(_load_business_rules().get("root_cause"))
 _SEVERITY_RULES = _as_dict(_ROOT_CAUSE_RULES.get("severity_thresholds"))
 
@@ -119,18 +131,14 @@ class AgencyRootCauseEngine(BaseRootCauseEngine):
         Parameters
         ----------
         kpi_data:
-            May contain any of: ``revenue_growth_delta``,
-            ``churn_delta``, ``utilization_delta``,
-            ``revenue_per_employee_delta``.
-            Missing keys default to ``0.0``.
+            Required keys: ``revenue_growth_delta``, ``churn_delta``,
+            ``utilization_delta``, ``revenue_per_employee_delta``.
 
         forecast_data:
-            May contain: ``slope``, ``deviation_percentage``.
-            Missing keys default to ``0.0``.
+            Required key: ``slope``.
 
         risk_data:
-            May contain: ``risk_score``.
-            Missing key defaults to ``0.0``.
+            Required key: ``risk_score``.
 
         Returns
         -------
@@ -140,16 +148,29 @@ class AgencyRootCauseEngine(BaseRootCauseEngine):
                "severity": str}``
         """
         # ----------------------------------------------------------------
-        # Extract inputs with safe defaults
+        # Extract required flat signals
         # ----------------------------------------------------------------
-        revenue_growth_delta: float        = float(kpi_data.get("revenue_growth_delta", 0.0))
-        churn_delta: float                 = float(kpi_data.get("churn_delta", 0.0))
-        utilization_delta: float           = float(kpi_data.get("utilization_delta", 0.0))
-        revenue_per_employee_delta: float  = float(kpi_data.get("revenue_per_employee_delta", 0.0))
+        if not isinstance(kpi_data, dict):
+            raise ValueError("kpi_data must be a dict.")
+        if not isinstance(forecast_data, dict):
+            raise ValueError("forecast_data must be a dict.")
+        if not isinstance(risk_data, dict):
+            raise ValueError("risk_data must be a dict.")
 
-        slope: float                       = float(forecast_data.get("slope", 0.0))
+        revenue_growth_delta: float = _require_float(
+            kpi_data, "revenue_growth_delta", "kpi_data"
+        )
+        churn_delta: float = _require_float(kpi_data, "churn_delta", "kpi_data")
+        utilization_delta: float = _require_float(
+            kpi_data, "utilization_delta", "kpi_data"
+        )
+        revenue_per_employee_delta: float = _require_float(
+            kpi_data, "revenue_per_employee_delta", "kpi_data"
+        )
 
-        risk_score: float                  = float(risk_data.get("risk_score", 0.0))
+        slope: float = _require_float(forecast_data, "slope", "forecast_data")
+
+        risk_score: float = _require_float(risk_data, "risk_score", "risk_data")
 
         # ----------------------------------------------------------------
         # Rule evaluation

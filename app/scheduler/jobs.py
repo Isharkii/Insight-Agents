@@ -18,7 +18,6 @@ Schedule (all times UTC)
   daily_kpi          — 02:00 every day
   daily_forecast     — 02:30 every day
   daily_risk         — 03:00 every day
-  weekly_segmentation — 03:30 every Monday
 
 Lifecycle
 ----------
@@ -38,9 +37,9 @@ from typing import Iterator
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy.orm import Session
 
+from llm_synthesis.schema import FinalInsightResponse
 from app.services.csv_ingestion_service import (
     _PRIMARY_METRIC_BY_BUSINESS_TYPE,
-    _build_segmentation_records,
     _extract_primary_metric_values,
 )
 from app.services.kpi_orchestrator import KPIOrchestrator, KPIRunResult
@@ -48,11 +47,28 @@ from db.models.client import Client
 from db.session import SessionLocal
 from forecast.orchestrator import ForecastOrchestrator
 from risk.orchestrator import RiskOrchestrator
-from segmentation.orchestrator import SegmentationOrchestrator
 
 logger = logging.getLogger(__name__)
 
 _VALID_BUSINESS_TYPES: frozenset[str] = frozenset({"saas", "ecommerce", "agency"})
+
+
+def _job_success(stage_name: str) -> FinalInsightResponse:
+    return FinalInsightResponse(
+        insight=f"{stage_name} completed",
+        evidence=f"Scheduler job '{stage_name}' finished successfully.",
+        impact="Scheduled analytics state remains current.",
+        recommended_action="No action required.",
+        priority="low",
+        confidence_score=1.0,
+    )
+
+
+def _job_failure(stage_name: str, error: Exception) -> FinalInsightResponse:
+    logger.exception("Scheduler job failed stage=%s", stage_name)
+    return FinalInsightResponse.failure(
+        reason=f"Scheduler stage '{stage_name}' failed: {type(error).__name__}: {error}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -149,44 +165,48 @@ def _session_scope() -> Iterator[Session]:
 # ---------------------------------------------------------------------------
 
 
-def run_daily_kpi() -> None:
+def run_daily_kpi() -> FinalInsightResponse:
     """
     Recompute KPIs for all known entities over the trailing 90-day window.
     KPIOrchestrator commits internally; no explicit commit is needed here.
     """
-    logger.info("Scheduler: daily_kpi starting")
-    now = datetime.now(tz=timezone.utc)
-    period_start = now - timedelta(days=90)
+    try:
+        logger.info("Scheduler: daily_kpi starting")
+        now = datetime.now(tz=timezone.utc)
+        period_start = now - timedelta(days=90)
 
-    with _session_scope() as db:
-        entities = _resolve_entities(db)
-        if not entities:
-            logger.warning("Scheduler: daily_kpi — no entities found, skipping")
-            return
+        with _session_scope() as db:
+            entities = _resolve_entities(db)
+            if not entities:
+                logger.warning("Scheduler: daily_kpi — no entities found, skipping")
+                return _job_success("daily_kpi")
 
-        for entity_name, business_type in entities:
-            try:
-                result: KPIRunResult = KPIOrchestrator().run(
-                    entity_name=entity_name,
-                    business_type=business_type,
-                    period_start=period_start,
-                    period_end=now,
-                    db=db,
-                )
-                logger.info(
-                    "Scheduler: daily_kpi entity=%r business_type=%r "
-                    "record_id=%s has_errors=%s",
-                    entity_name,
-                    business_type,
-                    result.record_id,
-                    result.has_errors,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "Scheduler: daily_kpi failed entity=%r: %s", entity_name, exc
-                )
+            for entity_name, business_type in entities:
+                try:
+                    result: KPIRunResult = KPIOrchestrator().run(
+                        entity_name=entity_name,
+                        business_type=business_type,
+                        period_start=period_start,
+                        period_end=now,
+                        db=db,
+                    )
+                    logger.info(
+                        "Scheduler: daily_kpi entity=%r business_type=%r "
+                        "record_id=%s has_errors=%s",
+                        entity_name,
+                        business_type,
+                        result.record_id,
+                        result.has_errors,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Scheduler: daily_kpi failed entity=%r: %s", entity_name, exc
+                    )
 
-    logger.info("Scheduler: daily_kpi complete")
+        logger.info("Scheduler: daily_kpi complete")
+        return _job_success("daily_kpi")
+    except Exception as exc:  # noqa: BLE001
+        return _job_failure("daily_kpi", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -194,58 +214,62 @@ def run_daily_kpi() -> None:
 # ---------------------------------------------------------------------------
 
 
-def run_daily_forecast() -> None:
+def run_daily_forecast() -> FinalInsightResponse:
     """
     Regenerate forecasts for all known entities using the primary KPI metric.
     Commits per entity on success; rolls back on failure.
     """
-    logger.info("Scheduler: daily_forecast starting")
-    now = datetime.now(tz=timezone.utc)
-    period_start = now - timedelta(days=90)
+    try:
+        logger.info("Scheduler: daily_forecast starting")
+        now = datetime.now(tz=timezone.utc)
+        period_start = now - timedelta(days=90)
 
-    with _session_scope() as db:
-        entities = _resolve_entities(db)
-        if not entities:
-            logger.warning("Scheduler: daily_forecast — no entities found, skipping")
-            return
+        with _session_scope() as db:
+            entities = _resolve_entities(db)
+            if not entities:
+                logger.warning("Scheduler: daily_forecast — no entities found, skipping")
+                return _job_success("daily_forecast")
 
-        for entity_name, business_type in entities:
-            try:
-                # Re-run KPI to get a fresh metric value for the regression seed.
-                kpi_result: KPIRunResult = KPIOrchestrator().run(
-                    entity_name=entity_name,
-                    business_type=business_type,
-                    period_start=period_start,
-                    period_end=now,
-                    db=db,
-                )
-                metric_name = _PRIMARY_METRIC_BY_BUSINESS_TYPE.get(business_type, "revenue")
-                values = _extract_primary_metric_values(kpi_result, metric_name)
-                result = ForecastOrchestrator(db).generate_forecast(
-                    entity_name=entity_name,
-                    metric_name=metric_name,
-                    values=values,
-                )
-                if "error" in result:
-                    logger.info(
-                        "Scheduler: daily_forecast deferred entity=%r: %s",
-                        entity_name,
-                        result["error"],
+            for entity_name, business_type in entities:
+                try:
+                    # Re-run KPI to get a fresh metric value for the regression seed.
+                    kpi_result: KPIRunResult = KPIOrchestrator().run(
+                        entity_name=entity_name,
+                        business_type=business_type,
+                        period_start=period_start,
+                        period_end=now,
+                        db=db,
                     )
-                else:
-                    db.commit()
-                    logger.info(
-                        "Scheduler: daily_forecast entity=%r trend=%s",
-                        entity_name,
-                        result.get("trend"),
+                    metric_name = _PRIMARY_METRIC_BY_BUSINESS_TYPE.get(business_type, "revenue")
+                    values = _extract_primary_metric_values(kpi_result, metric_name)
+                    result = ForecastOrchestrator(db).generate_forecast(
+                        entity_name=entity_name,
+                        metric_name=metric_name,
+                        values=values,
                     )
-            except Exception as exc:  # noqa: BLE001
-                db.rollback()
-                logger.warning(
-                    "Scheduler: daily_forecast failed entity=%r: %s", entity_name, exc
-                )
+                    if "error" in result:
+                        logger.info(
+                            "Scheduler: daily_forecast deferred entity=%r: %s",
+                            entity_name,
+                            result["error"],
+                        )
+                    else:
+                        db.commit()
+                        logger.info(
+                            "Scheduler: daily_forecast entity=%r trend=%s",
+                            entity_name,
+                            result.get("trend"),
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    db.rollback()
+                    logger.warning(
+                        "Scheduler: daily_forecast failed entity=%r: %s", entity_name, exc
+                    )
 
-    logger.info("Scheduler: daily_forecast complete")
+        logger.info("Scheduler: daily_forecast complete")
+        return _job_success("daily_forecast")
+    except Exception as exc:  # noqa: BLE001
+        return _job_failure("daily_forecast", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -253,100 +277,68 @@ def run_daily_forecast() -> None:
 # ---------------------------------------------------------------------------
 
 
-def run_daily_risk() -> None:
+def run_daily_risk() -> FinalInsightResponse:
     """
     Recompute risk scores for all known entities.
     Commits per entity on success; rolls back on failure.
     """
-    logger.info("Scheduler: daily_risk starting")
+    try:
+        logger.info("Scheduler: daily_risk starting")
 
-    with _session_scope() as db:
-        entities = _resolve_entities(db)
-        if not entities:
-            logger.warning("Scheduler: daily_risk — no entities found, skipping")
-            return
+        with _session_scope() as db:
+            entities = _resolve_entities(db)
+            if not entities:
+                logger.warning("Scheduler: daily_risk — no entities found, skipping")
+                return _job_success("daily_risk")
 
-        for entity_name, _ in entities:
-            try:
-                result = RiskOrchestrator(db).generate_risk_score(
-                    entity_name=entity_name,
-                    kpi_data={},
-                    forecast_data={},
-                )
-                db.commit()
-                logger.info(
-                    "Scheduler: daily_risk entity=%r score=%s level=%s",
-                    entity_name,
-                    result.get("risk_score"),
-                    result.get("risk_level"),
-                )
-            except Exception as exc:  # noqa: BLE001
-                db.rollback()
-                logger.warning(
-                    "Scheduler: daily_risk failed entity=%r: %s", entity_name, exc
-                )
+            for entity_name, _ in entities:
+                try:
+                    kpi_data: dict = {}
+                    forecast_data: dict = {}
 
-    logger.info("Scheduler: daily_risk complete")
+                    if not kpi_data and not forecast_data:
+                        raise ValueError(
+                            "Risk input payload is empty. Upstream KPI/forecast pipeline failed."
+                        )
+                    if not kpi_data:
+                        raise ValueError(
+                            f"Missing KPI data for entity={entity_name!r}; cannot compute risk."
+                        )
+                    if not forecast_data:
+                        raise ValueError(
+                            f"Missing forecast data for entity={entity_name!r}; cannot compute risk."
+                        )
 
-
-# ---------------------------------------------------------------------------
-# Job: Weekly segmentation refresh
-# ---------------------------------------------------------------------------
-
-
-def run_weekly_segmentation() -> None:
-    """
-    Re-cluster all known entities using their most recent KPI metrics.
-    Commits per entity on success; rolls back on failure.
-    """
-    logger.info("Scheduler: weekly_segmentation starting")
-    now = datetime.now(tz=timezone.utc)
-    period_start = now - timedelta(days=90)
-
-    with _session_scope() as db:
-        entities = _resolve_entities(db)
-        if not entities:
-            logger.warning("Scheduler: weekly_segmentation — no entities found, skipping")
-            return
-
-        for entity_name, business_type in entities:
-            try:
-                kpi_result: KPIRunResult = KPIOrchestrator().run(
-                    entity_name=entity_name,
-                    business_type=business_type,
-                    period_start=period_start,
-                    period_end=now,
-                    db=db,
-                )
-                seg_records = _build_segmentation_records(kpi_result)
-                n_clusters = min(3, len(seg_records))
-                if n_clusters < 1:
-                    logger.info(
-                        "Scheduler: weekly_segmentation skipped entity=%r: "
-                        "insufficient records",
-                        entity_name,
+                    result = RiskOrchestrator(db).generate_risk_score(
+                        entity_name=entity_name,
+                        kpi_data=kpi_data,
+                        forecast_data=forecast_data,
                     )
-                    continue
-                result = SegmentationOrchestrator(session=db).run_segmentation(
-                    entity_name=entity_name,
-                    records=seg_records,
-                    n_clusters=n_clusters,
-                )
-                db.commit()
-                logger.info(
-                    "Scheduler: weekly_segmentation entity=%r n_clusters=%s",
-                    entity_name,
-                    result.get("n_clusters"),
-                )
-            except Exception as exc:  # noqa: BLE001
-                db.rollback()
-                logger.warning(
-                    "Scheduler: weekly_segmentation failed entity=%r: %s",
-                    entity_name,
-                    exc,
-                )
+                    db.commit()
+                    logger.info(
+                        "Scheduler: daily_risk entity=%r score=%s level=%s",
+                        entity_name,
+                        result.get("risk_score"),
+                        result.get("risk_level"),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    db.rollback()
+                    logger.error(
+                        "Scheduler: daily_risk critical failure entity=%r: %s",
+                        entity_name,
+                        exc,
+                        extra={
+                            "event": "scheduler_daily_risk_critical_failure",
+                            "entity_name": entity_name,
+                        },
+                        exc_info=True,
+                    )
+                    raise
 
-    logger.info("Scheduler: weekly_segmentation complete")
+        logger.info("Scheduler: daily_risk complete")
+        return _job_success("daily_risk")
+    except Exception as exc:  # noqa: BLE001
+        return _job_failure("daily_risk", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -366,7 +358,6 @@ def build_scheduler() -> BackgroundScheduler:
         daily_kpi           — 02:00 every day
         daily_forecast      — 02:30 every day
         daily_risk          — 03:00 every day
-        weekly_segmentation — 03:30 every Monday
     """
     scheduler = BackgroundScheduler(timezone="UTC")
 
@@ -400,16 +391,4 @@ def build_scheduler() -> BackgroundScheduler:
         replace_existing=True,
         misfire_grace_time=3600,
     )
-    scheduler.add_job(
-        run_weekly_segmentation,
-        trigger="cron",
-        day_of_week="mon",
-        hour=3,
-        minute=30,
-        id="weekly_segmentation",
-        name="Weekly segmentation refresh",
-        replace_existing=True,
-        misfire_grace_time=7200,
-    )
-
     return scheduler

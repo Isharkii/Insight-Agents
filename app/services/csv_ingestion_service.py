@@ -9,11 +9,11 @@ the downstream analytics pipeline in this order:
     1. KPIOrchestrator.run()                       — recomputes KPIs (90-day window)
     2. ForecastOrchestrator.generate_forecast()    — generates metric forecast
     3. RiskOrchestrator.generate_risk_score()      — scores business risk
-    4. SegmentationOrchestrator.run_segmentation() — clusters entity data
+    4. SegmentationOrchestrator.run_segmentation() — optional, explicit only
 
 Each step is independent: a failure is logged at WARNING level and does not
 affect subsequent steps or the ingestion result. KPIOrchestrator commits
-internally; Forecast / Risk / Segmentation are committed explicitly here.
+internally; Forecast / Risk / optional Segmentation are committed explicitly here.
 """
 
 from __future__ import annotations
@@ -39,7 +39,6 @@ from app.validators.mapping_validator import MappingErrorDetail, SchemaMappingEr
 from app.validators.csv_validator import CSVRowValidator
 from forecast.orchestrator import ForecastOrchestrator
 from risk.orchestrator import RiskOrchestrator
-from segmentation.orchestrator import SegmentationOrchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -129,13 +128,15 @@ class CSVIngestionService:
         mapping_config_name: str | None = None,
         manual_mapping: Mapping[str, str] | None = None,
         business_type: str | None = None,
+        include_segmentation: bool = False,
     ) -> IngestionSummary:
         """
         Stream a CSV file, skip invalid rows, and persist valid rows in batches.
 
         When ``client_name`` and ``business_type`` are both provided and at
         least one row is persisted, the downstream analytics pipeline is
-        triggered automatically (KPI → Forecast → Risk → Segmentation).
+        triggered (KPI → Forecast → Risk). Segmentation is opt-in via
+        ``include_segmentation=True``.
         Analytics failures do not affect the returned IngestionSummary.
 
         Args:
@@ -147,6 +148,8 @@ class CSVIngestionService:
             manual_mapping:       Optional column-to-canonical overrides.
             business_type:        One of "saas", "ecommerce", "agency". Required
                                   to trigger the analytics pipeline.
+            include_segmentation: Whether to execute optional segmentation in
+                                  the post-ingestion pipeline.
         """
         raw_file = upload_file.file
         raw_file.seek(0)
@@ -249,6 +252,7 @@ class CSVIngestionService:
                 entity_name=client_name,
                 business_type=business_type,
                 db=db,
+                include_segmentation=include_segmentation,
             )
 
         return summary
@@ -263,6 +267,7 @@ class CSVIngestionService:
         entity_name: str,
         business_type: str,
         db: Session,
+        include_segmentation: bool,
     ) -> None:
         """Fire downstream orchestrators after a successful ingestion.
 
@@ -348,6 +353,18 @@ class CSVIngestionService:
         # --- Step 3: Risk scoring ---
         # kpi_data signals (deltas) are not directly derivable from one ingestion
         # batch; pass empty dict so the orchestrator applies its 0.0 defaults.
+        if not forecast_data_for_risk:
+            logger.error(
+                "Post-ingestion risk scoring aborted due to empty risk input payload",
+                extra={
+                    "event": "post_ingestion_risk_input_empty",
+                    "entity_name": entity_name,
+                    "business_type": business_type,
+                },
+            )
+            raise ValueError(
+                "Risk input payload is empty. Upstream KPI/forecast pipeline failed."
+            )
         try:
             risk_result = RiskOrchestrator(db).generate_risk_score(
                 entity_name=entity_name,
@@ -369,37 +386,40 @@ class CSVIngestionService:
                 exc,
             )
 
-        # --- Step 4: Segmentation ---
-        # Build a single-record list from the KPI metrics as a best-effort seed.
-        # n_clusters must be <= n_records; skip when records are empty.
-        try:
-            seg_records = _build_segmentation_records(kpi_result)
-            n_clusters = min(3, len(seg_records))
-            if n_clusters < 1:
-                logger.info(
-                    "Post-ingestion segmentation skipped entity=%r: "
-                    "insufficient records for clustering",
+        if include_segmentation:
+            # --- Step 4: Segmentation (explicit only) ---
+            # Build a single-record list from the KPI metrics as a best-effort seed.
+            # n_clusters must be <= n_records; skip when records are empty.
+            try:
+                from segmentation.orchestrator import SegmentationOrchestrator
+
+                seg_records = _build_segmentation_records(kpi_result)
+                n_clusters = min(3, len(seg_records))
+                if n_clusters < 1:
+                    logger.info(
+                        "Post-ingestion segmentation skipped entity=%r: "
+                        "insufficient records for clustering",
+                        entity_name,
+                    )
+                else:
+                    seg_result = SegmentationOrchestrator(session=db).run_segmentation(
+                        entity_name=entity_name,
+                        records=seg_records,
+                        n_clusters=n_clusters,
+                    )
+                    db.commit()
+                    logger.info(
+                        "Post-ingestion segmentation completed entity=%r n_clusters=%s",
+                        entity_name,
+                        seg_result.get("n_clusters"),
+                    )
+            except Exception as exc:  # noqa: BLE001
+                db.rollback()
+                logger.warning(
+                    "Post-ingestion segmentation failed entity=%r: %s",
                     entity_name,
+                    exc,
                 )
-            else:
-                seg_result = SegmentationOrchestrator(session=db).run_segmentation(
-                    entity_name=entity_name,
-                    records=seg_records,
-                    n_clusters=n_clusters,
-                )
-                db.commit()
-                logger.info(
-                    "Post-ingestion segmentation completed entity=%r n_clusters=%s",
-                    entity_name,
-                    seg_result.get("n_clusters"),
-                )
-        except Exception as exc:  # noqa: BLE001
-            db.rollback()
-            logger.warning(
-                "Post-ingestion segmentation failed entity=%r: %s",
-                entity_name,
-                exc,
-            )
 
     # ------------------------------------------------------------------
     # Ingestion internals
