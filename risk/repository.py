@@ -4,25 +4,18 @@ risk/repository.py
 SQLAlchemy model and repository for Business Risk Score persistence.
 Alembic-ready declarative style. No scoring or business logic.
 
-Note: Base is defined locally here. In a multi-model setup, import Base
-from a shared db/base.py and remove the local declaration below.
+Base is imported from db.base (the project-wide shared declarative base).
 """
 
 import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, Index, Integer, String, func, select
+from sqlalchemy import DateTime, Index, Integer, String, UniqueConstraint, func, select
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
+from sqlalchemy.orm import Mapped, Session, mapped_column
 
-
-# ---------------------------------------------------------------------------
-# Declarative base — replace with shared import in multi-model projects
-# ---------------------------------------------------------------------------
-
-class Base(DeclarativeBase):
-    pass
+from db.base import Base
 
 
 # ---------------------------------------------------------------------------
@@ -44,6 +37,11 @@ class BusinessRiskScore(Base):
     __tablename__ = "business_risk_scores"
 
     __table_args__ = (
+        UniqueConstraint(
+            "entity_name",
+            "period_end",
+            name="uq_brs_entity_period",
+        ),
         Index("ix_brs_entity_period", "entity_name", "period_end"),
     )
 

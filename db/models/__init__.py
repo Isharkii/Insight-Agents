@@ -8,10 +8,13 @@ autogeneration work without extra imports.
 from db.models.analytical_metric import AnalyticalMetric
 from db.models.canonical_insight_record import CanonicalInsightRecord
 from db.models.client import Client
+from db.models.computed_kpi import ComputedKPI
 from db.models.dataset import Dataset
 from db.models.ingestion_job import IngestionJob
 from db.models.insight import Insight
 from db.models.mapping_config import MappingConfig
+from forecast.repository import ForecastMetric
+from risk.repository import BusinessRiskScore
 
 __all__ = [
     "Client",
@@ -21,4 +24,7 @@ __all__ = [
     "Insight",
     "CanonicalInsightRecord",
     "MappingConfig",
+    "ComputedKPI",
+    "ForecastMetric",
+    "BusinessRiskScore",
 ]

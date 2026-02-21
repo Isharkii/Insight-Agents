@@ -9,6 +9,75 @@ from fastapi import FastAPI
 
 from llm_synthesis.schema import FinalInsightResponse
 
+
+def _validate_env() -> None:
+    """
+    Validate all required environment variables at startup.
+
+    Runs before any service or database connection is initialised.
+    Raises RuntimeError listing every missing or invalid variable so the
+    operator can fix all problems in one restart cycle.
+
+    Rules:
+    - No empty-string values are accepted.
+    - SQLite and local database fallbacks are not permitted.
+    - LLM API key check is skipped only when LLM_ADAPTER=mock.
+    - NEWS_API_KEY is required whenever NEWS_API_ENABLED is not false.
+    """
+
+    from db.config import load_env_files
+
+    load_env_files()
+
+    errors: list[str] = []
+
+    # --- APP_MODE -------------------------------------------------------
+    app_mode = os.getenv("APP_MODE", "").strip().lower()
+    if not app_mode:
+        errors.append(
+            "APP_MODE is not set. It must be explicitly set to 'cloud'."
+        )
+    elif app_mode != "cloud":
+        errors.append(
+            f"APP_MODE='{app_mode}' is not valid. Allowed values: ['cloud']."
+        )
+
+    # --- Database URL ---------------------------------------------------
+    database_url = os.getenv("DATABASE_URL", "").strip()
+    cloud_database_url = os.getenv("CLOUD_DATABASE_URL", "").strip()
+    if not database_url and not cloud_database_url:
+        errors.append(
+            "No database URL configured. Set DATABASE_URL or CLOUD_DATABASE_URL. "
+            "SQLite and local database fallbacks are not permitted."
+        )
+
+    # --- LLM API key ----------------------------------------------------
+    adapter = os.getenv("LLM_ADAPTER", "openai").strip().lower()
+    if adapter != "mock":
+        llm_api_key = os.getenv("LLM_API_KEY", "").strip()
+        openai_api_key = os.getenv("OPENAI_API_KEY", "").strip()
+        if not llm_api_key and not openai_api_key:
+            errors.append(
+                "LLM API key is not set. Provide LLM_API_KEY or OPENAI_API_KEY. "
+                "Empty strings are not permitted."
+            )
+
+    # --- News API key ---------------------------------------------------
+    news_enabled_raw = os.getenv("NEWS_API_ENABLED", "true").strip().lower()
+    news_enabled = news_enabled_raw in {"1", "true", "yes", "on"}
+    if news_enabled and not os.getenv("NEWS_API_KEY", "").strip():
+        errors.append(
+            "NEWS_API_KEY is not set but NEWS_API_ENABLED is true. "
+            "Set NEWS_API_KEY or disable the connector with NEWS_API_ENABLED=false."
+        )
+
+    if errors:
+        raise RuntimeError(
+            "Startup validation failed — missing or invalid environment variables:\n"
+            + "\n".join(f"  - {e}" for e in errors)
+        )
+
+
 def _configure_logging() -> None:
     """
     Configure root logging once for the API process.
@@ -41,6 +110,7 @@ def create_app() -> FastAPI:
     Create and configure the FastAPI application.
     """
 
+    _validate_env()
     _configure_logging()
 
     application = FastAPI(
@@ -51,6 +121,7 @@ def create_app() -> FastAPI:
 
     from app.api.routers import (
         bi_export_router,
+        client_router,
         competitor_scraping_router,
         csv_ingestion_router,
         external_ingestion_router,
@@ -58,6 +129,7 @@ def create_app() -> FastAPI:
         kpi_router,
     )
 
+    application.include_router(client_router)
     application.include_router(competitor_scraping_router)
     application.include_router(csv_ingestion_router)
     application.include_router(external_ingestion_router)

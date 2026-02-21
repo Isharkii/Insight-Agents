@@ -35,6 +35,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Iterator
 
 from apscheduler.schedulers.background import BackgroundScheduler
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from llm_synthesis.schema import FinalInsightResponse
@@ -44,8 +45,10 @@ from app.services.csv_ingestion_service import (
 )
 from app.services.kpi_orchestrator import KPIOrchestrator, KPIRunResult
 from db.models.client import Client
+from db.models.computed_kpi import ComputedKPI
 from db.session import SessionLocal
 from forecast.orchestrator import ForecastOrchestrator
+from forecast.repository import ForecastRepository
 from risk.orchestrator import RiskOrchestrator
 
 logger = logging.getLogger(__name__)
@@ -291,23 +294,52 @@ def run_daily_risk() -> FinalInsightResponse:
                 logger.warning("Scheduler: daily_risk — no entities found, skipping")
                 return _job_success("daily_risk")
 
-            for entity_name, _ in entities:
+            for entity_name, business_type in entities:
                 try:
-                    kpi_data: dict = {}
-                    forecast_data: dict = {}
+                    # Fetch the most recent ComputedKPI row for this entity.
+                    kpi_record = db.scalars(
+                        select(ComputedKPI)
+                        .where(ComputedKPI.entity_name == entity_name)
+                        .order_by(ComputedKPI.period_end.desc())
+                        .limit(1)
+                    ).first()
+                    if kpi_record is None:
+                        raise ValueError(
+                            f"No KPI data found for entity={entity_name!r}; cannot compute risk."
+                        )
 
-                    if not kpi_data and not forecast_data:
+                    # Fetch the most recent forecast for the primary metric.
+                    metric_name = _PRIMARY_METRIC_BY_BUSINESS_TYPE.get(business_type, "revenue")
+                    forecast_record = ForecastRepository(db).get_latest_forecast(
+                        entity_name=entity_name,
+                        metric_name=metric_name,
+                    )
+                    if forecast_record is None:
                         raise ValueError(
-                            "Risk input payload is empty. Upstream KPI/forecast pipeline failed."
+                            f"No forecast data found for entity={entity_name!r} "
+                            f"metric={metric_name!r}; cannot compute risk."
                         )
-                    if not kpi_data:
-                        raise ValueError(
-                            f"Missing KPI data for entity={entity_name!r}; cannot compute risk."
-                        )
-                    if not forecast_data:
-                        raise ValueError(
-                            f"Missing forecast data for entity={entity_name!r}; cannot compute risk."
-                        )
+
+                    # Map the stored computed_kpis JSONB to the flat kpi_data dict.
+                    # JSONB shape: {"metric_key": {"value": float | None, "unit": str, ...}}
+                    raw_kpis: dict = kpi_record.computed_kpis or {}
+
+                    def _kpi_value(key: str) -> float:
+                        entry = raw_kpis.get(key) or {}
+                        v = entry.get("value")
+                        return float(v) if v is not None else 0.0
+
+                    # agency stores churn as "client_churn"; saas/ecommerce as "churn_rate".
+                    churn_key = "client_churn" if business_type == "agency" else "churn_rate"
+                    kpi_data: dict = {
+                        "revenue_growth_delta": _kpi_value("growth_rate"),
+                        "churn_delta":          _kpi_value(churn_key),
+                        "conversion_delta":     _kpi_value("conversion_rate"),
+                    }
+
+                    # forecast_data is the full JSONB payload stored by ForecastOrchestrator.
+                    # It already contains slope, deviation_percentage, and churn_acceleration.
+                    forecast_data: dict = forecast_record.forecast_data or {}
 
                     result = RiskOrchestrator(db).generate_risk_score(
                         entity_name=entity_name,

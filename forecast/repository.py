@@ -15,18 +15,13 @@ from sqlalchemy import (
     DateTime,
     Index,
     String,
+    UniqueConstraint,
     select,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
+from sqlalchemy.orm import Mapped, Session, mapped_column
 
-
-# ---------------------------------------------------------------------------
-# Declarative base
-# ---------------------------------------------------------------------------
-
-class Base(DeclarativeBase):
-    pass
+from db.base import Base
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +84,12 @@ class ForecastMetric(Base):
     )
 
     __table_args__ = (
+        UniqueConstraint(
+            "entity_name",
+            "metric_name",
+            "period_end",
+            name="uq_forecast_metric_entity_metric_period",
+        ),
         Index(
             "ix_forecast_metric_entity_metric_period",
             "entity_name",

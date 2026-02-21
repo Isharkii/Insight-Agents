@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, Index, String
+from sqlalchemy import Boolean, Index, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -56,6 +56,7 @@ class Client(Base, TimestampMixin):
     )
 
     __table_args__ = (
+        UniqueConstraint("name", name="uq_clients_name"),
         Index("ix_clients_name", "name"),
         Index("ix_clients_domain", "domain"),
         Index("ix_clients_is_active", "is_active"),

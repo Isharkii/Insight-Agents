@@ -8,7 +8,18 @@ from sqlalchemy import engine_from_config, pool
 
 from db.base import Base
 from db.config import load_env_files, normalize_postgres_url, resolve_database_url
-import db.models  # noqa: F401  # Ensure models are imported for metadata registration.
+from db.models import (  # noqa: F401  — imports trigger Base.metadata registration
+    AnalyticalMetric,
+    BusinessRiskScore,
+    CanonicalInsightRecord,
+    Client,
+    ComputedKPI,
+    Dataset,
+    ForecastMetric,
+    IngestionJob,
+    Insight,
+    MappingConfig,
+)
 
 config = context.config
 

@@ -50,28 +50,26 @@ def resolve_database_url() -> str:
 
     Priority:
     1) DATABASE_URL
-    2) CLOUD_DATABASE_URL when ENVIRONMENT is cloud-like
-    3) LOCAL_DATABASE_URL
+    2) CLOUD_DATABASE_URL
+
+    APP_MODE must be explicitly set to 'cloud' before this function is
+    called; there is no local fallback.
     """
 
     load_env_files()
+
+    app_mode = os.getenv("APP_MODE")
+    if app_mode is None or app_mode.strip().lower() != "cloud":
+        raise RuntimeError("APP_MODE must be explicitly set to 'cloud'.")
 
     direct_url = os.getenv("DATABASE_URL")
     if direct_url:
         return normalize_postgres_url(direct_url)
 
-    environment = os.getenv("ENVIRONMENT", "local").strip().lower()
-    cloud_like_envs = {"prod", "production", "staging", "cloud"}
-
     cloud_url = os.getenv("CLOUD_DATABASE_URL")
-    if environment in cloud_like_envs and cloud_url:
+    if cloud_url:
         return normalize_postgres_url(cloud_url)
 
-    local_url = os.getenv("LOCAL_DATABASE_URL")
-    if local_url:
-        return normalize_postgres_url(local_url)
-
     raise RuntimeError(
-        "No database URL configured. Set DATABASE_URL, or configure "
-        "LOCAL_DATABASE_URL / CLOUD_DATABASE_URL."
+        "No database URL configured. Set DATABASE_URL or CLOUD_DATABASE_URL."
     )

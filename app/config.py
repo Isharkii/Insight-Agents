@@ -12,6 +12,8 @@ from functools import lru_cache
 
 from db.config import load_env_files
 
+_ALLOWED_APP_MODES = {"cloud"}
+
 
 @lru_cache(maxsize=1)
 def _load_env_once() -> None:
@@ -20,6 +22,48 @@ def _load_env_once() -> None:
     """
 
     load_env_files()
+
+
+def _require_app_mode() -> str:
+    """
+    Read and validate APP_MODE from the environment.
+
+    APP_MODE must be explicitly set to 'cloud'. Any other value—or the
+    absence of the variable—raises RuntimeError to prevent silent local
+    fallback behaviour.
+    """
+
+    _load_env_once()
+    raw = os.getenv("APP_MODE")
+    if raw is None:
+        raise RuntimeError("APP_MODE must be explicitly set to 'cloud'.")
+    mode = raw.strip().lower()
+    if mode not in _ALLOWED_APP_MODES:
+        raise RuntimeError(
+            f"APP_MODE '{raw.strip()}' is not valid. "
+            f"Allowed values: {sorted(_ALLOWED_APP_MODES)}."
+        )
+    return mode
+
+
+@dataclass(frozen=True)
+class AppSettings:
+    """
+    Top-level application mode settings.
+    """
+
+    mode: str
+
+
+@lru_cache(maxsize=1)
+def get_app_settings() -> AppSettings:
+    """
+    Return cached application settings.
+
+    Raises RuntimeError if APP_MODE is missing or not set to 'cloud'.
+    """
+
+    return AppSettings(mode=_require_app_mode())
 
 
 def _get_bool_env(name: str, default: bool) -> bool:
