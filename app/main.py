@@ -90,9 +90,65 @@ def _configure_logging() -> None:
     )
 
 
+def _check_db() -> None:
+    """Open a session and run SELECT 1. Raises RuntimeError if the DB is unreachable."""
+    from sqlalchemy import text
+
+    from db.session import SessionLocal
+
+    try:
+        db = SessionLocal()
+        try:
+            db.execute(text("SELECT 1"))
+        finally:
+            db.close()
+    except Exception as exc:
+        raise RuntimeError("Database unavailable.") from exc
+
+
+def _check_schema() -> None:
+    """
+    Compare Base.metadata table names against the live DB schema.
+
+    Every table registered on Base.metadata must exist in the database.
+    If any are missing, log a critical error and abort startup so that
+    the operator is forced to run migrations before serving traffic.
+
+    Does NOT auto-migrate.
+    """
+    from sqlalchemy import inspect as sa_inspect
+
+    import db.models  # noqa: F401 — registers all ORM models on Base.metadata
+    from db.base import Base
+    from db.session import get_engine
+
+    inspector = sa_inspect(get_engine())
+    actual: set[str] = set(inspector.get_table_names())
+    expected: set[str] = set(Base.metadata.tables.keys())
+    missing = expected - actual
+
+    if missing:
+        log = logging.getLogger(__name__)
+        log.critical(
+            "Schema mismatch — %d table(s) defined in ORM metadata are absent from "
+            "the database: %s. Run 'alembic upgrade head' and restart.",
+            len(missing),
+            ", ".join(sorted(missing)),
+        )
+        raise RuntimeError(
+            f"Schema mismatch: {len(missing)} table(s) missing from the database "
+            f"({', '.join(sorted(missing))}). Run migrations and restart."
+        )
+
+
 @asynccontextmanager
 async def _lifespan(application: FastAPI) -> AsyncIterator[None]:
-    """Start the background scheduler on boot; shut it down gracefully on exit."""
+    """Validate DB connectivity and schema, start the scheduler on boot; shut it down on exit."""
+    _check_db()
+    logging.getLogger(__name__).info("Database connectivity confirmed")
+    _check_schema()
+    logging.getLogger(__name__).info("Database schema validated")
+
     from app.scheduler.jobs import build_scheduler
 
     scheduler = build_scheduler()

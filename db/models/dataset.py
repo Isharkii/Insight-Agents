@@ -17,9 +17,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from db.base import Base, TimestampMixin
 
 if TYPE_CHECKING:
-    from db.models.analytical_metric import AnalyticalMetric
     from db.models.client import Client
-    from db.models.insight import Insight
 
 
 class DatasetStatus:
@@ -72,16 +70,6 @@ class Dataset(Base, TimestampMixin):
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     client: Mapped["Client"] = relationship("Client", back_populates="datasets")
-    analytical_metrics: Mapped[list["AnalyticalMetric"]] = relationship(
-        "AnalyticalMetric",
-        back_populates="dataset",
-        passive_deletes=True,
-    )
-    insights: Mapped[list["Insight"]] = relationship(
-        "Insight",
-        back_populates="dataset",
-        passive_deletes=True,
-    )
 
     __table_args__ = (
         Index("ix_datasets_client_id", "client_id"),

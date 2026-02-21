@@ -16,9 +16,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from db.base import Base, TimestampMixin
 
 if TYPE_CHECKING:
-    from db.models.analytical_metric import AnalyticalMetric
     from db.models.dataset import Dataset
-    from db.models.insight import Insight
 
 
 class Client(Base, TimestampMixin):
@@ -44,17 +42,6 @@ class Client(Base, TimestampMixin):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
-    analytical_metrics: Mapped[list["AnalyticalMetric"]] = relationship(
-        "AnalyticalMetric",
-        back_populates="client",
-        passive_deletes=True,
-    )
-    insights: Mapped[list["Insight"]] = relationship(
-        "Insight",
-        back_populates="client",
-        passive_deletes=True,
-    )
-
     __table_args__ = (
         UniqueConstraint("name", name="uq_clients_name"),
         Index("ix_clients_name", "name"),
