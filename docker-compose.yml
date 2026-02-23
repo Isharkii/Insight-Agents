@@ -18,7 +18,7 @@ services:
       UPLOAD_STORAGE_DIR: ${UPLOAD_STORAGE_DIR:-data/uploads}
 
       # Database
-      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://${POSTGRES_USER:-insight}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-insight_agent}}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5433/${POSTGRES_DB:-insight_agent}}
 
       # LLM
       LLM_ADAPTER: ${LLM_ADAPTER:-openai}
@@ -95,20 +95,43 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: insight_postgres
+    command: ["postgres", "-p", "5433"]
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-insight_agent}
-      POSTGRES_USER: ${POSTGRES_USER:-insight}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${POSTGRES_PORT:-5433}:5433"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-insight} -d ${POSTGRES_DB:-insight_agent}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-insight_agent} -p 5433"]
       interval: 5s
       timeout: 5s
       retries: 10
       start_period: 10s
+    restart: unless-stopped
+    networks:
+      - insight_net
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: insight_frontend
+    environment:
+      API_BASE_URL: ${API_BASE_URL:-http://backend:8000}
+    ports:
+      - "${FRONTEND_PORT:-8501}:8501"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     restart: unless-stopped
     networks:
       - insight_net

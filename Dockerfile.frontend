@@ -1,0 +1,39 @@
+# syntax=docker/dockerfile:1.7
+
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# Install only frontend dependencies (no backend, no DB drivers).
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --upgrade pip && \
+    pip install \
+        "streamlit>=1.35,<2.0" \
+        "pandas>=2.0,<3.0" \
+        "requests>=2.32,<3.0" \
+        "pydantic>=2.0,<3.0"
+
+# Copy only what the frontend needs.
+COPY streamlit_app.py ./
+COPY llm_synthesis/__init__.py ./llm_synthesis/
+COPY llm_synthesis/schema.py ./llm_synthesis/
+COPY config/ ./config/
+
+# Non-root runtime user.
+RUN groupadd --system app && useradd --system --gid app --create-home app
+RUN chown -R app:app /app
+
+USER app
+
+EXPOSE 8501
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')"]
+
+CMD ["streamlit", "run", "streamlit_app.py", \
+     "--server.port=8501", \
+     "--server.address=0.0.0.0", \
+     "--server.headless=true"]

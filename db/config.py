@@ -52,15 +52,14 @@ def resolve_database_url() -> str:
     1) DATABASE_URL
     2) CLOUD_DATABASE_URL
 
-    APP_MODE must be explicitly set to 'cloud' before this function is
-    called; there is no local fallback.
+    APP_MODE must be explicitly set to 'local' or 'cloud'.
     """
 
     load_env_files()
 
     app_mode = os.getenv("APP_MODE")
-    if app_mode is None or app_mode.strip().lower() != "cloud":
-        raise RuntimeError("APP_MODE must be explicitly set to 'cloud'.")
+    if app_mode is None or app_mode.strip().lower() not in ("local", "cloud"):
+        raise RuntimeError("APP_MODE must be set to 'local' or 'cloud'.")
 
     direct_url = os.getenv("DATABASE_URL")
     if direct_url:

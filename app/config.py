@@ -12,7 +12,7 @@ from functools import lru_cache
 
 from db.config import load_env_files
 
-_ALLOWED_APP_MODES = {"cloud"}
+_ALLOWED_APP_MODES = {"local", "cloud"}
 
 
 @lru_cache(maxsize=1)
@@ -28,15 +28,14 @@ def _require_app_mode() -> str:
     """
     Read and validate APP_MODE from the environment.
 
-    APP_MODE must be explicitly set to 'cloud'. Any other value—or the
-    absence of the variable—raises RuntimeError to prevent silent local
-    fallback behaviour.
+    APP_MODE must be explicitly set to 'local' or 'cloud'. Any other
+    value—or the absence of the variable—raises RuntimeError.
     """
 
     _load_env_once()
     raw = os.getenv("APP_MODE")
     if raw is None:
-        raise RuntimeError("APP_MODE must be explicitly set to 'cloud'.")
+        raise RuntimeError("APP_MODE must be explicitly set to 'local' or 'cloud'.")
     mode = raw.strip().lower()
     if mode not in _ALLOWED_APP_MODES:
         raise RuntimeError(

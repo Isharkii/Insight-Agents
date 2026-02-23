@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 import pandas as pd
+import requests
 import streamlit as st
-from fastapi import UploadFile
 from pydantic import ValidationError
 
 from llm_synthesis.schema import InsightOutput
@@ -24,21 +24,7 @@ logger = logging.getLogger(__name__)
 FinalInsightResponse = InsightOutput
 _FINAL_RESPONSE_KEYS = frozenset(FinalInsightResponse.model_fields.keys())
 
-
-@st.cache_resource(show_spinner=False)
-def _load_backend_handles():
-    """Load backend orchestrators lazily to keep startup lightweight."""
-    from agent.graph import insight_graph  # noqa: PLC0415
-    from agent.nodes.intent import intent_node  # noqa: PLC0415
-    from app.services.csv_ingestion_service import get_csv_ingestion_service  # noqa: PLC0415
-    from db.session import SessionLocal  # noqa: PLC0415
-
-    return {
-        "graph": insight_graph,
-        "intent_node": intent_node,
-        "csv_service": get_csv_ingestion_service(),
-        "session_factory": SessionLocal,
-    }
+API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 
 
 @st.cache_data(show_spinner=False)
@@ -80,19 +66,6 @@ def _fetch_remote_client_config_placeholder(client_id: str) -> dict[str, Any]:
     }
 
 
-def _extract_output(state: dict[str, Any]) -> InsightOutput:
-    """Extract and validate final structured output from pipeline state."""
-    response = state.get("final_response")
-    if not isinstance(response, str):
-        raise ValueError("Pipeline response is missing final_response.")
-
-    try:
-        payload = json.loads(response)
-        return InsightOutput.model_validate(payload)
-    except (json.JSONDecodeError, ValidationError, TypeError) as exc:
-        raise ValueError(f"Pipeline output is not valid InsightOutput: {exc}") from exc
-
-
 def _ensure_final_response_contract(response: Any) -> FinalInsightResponse:
     if not isinstance(response, FinalInsightResponse):
         raise RuntimeError("Invalid response contract.")
@@ -118,45 +91,34 @@ def run_pipeline(
     filename: str | None = None,
     client_id: str | None = None,
     client_config: Optional[dict[str, Any]] = None,
+    model: str = "default",
 ) -> FinalInsightResponse:
-    """Thin frontend adapter that delegates all processing to backend layers."""
+    """Call the backend /analyze endpoint via HTTP."""
     try:
-        handles = _load_backend_handles()
-        graph = handles["graph"]
-        intent_node = handles["intent_node"]
-        csv_service = handles["csv_service"]
-        session_factory = handles["session_factory"]
+        form_data: dict[str, str] = {"prompt": prompt}
+        if client_id:
+            form_data["client_id"] = client_id
+        if model and model != "default":
+            form_data["model"] = model
 
-        seed_state = intent_node({"user_query": prompt})
-        business_type = seed_state.get("business_type")
-        entity_name = seed_state.get("entity_name")
-
-        allowed_business_types = {"saas", "ecommerce", "agency"}
-        ingest_business_type = business_type if business_type in allowed_business_types else None
-        ingest_entity_name = entity_name or client_id or None
-
+        files = {}
         if data is not None:
-            upload = UploadFile(filename=filename or "upload.csv", file=io.BytesIO(data))
-            try:
-                with session_factory() as db:
-                    csv_service.ingest_csv(
-                        upload_file=upload,
-                        db=db,
-                        client_name=ingest_entity_name,
-                        business_type=ingest_business_type,
-                    )
-            finally:
-                upload.file.close()
+            files["file"] = (filename or "upload.csv", io.BytesIO(data), "text/csv")
 
-        invoke_state: dict[str, Any] = {"user_query": prompt}
-        if ingest_business_type:
-            invoke_state["business_type"] = ingest_business_type
-        if ingest_entity_name:
-            invoke_state["entity_name"] = ingest_entity_name
-
-        state = graph.invoke(invoke_state)
-        result = _extract_output(state).model_dump()
-        return _ensure_final_response_contract(FinalInsightResponse(**result))
+        resp = requests.post(
+            f"{API_BASE_URL}/analyze",
+            data=form_data,
+            files=files if files else None,
+            timeout=120,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        return _ensure_final_response_contract(FinalInsightResponse(**payload))
+    except requests.RequestException as exc:
+        logger.exception("API call to /analyze failed")
+        return _ensure_final_response_contract(
+            FinalInsightResponse.failure(f"API error: {exc}")
+        )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Pipeline execution failed client_id=%r", client_id)
         return _ensure_final_response_contract(FinalInsightResponse.failure(str(exc)))
@@ -351,10 +313,6 @@ if run_clicked:
         else:
             st.session_state.used_cached_run = False
 
-        os.environ["LLM_ADAPTER"] = "mock" if mode == "LOCAL" else "openai"
-        if model != "default":
-            os.environ["LLM_MODEL"] = model
-
         if not st.session_state.used_cached_run:
             with st.spinner("Running analysis pipeline..."):
                 started = time.perf_counter()
@@ -365,6 +323,7 @@ if run_clicked:
                         filename=st.session_state.uploaded_name,
                         client_id=chosen_client_id,
                         client_config=client_config,
+                        model=model,
                     )
                     st.session_state.pipeline_error = None
                     st.session_state.execution_time_s = time.perf_counter() - started

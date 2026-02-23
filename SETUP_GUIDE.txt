@@ -106,7 +106,7 @@ Open .env in your editor and configure the following values:
   APP_MODE=cloud
     (The app requires APP_MODE=cloud to start — this is by design)
 
-  DATABASE_URL=postgresql+psycopg://insight:local_dev_change_me_123@localhost:5432/insight_agent
+  DATABASE_URL=postgresql+psycopg://insight:local_dev_change_me_123@localhost:5433/insight_agent
     (Use localhost if running the API outside Docker but PostgreSQL inside Docker)
     (Use postgres instead of localhost if running everything inside Docker)
 
@@ -140,7 +140,7 @@ Start the database container:
 
   docker compose up postgres -d
 
-This starts a PostgreSQL 16 instance on port 5432.
+This starts a PostgreSQL 16 instance on port 5433.
 
 Verify it's running:
 
@@ -238,7 +238,7 @@ Instead of running the API natively, you can run the entire stack in Docker:
   docker compose up --build -d
 
 This starts:
-  - PostgreSQL (insight_postgres) on port 5432
+  - PostgreSQL (insight_postgres) on port 5433
   - FastAPI backend (insight_backend) on port 8000
 
 The backend waits for PostgreSQL to be healthy before starting.

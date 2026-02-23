@@ -35,11 +35,11 @@ def _validate_env() -> None:
     app_mode = os.getenv("APP_MODE", "").strip().lower()
     if not app_mode:
         errors.append(
-            "APP_MODE is not set. It must be explicitly set to 'cloud'."
+            "APP_MODE is not set. Allowed values: ['local', 'cloud']."
         )
-    elif app_mode != "cloud":
+    elif app_mode not in ("local", "cloud"):
         errors.append(
-            f"APP_MODE='{app_mode}' is not valid. Allowed values: ['cloud']."
+            f"APP_MODE='{app_mode}' is not valid. Allowed values: ['local', 'cloud']."
         )
 
     # --- Database URL ---------------------------------------------------
@@ -176,6 +176,7 @@ def create_app() -> FastAPI:
     )
 
     from app.api.routers import (
+        analyze_router,
         bi_export_router,
         client_router,
         competitor_scraping_router,
@@ -185,6 +186,7 @@ def create_app() -> FastAPI:
         kpi_router,
     )
 
+    application.include_router(analyze_router)
     application.include_router(client_router)
     application.include_router(competitor_scraping_router)
     application.include_router(csv_ingestion_router)

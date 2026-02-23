@@ -14,7 +14,7 @@ Edit `.env` and set at least:
 
 ```env
 ENVIRONMENT=local
-DATABASE_URL=postgresql+psycopg://<user>:<password>@localhost:5432/<db_name>
+DATABASE_URL=postgresql+psycopg://<user>:<password>@localhost:5433/<db_name>
 ```
 
 If you prefer split URLs, use `LOCAL_DATABASE_URL` instead of `DATABASE_URL`.
@@ -94,7 +94,7 @@ py -m alembic stamp head
 Run against a one-off DB URL (overrides env URL for one command):
 
 ```powershell
-py -m alembic -x db_url="postgresql+psycopg://<user>:<password>@localhost:5432/<db_name>" upgrade head
+py -m alembic -x db_url="postgresql+psycopg://<user>:<password>@localhost:5433/<db_name>" upgrade head
 ```
 
 ## 6) Recommended workflow for every schema change
