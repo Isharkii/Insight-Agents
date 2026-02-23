@@ -107,7 +107,7 @@ def _to_json_response(result: ExportResult, dataset: str) -> JSONResponse:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/export/bi", summary="Export analytics data for BI tools")
+@router.get("/export/bi", summary="Export analytics data for BI tools", response_model=None)
 def export_bi(
     dataset: str = Query(
         default="records",

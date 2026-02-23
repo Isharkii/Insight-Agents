@@ -8,18 +8,85 @@ services:
       - path: .env
         required: false
     environment:
+      # App core
       ENVIRONMENT: ${ENVIRONMENT:-local}
-      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://${POSTGRES_USER:-insight}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-insight_agent}}
-      SQL_ECHO: ${SQL_ECHO:-false}
+      APP_MODE: ${APP_MODE:-cloud}
       APP_MODULE: ${APP_MODULE:-app.main:app}
       WEB_CONCURRENCY: ${WEB_CONCURRENCY:-1}
       PORT: 8000
+      SQL_ECHO: ${SQL_ECHO:-false}
       UPLOAD_STORAGE_DIR: ${UPLOAD_STORAGE_DIR:-data/uploads}
+
+      # Database
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://${POSTGRES_USER:-insight}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-insight_agent}}
+
+      # LLM
+      LLM_ADAPTER: ${LLM_ADAPTER:-openai}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+
+      # CSV ingestion
+      CSV_INGEST_BATCH_SIZE: ${CSV_INGEST_BATCH_SIZE:-1000}
+      CSV_INGEST_MAX_VALIDATION_ERRORS: ${CSV_INGEST_MAX_VALIDATION_ERRORS:-500}
+      CSV_INGEST_LOG_VALIDATION_ERRORS: ${CSV_INGEST_LOG_VALIDATION_ERRORS:-true}
+
+      # External ingestion
+      EXTERNAL_INGEST_BATCH_SIZE: ${EXTERNAL_INGEST_BATCH_SIZE:-1000}
+      EXTERNAL_HTTP_TIMEOUT_SECONDS: ${EXTERNAL_HTTP_TIMEOUT_SECONDS:-15}
+      EXTERNAL_HTTP_MAX_RETRIES: ${EXTERNAL_HTTP_MAX_RETRIES:-3}
+      EXTERNAL_HTTP_BACKOFF_INITIAL_SECONDS: ${EXTERNAL_HTTP_BACKOFF_INITIAL_SECONDS:-0.5}
+      EXTERNAL_HTTP_BACKOFF_MULTIPLIER: ${EXTERNAL_HTTP_BACKOFF_MULTIPLIER:-2.0}
+      EXTERNAL_HTTP_RATE_LIMIT_PER_SECOND: ${EXTERNAL_HTTP_RATE_LIMIT_PER_SECOND:-5.0}
+
+      # News API
+      NEWS_API_ENABLED: ${NEWS_API_ENABLED:-false}
+      NEWS_API_KEY: ${NEWS_API_KEY:-}
+      NEWS_API_BASE_URL: ${NEWS_API_BASE_URL:-https://newsapi.org/v2/everything}
+      NEWS_API_QUERY: ${NEWS_API_QUERY:-global economy OR geopolitical OR climate OR energy}
+      NEWS_API_LANGUAGE: ${NEWS_API_LANGUAGE:-en}
+      NEWS_API_PAGE_SIZE: ${NEWS_API_PAGE_SIZE:-50}
+      NEWS_API_REGION: ${NEWS_API_REGION:-global}
+
+      # Google Trends
+      GOOGLE_TRENDS_ENABLED: ${GOOGLE_TRENDS_ENABLED:-true}
+      GOOGLE_TRENDS_RSS_URL: ${GOOGLE_TRENDS_RSS_URL:-https://trends.google.com/trending/rss}
+      GOOGLE_TRENDS_GEO: ${GOOGLE_TRENDS_GEO:-US}
+      GOOGLE_TRENDS_HL: ${GOOGLE_TRENDS_HL:-en-US}
+      GOOGLE_TRENDS_MAX_ITEMS: ${GOOGLE_TRENDS_MAX_ITEMS:-50}
+      GOOGLE_TRENDS_REGION: ${GOOGLE_TRENDS_REGION:-US}
+
+      # World Bank
+      WORLD_BANK_ENABLED: ${WORLD_BANK_ENABLED:-true}
+      WORLD_BANK_BASE_URL: ${WORLD_BANK_BASE_URL:-https://api.worldbank.org/v2}
+      WORLD_BANK_COUNTRY_CODE: ${WORLD_BANK_COUNTRY_CODE:-WLD}
+      WORLD_BANK_INDICATOR_CODE: ${WORLD_BANK_INDICATOR_CODE:-NY.GDP.MKTP.CD}
+      WORLD_BANK_PER_PAGE: ${WORLD_BANK_PER_PAGE:-200}
+      WORLD_BANK_LATEST_PERIODS: ${WORLD_BANK_LATEST_PERIODS:-20}
+
+      # Competitor scraping
+      COMPETITOR_SCRAPE_CONFIG_PATH: ${COMPETITOR_SCRAPE_CONFIG_PATH:-app/scraping/config/competitors.json}
+      COMPETITOR_SCRAPE_USER_AGENT: ${COMPETITOR_SCRAPE_USER_AGENT:-InsightAgentBot/1.0}
+      COMPETITOR_SCRAPE_RATE_LIMIT_PER_SECOND: ${COMPETITOR_SCRAPE_RATE_LIMIT_PER_SECOND:-1.0}
+      COMPETITOR_SCRAPE_TIMEOUT_SECONDS: ${COMPETITOR_SCRAPE_TIMEOUT_SECONDS:-15}
+      COMPETITOR_SCRAPE_MAX_RETRIES: ${COMPETITOR_SCRAPE_MAX_RETRIES:-3}
+      COMPETITOR_SCRAPE_BACKOFF_INITIAL_SECONDS: ${COMPETITOR_SCRAPE_BACKOFF_INITIAL_SECONDS:-0.5}
+      COMPETITOR_SCRAPE_BACKOFF_MULTIPLIER: ${COMPETITOR_SCRAPE_BACKOFF_MULTIPLIER:-2.0}
+      COMPETITOR_SCRAPE_ALLOW_WHEN_ROBOTS_UNREACHABLE: ${COMPETITOR_SCRAPE_ALLOW_WHEN_ROBOTS_UNREACHABLE:-true}
+      COMPETITOR_SCRAPE_STORAGE_BATCH_SIZE: ${COMPETITOR_SCRAPE_STORAGE_BATCH_SIZE:-1000}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "/app/scripts/healthcheck.py"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
     volumes:
       - backend_uploads:/app/data/uploads
     networks:
@@ -42,6 +109,7 @@ services:
       timeout: 5s
       retries: 10
       start_period: 10s
+    restart: unless-stopped
     networks:
       - insight_net
 
