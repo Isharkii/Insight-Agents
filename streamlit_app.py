@@ -25,6 +25,15 @@ FinalInsightResponse = InsightOutput
 _FINAL_RESPONSE_KEYS = frozenset(FinalInsightResponse.model_fields.keys())
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
+_BUSINESS_TYPE_OPTIONS = [
+    "auto",
+    "saas",
+    "ecommerce",
+    "agency",
+    "financial_market",
+    "generic_timeseries",
+]
+_MULTI_ENTITY_OPTIONS = ["auto", "split", "error"]
 
 
 @st.cache_data(show_spinner=False)
@@ -85,11 +94,37 @@ def _ensure_final_response_contract(response: Any) -> FinalInsightResponse:
     return response
 
 
+def _api_error_message(resp: requests.Response) -> str:
+    """Extract a useful error message from non-2xx backend responses."""
+    try:
+        payload = resp.json()
+    except ValueError:
+        text = (resp.text or "").strip()
+        return text or f"HTTP {resp.status_code}"
+
+    if isinstance(payload, dict):
+        detail = payload.get("detail")
+        if isinstance(detail, dict):
+            err_type = str(detail.get("error_type") or "").strip()
+            message = str(detail.get("message") or "").strip()
+            if err_type and message:
+                return f"{err_type}: {message}"
+            if message:
+                return message
+            return json.dumps(detail)
+        if detail is not None:
+            return str(detail)
+        return json.dumps(payload)
+    return str(payload)
+
+
 def run_pipeline(
     data: bytes | None,
     prompt: str,
     filename: str | None = None,
     client_id: str | None = None,
+    business_type: str | None = None,
+    multi_entity_behavior: str | None = None,
     client_config: Optional[dict[str, Any]] = None,
     model: str = "default",
 ) -> FinalInsightResponse:
@@ -98,6 +133,10 @@ def run_pipeline(
         form_data: dict[str, str] = {"prompt": prompt}
         if client_id:
             form_data["client_id"] = client_id
+        if business_type:
+            form_data["business_type"] = business_type
+        if multi_entity_behavior:
+            form_data["multi_entity_behavior"] = multi_entity_behavior
         if model and model != "default":
             form_data["model"] = model
 
@@ -111,7 +150,11 @@ def run_pipeline(
             files=files if files else None,
             timeout=120,
         )
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            reason = _api_error_message(resp)
+            return _ensure_final_response_contract(
+                FinalInsightResponse.failure(f"API error ({resp.status_code}): {reason}")
+            )
         payload = resp.json()
         return _ensure_final_response_contract(FinalInsightResponse(**payload))
     except requests.RequestException as exc:
@@ -141,6 +184,7 @@ def _insight_record(output: InsightOutput) -> dict[str, Any]:
         "recommended_action": output.recommended_action,
         "priority": output.priority,
         "confidence_score": output.confidence_score,
+        "pipeline_status": output.pipeline_status,
     }
 
 
@@ -187,6 +231,8 @@ def _build_run_signature(
     mode: str,
     model: str,
     client_id: Optional[str],
+    business_type: Optional[str],
+    multi_entity_behavior: Optional[str],
     config_enabled: bool,
     upload_hash: Optional[str],
 ) -> str:
@@ -196,6 +242,8 @@ def _build_run_signature(
         "mode": mode,
         "model": model,
         "client_id": client_id or "",
+        "business_type": business_type or "",
+        "multi_entity_behavior": multi_entity_behavior or "",
         "config_enabled": config_enabled,
         "upload_hash": upload_hash or "",
     }
@@ -219,6 +267,8 @@ if "last_run_signature" not in st.session_state:
     st.session_state.last_run_signature = None
 if "used_cached_run" not in st.session_state:
     st.session_state.used_cached_run = False
+if "last_client_id" not in st.session_state:
+    st.session_state.last_client_id = None
 
 
 with st.sidebar:
@@ -226,6 +276,23 @@ with st.sidebar:
     mode = st.radio("Mode", options=["LOCAL", "CLOUD"], horizontal=True)
     client_options = _discover_clients()
     selected_client = st.selectbox("Client", options=client_options, index=0)
+    manual_client_id = st.text_input(
+        "Entity / Client ID Override",
+        value="",
+        help="Used as client_id for analysis. Required when no CSV is uploaded.",
+    )
+    business_type_option = st.selectbox(
+        "Business Type",
+        options=_BUSINESS_TYPE_OPTIONS,
+        index=0,
+        help="Optional override; leave 'auto' to let backend infer from prompt.",
+    )
+    multi_entity_behavior_option = st.selectbox(
+        "Multi-Entity CSV Handling",
+        options=_MULTI_ENTITY_OPTIONS,
+        index=0,
+        help="Used when uploaded CSV contains multiple entity_name values.",
+    )
     load_client_config = st.checkbox("Load Client Configuration", value=False)
     model = st.selectbox("Model", options=["default", "gpt-4o-mini", "gpt-4o"], index=0)
 
@@ -252,6 +319,7 @@ with st.sidebar:
         st.session_state.execution_time_s = None
         st.session_state.last_run_signature = None
         st.session_state.used_cached_run = False
+        st.session_state.last_client_id = None
         st.rerun()
 
 
@@ -294,44 +362,70 @@ if run_clicked:
         st.session_state.pipeline_error = "Prompt is required before running analysis."
         st.session_state.used_cached_run = False
     else:
-        chosen_client_id = None if selected_client == "default" else selected_client
-        run_signature = _build_run_signature(
-            prompt=prompt,
-            mode=mode,
-            model=model,
-            client_id=chosen_client_id,
-            config_enabled=load_client_config,
-            upload_hash=st.session_state.uploaded_hash,
+        manual = manual_client_id.strip()
+        selected = None if selected_client == "default" else selected_client
+        chosen_client_id = manual or selected
+        chosen_business_type = (
+            None if business_type_option == "auto" else business_type_option
+        )
+        chosen_multi_entity_behavior = (
+            None if multi_entity_behavior_option == "auto" else multi_entity_behavior_option
         )
 
-        if (
-            st.session_state.pipeline_result is not None
-            and st.session_state.last_run_signature == run_signature
-        ):
-            st.session_state.pipeline_error = None
-            st.session_state.used_cached_run = True
-        else:
+        can_run = True
+        if st.session_state.uploaded_bytes is None and not chosen_client_id:
+            st.session_state.pipeline_result = None
+            st.session_state.pipeline_error = (
+                "Entity / client_id is required when no CSV is uploaded."
+            )
             st.session_state.used_cached_run = False
+            st.session_state.last_client_id = None
+            can_run = False
 
-        if not st.session_state.used_cached_run:
-            with st.spinner("Running analysis pipeline..."):
-                started = time.perf_counter()
-                try:
-                    st.session_state.pipeline_result = run_pipeline(
-                        data=st.session_state.uploaded_bytes,
-                        prompt=prompt.strip(),
-                        filename=st.session_state.uploaded_name,
-                        client_id=chosen_client_id,
-                        client_config=client_config,
-                        model=model,
-                    )
-                    st.session_state.pipeline_error = None
-                    st.session_state.execution_time_s = time.perf_counter() - started
-                    st.session_state.last_run_signature = run_signature
-                except Exception as exc:  # noqa: BLE001
-                    st.session_state.pipeline_result = None
-                    st.session_state.pipeline_error = f"Pipeline error: {exc}"
-                    st.session_state.execution_time_s = None
+        if can_run:
+            run_signature = _build_run_signature(
+                prompt=prompt,
+                mode=mode,
+                model=model,
+                client_id=chosen_client_id,
+                business_type=chosen_business_type,
+                multi_entity_behavior=chosen_multi_entity_behavior,
+                config_enabled=load_client_config,
+                upload_hash=st.session_state.uploaded_hash,
+            )
+
+            if (
+                st.session_state.pipeline_result is not None
+                and st.session_state.last_run_signature == run_signature
+            ):
+                st.session_state.pipeline_error = None
+                st.session_state.used_cached_run = True
+            else:
+                st.session_state.used_cached_run = False
+
+            if not st.session_state.used_cached_run:
+                with st.spinner("Running analysis pipeline..."):
+                    started = time.perf_counter()
+                    try:
+                        st.session_state.pipeline_result = run_pipeline(
+                            data=st.session_state.uploaded_bytes,
+                            prompt=prompt.strip(),
+                            filename=st.session_state.uploaded_name,
+                            client_id=chosen_client_id,
+                            business_type=chosen_business_type,
+                            multi_entity_behavior=chosen_multi_entity_behavior,
+                            client_config=client_config,
+                            model=model,
+                        )
+                        st.session_state.pipeline_error = None
+                        st.session_state.execution_time_s = time.perf_counter() - started
+                        st.session_state.last_run_signature = run_signature
+                        st.session_state.last_client_id = chosen_client_id
+                    except Exception as exc:  # noqa: BLE001
+                        st.session_state.pipeline_result = None
+                        st.session_state.pipeline_error = f"Pipeline error: {exc}"
+                        st.session_state.execution_time_s = None
+                        st.session_state.last_client_id = None
 
 
 st.subheader("Section 3: Execution Results")
@@ -342,7 +436,7 @@ elif st.session_state.pipeline_result is None:
 else:
     output: FinalInsightResponse = st.session_state.pipeline_result
     raw_state: dict[str, Any] = {}
-    selected_client_id: str | None = None
+    selected_client_id: str | None = st.session_state.last_client_id
 
     if st.session_state.execution_time_s is not None:
         st.caption(f"Execution time: {st.session_state.execution_time_s:.2f}s")
@@ -356,6 +450,7 @@ else:
     st.markdown(f"**Recommended Action:** {output.recommended_action}")
     st.markdown(f"**Priority:** {output.priority}")
     st.markdown(f"**Confidence Score:** {output.confidence_score}")
+    st.markdown(f"**Pipeline Status:** {output.pipeline_status}")
 
     powerbi_record = _build_powerbi_record(
         output,
@@ -377,6 +472,7 @@ else:
         "recommended_action",
         "priority",
         "confidence_score",
+        "pipeline_status",
         "timestamp",
         "client_id",
     ]

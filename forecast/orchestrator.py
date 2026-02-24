@@ -75,6 +75,19 @@ class ForecastOrchestrator:
 
         return round(m3 - (2.0 * m2) + m1, 6)
 
+    @staticmethod
+    def _insufficient_data_result(metric_name: str, message: str) -> dict[str, Any]:
+        """Return a structured non-throwing payload for insufficient input history."""
+        return {
+            "metric_name": metric_name,
+            "status": "insufficient_data",
+            "forecast_available": False,
+            "slope": None,
+            "deviation_percentage": None,
+            "churn_acceleration": None,
+            "error": message,
+        }
+
     def generate_forecast(
         self,
         entity_name: str,
@@ -123,13 +136,10 @@ class ForecastOrchestrator:
 
         # Propagate insufficient-data signal without saving.
         if regression_result.get("slope") is None:
-            return {
-                "metric_name": metric_name,
-                "slope": None,
-                "deviation_percentage": None,
-                "churn_acceleration": None,
-                "error": regression_result.get("error", "Insufficient data."),
-            }
+            return self._insufficient_data_result(
+                metric_name=metric_name,
+                message=regression_result.get("error", "Insufficient data."),
+            )
 
         average_value: float = sum(values) / len(values)
         slope: float = regression_result["slope"]
@@ -141,6 +151,8 @@ class ForecastOrchestrator:
 
         result: dict = {
             "metric_name": metric_name,
+            "status": "ok",
+            "forecast_available": True,
             "slope": slope,
             "trend": trend,
             "forecast": regression_result["forecast"],

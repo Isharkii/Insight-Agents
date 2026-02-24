@@ -13,7 +13,8 @@ from __future__ import annotations
 from typing import Any
 
 from agent.state import AgentState
-from agent.signal_normalizer import normalize_signals
+from agent.nodes.node_result import failed, payload_of, skipped, status_of, success
+from agent.signal_normalizer import normalize_forecast_signals, normalize_kpi_signals
 from db.session import SessionLocal
 from risk.orchestrator import RiskOrchestrator
 
@@ -33,16 +34,10 @@ def _kpi_data_for_business_type(state: AgentState) -> dict:
     business_type = str(state.get("business_type") or "").lower()
     kpi_key = _KPI_KEY_BY_BUSINESS_TYPE.get(business_type)
     if kpi_key is None:
-        supported = ", ".join(sorted(_KPI_KEY_BY_BUSINESS_TYPE))
-        raise ValueError(
-            f"Unsupported business_type '{business_type}'. "
-            f"Supported values: {supported}."
-        )
+        return {}
 
-    payload = state.get(kpi_key)
-    if not isinstance(payload, dict):
-        raise ValueError(f"Missing or invalid state['{kpi_key}'] payload.")
-    return payload
+    payload = payload_of(state.get(kpi_key))
+    return payload if isinstance(payload, dict) else {}
 
 
 # ---------------------------------------------------------------------------
@@ -65,43 +60,75 @@ def risk_node(state: AgentState) -> AgentState:
             "risk_level"  : str ("low" | "moderate" | "high" | "critical")
             "error"       : str (present only on failure)
 
-    Raises:
-        ValueError: If signal normalization fails.
     """
     entity_name: str = state.get("entity_name") or "unknown"
     business_type: str = str(state.get("business_type") or "").lower()
     kpi_payload: dict = _kpi_data_for_business_type(state)
-    forecast_payload: dict = state.get("forecast_data") or {}
+    forecast_state = state.get("forecast_data")
+    forecast_payload: dict = payload_of(forecast_state) or {}
+    forecast_status = status_of(forecast_state)
+
+    if business_type not in _KPI_KEY_BY_BUSINESS_TYPE:
+        risk_data = skipped(
+            "unsupported_business_type",
+            {"business_type": business_type},
+        )
+        return {**state, "risk_data": risk_data}
+
+    if not kpi_payload:
+        risk_data = skipped(
+            "kpi_unavailable",
+            {"business_type": business_type},
+        )
+        return {**state, "risk_data": risk_data}
 
     try:
-        flat_signals = normalize_signals(
-            kpi_payload=kpi_payload,
-            forecast_payload=forecast_payload,
+        kpi_signals = normalize_kpi_signals(kpi_payload)
+    except Exception as exc:  # noqa: BLE001
+        risk_data = failed(
+            f"kpi_signal_normalization_failed: {exc}",
+            {"business_type": business_type},
         )
-    except ValueError as exc:
-        raise ValueError(
-            "Signal normalization failed "
-            f"for entity='{entity_name}', business_type='{business_type}': {exc}"
-        ) from exc
+        return {**state, "risk_data": risk_data}
+
+    forecast_signals: dict[str, float] = {}
+    forecast_context: dict[str, Any]
+    if forecast_status == "success" and forecast_payload:
+        try:
+            forecast_signals = normalize_forecast_signals(forecast_payload)
+            forecast_context = {
+                "status": "ok",
+                "forecast_available": True,
+                **forecast_signals,
+            }
+        except Exception:
+            forecast_context = {
+                "status": "insufficient_data",
+                "forecast_available": False,
+            }
+    else:
+        forecast_context = {
+            "status": "insufficient_data",
+            "forecast_available": False,
+        }
 
     try:
         with SessionLocal() as session:
             orchestrator = RiskOrchestrator(session)
             result = orchestrator.generate_risk_score(
                 entity_name=entity_name,
-                kpi_data=flat_signals,
-                forecast_data=flat_signals,
+                kpi_data=kpi_signals,
+                forecast_data=forecast_context,
             )
             session.commit()
 
-        risk_data: dict[str, Any] = result
+        payload: dict[str, Any] = {
+            **result,
+            "forecast_available": bool(forecast_context.get("forecast_available")),
+        }
+        risk_data = success(payload)
 
     except Exception as exc:  # noqa: BLE001
-        risk_data = {
-            "entity_name": entity_name,
-            "risk_score": None,
-            "risk_level": None,
-            "error": str(exc),
-        }
+        risk_data = failed(str(exc), {"entity_name": entity_name})
 
     return {**state, "risk_data": risk_data}

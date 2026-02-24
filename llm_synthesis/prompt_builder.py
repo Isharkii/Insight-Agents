@@ -13,8 +13,9 @@ _EXAMPLE_OUTPUT = json.dumps(
         "evidence": "Mid-market churn rose from 4% to 9%; CAC increased 18% with no corresponding LTV gain.",
         "impact": "If unaddressed, ARR pressure is likely to continue over upcoming quarters.",
         "recommended_action": "Launch a targeted retention plan for at-risk mid-market accounts.",
-        "priority": "Critical",
+        "priority": "critical",
         "confidence_score": 0.85,
+        "pipeline_status": "partial",
     },
     indent=2,
 )
@@ -102,7 +103,14 @@ class SynthesisPromptBuilder:
         """
         parts = []
         for key, value in data.items():
+            if value in (None, {}, []):
+                continue
             title = key.replace("_", " ").title()
             body = json.dumps(value, indent=2, default=str)
             parts.append(_SECTION_TEMPLATE.format(title=title, data=body))
+        if not parts:
+            return _SECTION_TEMPLATE.format(
+                title="Available Signals",
+                data=json.dumps({"status": "no_signals_available"}, indent=2),
+            )
         return "\n".join(parts)

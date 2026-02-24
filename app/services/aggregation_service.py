@@ -32,12 +32,12 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Final
+from typing import Final, Sequence
 
 from sqlalchemy import Numeric, Text, case, cast, func, select
 from sqlalchemy.orm import Session
 
-from db.models.canonical_insight_record import CanonicalCategory, CanonicalInsightRecord
+from db.models.canonical_insight_record import CanonicalInsightRecord
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +54,8 @@ METRIC_ACTIVE_CUSTOMER_COUNT: Final[str] = "active_customer_count"
 METRIC_CHURNED_CUSTOMER_COUNT: Final[str] = "churned_customer_count"
 """metric_name for customers lost within a reporting window."""
 
+DEFAULT_KPI_CATEGORY: Final[str] = "sales"
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -67,6 +69,14 @@ def _to_numeric(col: object) -> object:
     text cast is required: ``metric_value::text::numeric``.
     """
     return cast(cast(col, Text()), Numeric())  # type: ignore[arg-type]
+
+
+def _as_tuple(value: str | Sequence[str], *, fallback: tuple[str, ...]) -> tuple[str, ...]:
+    if isinstance(value, str):
+        normalized = value.strip()
+        return (normalized,) if normalized else fallback
+    normalized = tuple(str(item).strip() for item in value if str(item).strip())
+    return normalized or fallback
 
 
 # ---------------------------------------------------------------------------
@@ -97,14 +107,28 @@ class AggregationService:
         self,
         session: Session,
         *,
-        metric_recurring_revenue: str = METRIC_RECURRING_REVENUE,
-        metric_active_customer_count: str = METRIC_ACTIVE_CUSTOMER_COUNT,
-        metric_churned_customer_count: str = METRIC_CHURNED_CUSTOMER_COUNT,
+        metric_recurring_revenue: str | Sequence[str] = METRIC_RECURRING_REVENUE,
+        metric_active_customer_count: str | Sequence[str] = METRIC_ACTIVE_CUSTOMER_COUNT,
+        metric_churned_customer_count: str | Sequence[str] = METRIC_CHURNED_CUSTOMER_COUNT,
+        categories: str | Sequence[str] = DEFAULT_KPI_CATEGORY,
     ) -> None:
         self._session = session
-        self._metric_revenue = metric_recurring_revenue
-        self._metric_active = metric_active_customer_count
-        self._metric_churned = metric_churned_customer_count
+        self._metric_revenue = _as_tuple(
+            metric_recurring_revenue,
+            fallback=(METRIC_RECURRING_REVENUE,),
+        )
+        self._metric_active = _as_tuple(
+            metric_active_customer_count,
+            fallback=(METRIC_ACTIVE_CUSTOMER_COUNT,),
+        )
+        self._metric_churned = _as_tuple(
+            metric_churned_customer_count,
+            fallback=(METRIC_CHURNED_CUSTOMER_COUNT,),
+        )
+        self._categories = _as_tuple(
+            categories,
+            fallback=(DEFAULT_KPI_CATEGORY,),
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -139,8 +163,8 @@ class AggregationService:
 
         stmt = select(func.coalesce(func.sum(numeric_value), 0)).where(
             CanonicalInsightRecord.entity_name == entity_name,
-            CanonicalInsightRecord.category == CanonicalCategory.SALES,
-            CanonicalInsightRecord.metric_name == self._metric_revenue,
+            CanonicalInsightRecord.category.in_(self._categories),
+            CanonicalInsightRecord.metric_name.in_(self._metric_revenue),
             CanonicalInsightRecord.timestamp >= start_date,
             CanonicalInsightRecord.timestamp <= end_date,
         )
@@ -188,8 +212,8 @@ class AggregationService:
             select(CanonicalInsightRecord.metric_value)
             .where(
                 CanonicalInsightRecord.entity_name == entity_name,
-                CanonicalInsightRecord.category == CanonicalCategory.SALES,
-                CanonicalInsightRecord.metric_name == self._metric_active,
+                CanonicalInsightRecord.category.in_(self._categories),
+                CanonicalInsightRecord.metric_name.in_(self._metric_active),
                 CanonicalInsightRecord.timestamp <= start_date,
             )
             .order_by(CanonicalInsightRecord.timestamp.desc())
@@ -237,8 +261,8 @@ class AggregationService:
 
         stmt = select(func.coalesce(func.sum(numeric_value), 0)).where(
             CanonicalInsightRecord.entity_name == entity_name,
-            CanonicalInsightRecord.category == CanonicalCategory.SALES,
-            CanonicalInsightRecord.metric_name == self._metric_churned,
+            CanonicalInsightRecord.category.in_(self._categories),
+            CanonicalInsightRecord.metric_name.in_(self._metric_churned),
             CanonicalInsightRecord.timestamp >= start_date,
             CanonicalInsightRecord.timestamp <= end_date,
         )
@@ -349,8 +373,8 @@ class AggregationService:
             select(CanonicalInsightRecord.metric_value)
             .where(
                 CanonicalInsightRecord.entity_name == entity_name,
-                CanonicalInsightRecord.category == CanonicalCategory.SALES,
-                CanonicalInsightRecord.metric_name == self._metric_revenue,
+                CanonicalInsightRecord.category.in_(self._categories),
+                CanonicalInsightRecord.metric_name.in_(self._metric_revenue),
                 CanonicalInsightRecord.timestamp >= start_date,
                 CanonicalInsightRecord.timestamp <= end_date,
             )

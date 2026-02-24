@@ -222,6 +222,8 @@ class IngestionOrchestratorService:
                                 "column": error.column,
                                 "message": error.message,
                                 "value": error.value,
+                                "code": error.code,
+                                "context": error.context,
                             }
                             for error in summary.validation_errors[:100]
                         ],

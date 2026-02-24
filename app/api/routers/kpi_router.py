@@ -21,11 +21,6 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.services.csv_ingestion_service import (
-    _PRIMARY_METRIC_BY_BUSINESS_TYPE,
-    _build_segmentation_records,
-    _extract_primary_metric_values,
-)
 from app.services.kpi_orchestrator import (
     KPIOrchestrator,
     KPIRunResult,
@@ -40,6 +35,44 @@ from risk.orchestrator import RiskOrchestrator
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["kpi"])
+
+# ---------------------------------------------------------------------------
+# Analytics helpers (formerly in csv_ingestion_service)
+# ---------------------------------------------------------------------------
+
+_PRIMARY_METRIC_BY_BUSINESS_TYPE: dict[str, str] = {
+    "saas": "mrr",
+    "ecommerce": "revenue",
+    "agency": "total_revenue",
+}
+
+
+def _extract_primary_metric_values(
+    kpi_result: KPIRunResult | None,
+    metric_name: str,
+) -> list[float]:
+    """Return a single-element list from the named KPI metric value."""
+    if kpi_result is None:
+        return []
+    entry = kpi_result.metrics.get(metric_name, {})
+    value = entry.get("value")
+    if not isinstance(value, (int, float)):
+        return []
+    return [float(value)]
+
+
+def _build_segmentation_records(
+    kpi_result: KPIRunResult | None,
+) -> list[dict]:
+    """Build a flat metric record list from a KPI result for segmentation."""
+    if kpi_result is None:
+        return []
+    flat: dict = {}
+    for name, entry in kpi_result.metrics.items():
+        value = entry.get("value")
+        if isinstance(value, (int, float)):
+            flat[name] = float(value)
+    return [flat] if flat else []
 
 
 # ---------------------------------------------------------------------------

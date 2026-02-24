@@ -41,30 +41,38 @@ def normalize_signals(
     ValueError
         If any required signal cannot be extracted or derived.
     """
-    kpi_series = _extract_kpi_series(kpi_payload)
-    forecast_rows = _extract_forecast_rows(forecast_payload)
+    kpi_signals = normalize_kpi_signals(kpi_payload)
+    forecast_signals = normalize_forecast_signals(forecast_payload)
 
-    revenue_growth_delta = _derive_revenue_growth_delta(kpi_series)
-    churn_delta = _derive_churn_delta(kpi_series)
-    conversion_delta = _derive_conversion_delta(kpi_series)
-
-    slope = _extract_forecast_signal(forecast_rows, "slope")
-    deviation_percentage = _extract_forecast_signal(
-        forecast_rows,
-        "deviation_percentage",
-    )
     signals: SignalDict = {
-        "revenue_growth_delta": revenue_growth_delta,
-        "churn_delta": churn_delta,
-        "conversion_delta": conversion_delta,
-        "slope": slope,
-        "deviation_percentage": deviation_percentage,
+        **kpi_signals,
+        **forecast_signals,
     }
     _validate_required_signals(signals)
-
-    signals["churn_acceleration"] = _derive_churn_acceleration(forecast_rows)
-
     return signals
+
+
+def normalize_kpi_signals(kpi_payload: dict) -> SignalDict:
+    """Normalize only KPI-derived flat signals."""
+    kpi_series = _extract_kpi_series(kpi_payload)
+    return {
+        "revenue_growth_delta": _derive_revenue_growth_delta(kpi_series),
+        "churn_delta": _derive_churn_delta(kpi_series),
+        "conversion_delta": _derive_conversion_delta(kpi_series),
+    }
+
+
+def normalize_forecast_signals(forecast_payload: dict) -> SignalDict:
+    """Normalize only forecast-derived flat signals."""
+    forecast_rows = _extract_forecast_rows(forecast_payload)
+    return {
+        "slope": _extract_forecast_signal(forecast_rows, "slope"),
+        "deviation_percentage": _extract_forecast_signal(
+            forecast_rows,
+            "deviation_percentage",
+        ),
+        "churn_acceleration": _derive_churn_acceleration(forecast_rows),
+    }
 
 
 def _validate_required_signals(signals: dict[str, Any]) -> None:

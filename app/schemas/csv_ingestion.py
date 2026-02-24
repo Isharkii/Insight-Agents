@@ -18,6 +18,8 @@ class CSVValidationErrorResponse(BaseModel):
     message: str
     column: str | None = None
     value: str | None = None
+    code: str | None = None
+    context: dict[str, object] | None = None
 
 
 class CSVIngestionSummaryResponse(BaseModel):

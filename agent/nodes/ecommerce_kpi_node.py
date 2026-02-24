@@ -13,6 +13,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from agent.nodes.node_result import failed, skipped, success
 from agent.state import AgentState
 from db.repositories.kpi_repository import KPIRepository
 from db.session import SessionLocal
@@ -82,22 +83,27 @@ def ecommerce_kpi_fetch_node(state: AgentState) -> AgentState:
             )
             records = [_serialize_row(r) for r in rows]
 
-        ecommerce_kpi_data: dict[str, Any] = {
+        payload: dict[str, Any] = {
             "records": records,
             "fetched_for": entity_name,
             "period_start": period_start.isoformat(),
             "period_end": period_end.isoformat(),
             "metrics": sorted(_ECOMMERCE_METRICS),
         }
+        if records:
+            ecommerce_kpi_data = success(payload)
+        else:
+            ecommerce_kpi_data = skipped("no_kpi_records", payload)
 
     except Exception as exc:  # noqa: BLE001
-        ecommerce_kpi_data = {
-            "records": [],
+        ecommerce_kpi_data = failed(
+            str(exc),
+            {
             "fetched_for": entity_name,
             "period_start": period_start.isoformat(),
             "period_end": period_end.isoformat(),
             "metrics": sorted(_ECOMMERCE_METRICS),
-            "error": str(exc),
-        }
+            },
+        )
 
     return {**state, "ecommerce_kpi_data": ecommerce_kpi_data}

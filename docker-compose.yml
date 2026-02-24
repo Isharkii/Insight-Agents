@@ -4,6 +4,8 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: insight_backend
+    # DEV: --reload watches for file changes via bind mounts
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     env_file:
       - path: .env
         required: false
@@ -89,6 +91,14 @@ services:
     restart: unless-stopped
     volumes:
       - backend_uploads:/app/data/uploads
+      # DEV: bind-mount source so code changes apply without rebuild
+      - ./app:/app/app
+      - ./agent:/app/agent
+      - ./db:/app/db
+      - ./llm_synthesis:/app/llm_synthesis
+      - ./config:/app/config
+      - ./alembic:/app/alembic
+      - ./scripts:/app/scripts
     networks:
       - insight_net
 
@@ -120,7 +130,7 @@ services:
       dockerfile: Dockerfile.frontend
     container_name: insight_frontend
     environment:
-      API_BASE_URL: ${API_BASE_URL:-http://backend:8000}
+      API_BASE_URL: ${FRONTEND_API_BASE_URL:-http://backend:8000}
     ports:
       - "${FRONTEND_PORT:-8501}:8501"
     depends_on:
@@ -132,6 +142,11 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+    volumes:
+      # DEV: bind-mount so frontend changes apply without rebuild
+      - ./streamlit_app.py:/app/streamlit_app.py
+      - ./llm_synthesis:/app/llm_synthesis
+      - ./config:/app/config
     restart: unless-stopped
     networks:
       - insight_net

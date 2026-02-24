@@ -25,4 +25,5 @@ class AgentState(TypedDict):
     root_cause: Optional[dict]
     segmentation: Optional[dict]
     prioritization: Optional[dict]
+    pipeline_status: Optional[str]
     final_response: Optional[str]

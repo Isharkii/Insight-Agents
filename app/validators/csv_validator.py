@@ -2,6 +2,9 @@
 app/validators/csv_validator.py
 
 Row-level validation and type parsing for CSV ingestion.
+
+Category is accepted as any non-empty string — no hardcoded allowlist.
+Source type is still validated (csv, api, scrape are structural constants).
 """
 
 from __future__ import annotations
@@ -11,16 +14,11 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping
 
-from app.domain.canonical_insight import CanonicalInsightInput, RowValidationError
-from db.models.canonical_insight_record import CanonicalCategory, CanonicalSourceType
+from dateutil import parser as date_parser
+from dateutil.parser import ParserError
 
-TIMESTAMP_FORMATS: tuple[str, ...] = (
-    "%Y-%m-%d",
-    "%Y/%m/%d",
-    "%m/%d/%Y",
-    "%Y-%m-%d %H:%M:%S",
-    "%Y/%m/%d %H:%M:%S",
-)
+from app.domain.canonical_insight import CanonicalInsightInput, RowValidationError
+from db.models.canonical_insight_record import CanonicalSourceType
 
 ALLOWED_SOURCE_TYPES = {
     CanonicalSourceType.CSV,
@@ -28,13 +26,24 @@ ALLOWED_SOURCE_TYPES = {
     CanonicalSourceType.SCRAPE,
 }
 
-ALLOWED_CATEGORIES = {
-    CanonicalCategory.SALES,
-    CanonicalCategory.MARKETING,
-    CanonicalCategory.PRICING,
-    CanonicalCategory.EVENT,
-    CanonicalCategory.MACRO,
-}
+TIMESTAMP_REQUIRED_CATEGORIES: frozenset[str] = frozenset(
+    {"saas", "financial_market", "generic_timeseries"}
+)
+
+
+def normalize_category(value: str | None) -> str:
+    return str(value or "").strip().lower()
+
+
+def category_requires_timestamp(category: str | None) -> bool:
+    return normalize_category(category) in TIMESTAMP_REQUIRED_CATEGORIES
+
+
+def parse_timestamp_with_dateutil(value: str) -> datetime:
+    parsed = date_parser.parse(value)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 class CSVRowValidator:
@@ -61,12 +70,7 @@ class CSVRowValidator:
 
         errors: list[RowValidationError] = []
 
-        source_type_raw = self._parse_required_string(
-            value=mapped_row.get("source_type"),
-            row_number=row_number,
-            column="source_type",
-            errors=errors,
-        )
+        source_type_raw = self._parse_optional_string(mapped_row.get("source_type")) or CanonicalSourceType.CSV
         entity_name = self._parse_required_string(
             value=mapped_row.get("entity_name"),
             row_number=row_number,
@@ -85,25 +89,24 @@ class CSVRowValidator:
             column="metric_name",
             errors=errors,
         )
+        role = self._parse_optional_string(mapped_row.get("role")) or "organization"
 
         metric_value = self._parse_metric_value(
             value=mapped_row.get("metric_value"),
             row_number=row_number,
             errors=errors,
         )
+        # Category: normalize to lowercase, no allowlist check.
+        category = normalize_category(category_raw)
         timestamp = self._parse_timestamp(
             value=mapped_row.get("timestamp"),
+            category=category,
             row_number=row_number,
             errors=errors,
         )
 
         source_type = self._validate_source_type(
             source_type=source_type_raw,
-            row_number=row_number,
-            errors=errors,
-        )
-        category = self._validate_category(
-            category=category_raw,
             row_number=row_number,
             errors=errors,
         )
@@ -123,6 +126,7 @@ class CSVRowValidator:
                 source_type=source_type,
                 entity_name=entity_name,
                 category=category,
+                role=role,
                 metric_name=metric_name,
                 metric_value=metric_value,
                 timestamp=timestamp,
@@ -140,42 +144,11 @@ class CSVRowValidator:
         errors: list[RowValidationError],
     ) -> str:
         if source_type is None:
-            return ""
+            return CanonicalSourceType.CSV
 
         normalized = source_type.strip().lower()
         if normalized not in ALLOWED_SOURCE_TYPES:
-            allowed = ", ".join(sorted(ALLOWED_SOURCE_TYPES))
-            errors.append(
-                RowValidationError(
-                    row_number=row_number,
-                    column="source_type",
-                    message=f"Unsupported source_type. Allowed values: {allowed}.",
-                    value=self._stringify_value(source_type),
-                )
-            )
-        return normalized
-
-    def _validate_category(
-        self,
-        *,
-        category: str | None,
-        row_number: int,
-        errors: list[RowValidationError],
-    ) -> str:
-        if category is None:
-            return ""
-
-        normalized = category.strip().lower()
-        if normalized not in ALLOWED_CATEGORIES:
-            allowed = ", ".join(sorted(ALLOWED_CATEGORIES))
-            errors.append(
-                RowValidationError(
-                    row_number=row_number,
-                    column="category",
-                    message=f"Unsupported category. Allowed values: {allowed}.",
-                    value=self._stringify_value(category),
-                )
-            )
+            return CanonicalSourceType.CSV
         return normalized
 
     def _parse_required_string(
@@ -191,8 +164,10 @@ class CSVRowValidator:
                 RowValidationError(
                     row_number=row_number,
                     column=column,
+                    code="required_value_missing",
                     message="Required value is missing.",
                     value=self._stringify_value(value),
+                    context={"field": column},
                 )
             )
             return ""
@@ -215,8 +190,10 @@ class CSVRowValidator:
                 RowValidationError(
                     row_number=row_number,
                     column="metric_value",
+                    code="required_value_missing",
                     message="Required value is missing.",
                     value=self._stringify_value(value),
+                    context={"field": "metric_value"},
                 )
             )
             return None
@@ -247,6 +224,7 @@ class CSVRowValidator:
                     RowValidationError(
                         row_number=row_number,
                         column="metric_value",
+                        code="metric_value_json_invalid",
                         message="metric_value JSON could not be parsed.",
                         value=self._stringify_value(raw_value),
                     )
@@ -259,47 +237,43 @@ class CSVRowValidator:
         self,
         *,
         value: str | None,
+        category: str | None,
         row_number: int,
         errors: list[RowValidationError],
     ) -> datetime:
-        if self._is_blank(value):
+        if self._is_blank(value) and category_requires_timestamp(category):
             errors.append(
                 RowValidationError(
                     row_number=row_number,
                     column="timestamp",
-                    message="Required value is missing.",
+                    code="timestamp_required_for_category",
+                    message="timestamp is required for this category.",
                     value=self._stringify_value(value),
+                    context={
+                        "category": normalize_category(category),
+                        "required_categories": sorted(TIMESTAMP_REQUIRED_CATEGORIES),
+                    },
                 )
             )
             return datetime.min
+        if self._is_blank(value):
+            return datetime.now(tz=timezone.utc)
 
         raw = str(value).strip()
-
-        normalized = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
         try:
-            parsed = datetime.fromisoformat(normalized)
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
-            return parsed
-        except ValueError:
-            pass
-
-        for fmt in TIMESTAMP_FORMATS:
-            try:
-                parsed = datetime.strptime(raw, fmt)
-                return parsed.replace(tzinfo=timezone.utc)
-            except ValueError:
-                continue
-
-        errors.append(
-            RowValidationError(
-                row_number=row_number,
-                column="timestamp",
-                message="Invalid date/time format.",
-                value=self._stringify_value(raw),
+            return parse_timestamp_with_dateutil(raw)
+        except (ParserError, OverflowError, TypeError, ValueError):
+            errors.append(
+                RowValidationError(
+                    row_number=row_number,
+                    column="timestamp",
+                    code="timestamp_invalid_format",
+                    message="Invalid date/time format.",
+                    value=self._stringify_value(raw),
+                    context={"category": normalize_category(category)},
+                )
             )
-        )
-        return datetime.min
+            return datetime.min
 
     def _parse_optional_metadata_json(
         self,
@@ -319,6 +293,7 @@ class CSVRowValidator:
                 RowValidationError(
                     row_number=row_number,
                     column="metadata_json",
+                    code="metadata_json_invalid_json",
                     message="metadata_json must be valid JSON object.",
                     value=self._stringify_value(raw),
                 )
@@ -330,6 +305,7 @@ class CSVRowValidator:
                 RowValidationError(
                     row_number=row_number,
                     column="metadata_json",
+                    code="metadata_json_not_object",
                     message="metadata_json must be a JSON object.",
                     value=self._stringify_value(raw),
                 )

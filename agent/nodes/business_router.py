@@ -16,9 +16,25 @@ _ROUTE_MAP: dict[str, str] = {
 }
 
 
-def business_router_node(state: AgentState) -> str:
+def business_router_node(state: AgentState) -> AgentState:
     """
-    LangGraph conditional edge function: resolve the next node name
+    LangGraph node: pass-through that preserves state.
+
+    Routing logic lives in ``route_by_business_type`` which is used
+    as the condition function for ``add_conditional_edges``.
+
+    Args:
+        state: Current agent state.
+
+    Returns:
+        The unchanged state dictionary.
+    """
+    return state
+
+
+def route_by_business_type(state: AgentState) -> str:
+    """
+    LangGraph conditional-edge function: resolve the next node name
     from state.business_type.
 
     Args:
@@ -27,17 +43,12 @@ def business_router_node(state: AgentState) -> str:
     Returns:
         One of "saas_kpi_fetch", "ecommerce_kpi_fetch", "agency_kpi_fetch".
 
-    Raises:
-        ValueError: If state.business_type is not a supported value.
+    Unsupported values fall back to the SaaS branch to keep the graph
+    non-throwing.
     """
     business_type: str = str(state.get("business_type", "")).lower()
     route: str | None = _ROUTE_MAP.get(business_type)
-
     if route is None:
-        supported = ", ".join(f'"{k}"' for k in _ROUTE_MAP)
-        raise ValueError(
-            f"Unsupported business_type '{business_type}'. "
-            f"Supported values: {supported}."
-        )
-
+        # Non-throwing fallback keeps graph execution resilient.
+        return "saas_kpi_fetch"
     return route

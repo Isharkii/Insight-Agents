@@ -72,7 +72,7 @@ class TestSchemaMapper(unittest.TestCase):
             "entity_name",
             "category",
             "metric_name",
-            "metric_value",
+            "timestamp",
         ]
 
         with self.assertRaises(SchemaMappingError) as ctx:
@@ -83,7 +83,7 @@ class TestSchemaMapper(unittest.TestCase):
             for error in ctx.exception.errors
             if error.code == "required_field_unmapped"
         ]
-        self.assertIn("timestamp", missing)
+        self.assertIn("metric_value", missing)
 
     def test_uses_db_mapping_config_overrides(self) -> None:
         headers = ["src", "company", "kind", "signal", "value_col", "captured_on"]

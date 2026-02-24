@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent.nodes.node_result import payload_of
 from agent.state import AgentState
 
 _SEVERITY_RANK: dict[str, int] = {
@@ -83,8 +84,8 @@ def prioritization_node(state: AgentState) -> AgentState:
             "recommended_focus": str,
         }
     """
-    risk_data: dict[str, Any] = state.get("risk_data") or {}
-    root_cause: dict[str, Any] = state.get("root_cause") or {}
+    risk_data: dict[str, Any] = payload_of(state.get("risk_data")) or {}
+    root_cause: dict[str, Any] = payload_of(state.get("root_cause")) or {}
 
     risk_score = max(0.0, min(100.0, _safe_float(risk_data.get("risk_score"))))
     root_severity = _normalize_severity(root_cause.get("severity"))

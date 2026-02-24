@@ -11,9 +11,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent.nodes.node_result import failed, skipped, success
 from agent.state import AgentState
-from forecast.repository import ForecastRepository
 from db.session import SessionLocal
+from forecast.repository import ForecastRepository
 
 # ---------------------------------------------------------------------------
 # Metric sets per business type
@@ -88,18 +89,24 @@ def forecast_fetch_node(state: AgentState) -> AgentState:
                 )
                 forecasts[metric] = _serialize_row(row) if row else None
 
-        forecast_data: dict[str, Any] = {
+        payload: dict[str, Any] = {
             "forecasts": forecasts,
             "fetched_for": entity_name,
             "metrics_queried": metrics,
         }
+        has_any_forecast = any(row is not None for row in forecasts.values())
+        if has_any_forecast:
+            forecast_data = success(payload)
+        else:
+            forecast_data = skipped("no_forecast_records", payload)
 
     except Exception as exc:  # noqa: BLE001
-        forecast_data = {
-            "forecasts": {},
+        forecast_data = failed(
+            str(exc),
+            {
             "fetched_for": entity_name,
             "metrics_queried": metrics,
-            "error": str(exc),
-        }
+            },
+        )
 
     return {**state, "forecast_data": forecast_data}

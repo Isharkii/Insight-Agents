@@ -43,6 +43,7 @@ division-by-zero guards produce ``None`` values rather than raising.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 import uuid
@@ -54,6 +55,11 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.services.aggregation_service import AggregationService
+from app.services.canonical_validation import validate_canonical_inputs_for_kpi
+from app.services.kpi_canonical_schema import (
+    category_aliases_for_business_type,
+    metric_aliases_for_business_type,
+)
 from db.models.computed_kpi import ComputedKPI
 from db.repositories.kpi_repository import KPIRepository
 from kpi.agency import AgencyKPIFormula
@@ -105,6 +111,16 @@ class KPIAggregationError(RuntimeError):
 
     The session is left in a clean state (no partial writes occurred).
     """
+
+
+class KPICanonicalValidationError(KPIAggregationError):
+    """
+    Raised when canonical records fail pre-aggregation integrity validation.
+    """
+
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self.payload = payload
+        super().__init__(json.dumps(payload))
 
 
 class KPIPersistenceError(RuntimeError):
@@ -254,7 +270,28 @@ class KPIOrchestrator:
             period_end.isoformat(),
         )
 
-        # Step 3 – derive previous period
+        # Step 3 – validate canonical integrity before aggregation
+        canonical_validation = validate_canonical_inputs_for_kpi(
+            db=db,
+            entity_name=entity_name,
+            business_type=business_type,
+            period_start=period_start,
+            period_end=period_end,
+        )
+        if not canonical_validation.is_valid:
+            payload = canonical_validation.error_payload or {
+                "error_type": "canonical_validation_failed",
+                "missing_metrics": canonical_validation.missing_metrics,
+            }
+            logger.warning(
+                "KPI canonical validation failed entity=%r business_type=%r missing_metrics=%s",
+                entity_name,
+                business_type,
+                payload.get("missing_metrics"),
+            )
+            raise KPICanonicalValidationError(payload)
+
+        # Step 4 – derive previous period
         prev_start, prev_end = _previous_period(period_start, period_end)
         logger.debug(
             "Previous period derived: [%s, %s]",
@@ -262,9 +299,10 @@ class KPIOrchestrator:
             prev_end.isoformat(),
         )
 
-        # Step 4 – aggregate DB inputs
+        # Step 5 – aggregate DB inputs
         agg_inputs = self._aggregate(
             entity_name=entity_name,
+            business_type=business_type,
             period_start=period_start,
             period_end=period_end,
             prev_period_start=prev_start,
@@ -272,14 +310,14 @@ class KPIOrchestrator:
             db=db,
         )
 
-        # Step 5 – compute KPIs via the selected formula
+        # Step 6 – compute KPIs via the selected formula
         metrics = self._compute(
             business_type=business_type,
             agg_inputs=agg_inputs,
             extra_inputs=extra_inputs or {},
         )
 
-        # Step 6 – serialise
+        # Step 7 – serialise
         payload = _build_payload(metrics)
         has_errors = any(v.get("error") is not None for v in payload.values())
         if has_errors:
@@ -291,7 +329,7 @@ class KPIOrchestrator:
                 business_type,
             )
 
-        # Step 7 & 8 – persist and commit
+        # Step 8 & 9 – persist and commit
         record = self._persist(
             entity_name=entity_name,
             period_start=period_start,
@@ -333,6 +371,7 @@ class KPIOrchestrator:
         self,
         *,
         entity_name: str,
+        business_type: str,
         period_start: datetime,
         period_end: datetime,
         prev_period_start: datetime,
@@ -347,7 +386,14 @@ class KPIOrchestrator:
         KPIAggregationError
             Wraps any ``SQLAlchemyError`` raised by the aggregation layer.
         """
-        agg = AggregationService(db)
+        metric_aliases = metric_aliases_for_business_type(business_type)
+        agg = AggregationService(
+            db,
+            metric_recurring_revenue=metric_aliases["recurring_revenue"],
+            metric_active_customer_count=metric_aliases["active_customer_count"],
+            metric_churned_customer_count=metric_aliases["churned_customer_count"],
+            categories=category_aliases_for_business_type(business_type),
+        )
 
         try:
             t0 = time.monotonic()

@@ -12,6 +12,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from agent.nodes.node_result import failed, skipped, success
 from agent.state import AgentState
 from db.repositories.kpi_repository import KPIRepository
 from db.session import SessionLocal
@@ -64,20 +65,25 @@ def kpi_fetch_node(state: AgentState) -> AgentState:
             )
             records = [_serialize_row(r) for r in rows]
 
-        kpi_data: dict[str, Any] = {
+        payload: dict[str, Any] = {
             "records": records,
             "fetched_for": entity_name,
             "period_start": period_start.isoformat(),
             "period_end": period_end.isoformat(),
         }
+        if records:
+            kpi_data = success(payload)
+        else:
+            kpi_data = skipped("no_kpi_records", payload)
 
     except Exception as exc:  # noqa: BLE001
-        kpi_data = {
-            "records": [],
+        kpi_data = failed(
+            str(exc),
+            {
             "fetched_for": entity_name,
             "period_start": period_start.isoformat(),
             "period_end": period_end.isoformat(),
-            "error": str(exc),
-        }
+            },
+        )
 
     return {**state, "kpi_data": kpi_data}

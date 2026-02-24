@@ -54,6 +54,11 @@ class CanonicalInsightRecord(Base):
         nullable=False,
         comment="sales, marketing, pricing, event, macro",
     )
+    role: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        comment="Performance role context (e.g., organization, team, rep)",
+    )
     metric_name: Mapped[str] = mapped_column(String(120), nullable=False)
     metric_value: Mapped[Any] = mapped_column(
         JSONB,
@@ -85,6 +90,7 @@ class CanonicalInsightRecord(Base):
         Index("ix_canonical_insight_records_source_type", "source_type"),
         Index("ix_canonical_insight_records_entity_name", "entity_name"),
         Index("ix_canonical_insight_records_category", "category"),
+        Index("ix_canonical_insight_records_role", "role"),
         Index("ix_canonical_insight_records_metric_name", "metric_name"),
         Index("ix_canonical_insight_records_timestamp", "timestamp"),
         Index("ix_canonical_insight_records_region", "region"),

@@ -39,10 +39,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from llm_synthesis.schema import FinalInsightResponse
-from app.services.csv_ingestion_service import (
-    _PRIMARY_METRIC_BY_BUSINESS_TYPE,
-    _extract_primary_metric_values,
-)
 from app.services.kpi_orchestrator import KPIOrchestrator, KPIRunResult
 from db.models.client import Client
 from db.models.computed_kpi import ComputedKPI
@@ -54,6 +50,26 @@ from risk.orchestrator import RiskOrchestrator
 logger = logging.getLogger(__name__)
 
 _VALID_BUSINESS_TYPES: frozenset[str] = frozenset({"saas", "ecommerce", "agency"})
+
+_PRIMARY_METRIC_BY_BUSINESS_TYPE: dict[str, str] = {
+    "saas": "mrr",
+    "ecommerce": "revenue",
+    "agency": "total_revenue",
+}
+
+
+def _extract_primary_metric_values(
+    kpi_result: KPIRunResult | None,
+    metric_name: str,
+) -> list[float]:
+    """Return a single-element list from the named KPI metric value."""
+    if kpi_result is None:
+        return []
+    entry = kpi_result.metrics.get(metric_name, {})
+    value = entry.get("value")
+    if not isinstance(value, (int, float)):
+        return []
+    return [float(value)]
 
 
 def _job_success(stage_name: str) -> FinalInsightResponse:

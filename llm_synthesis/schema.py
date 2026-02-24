@@ -20,9 +20,14 @@ class InsightOutput(BaseModel):
     recommended_action: str = Field(min_length=1)
     priority: Literal["low", "medium", "high", "critical"]
     confidence_score: float = Field(strict=True, ge=0.0, le=1.0)
+    pipeline_status: Literal["success", "partial", "failed"] = "partial"
 
     @classmethod
-    def failure(cls, reason: str) -> "InsightOutput":
+    def failure(
+        cls,
+        reason: str,
+        pipeline_status: Literal["success", "partial", "failed"] = "failed",
+    ) -> "InsightOutput":
         return cls(
             insight="Analysis incomplete",
             evidence=reason,
@@ -30,6 +35,7 @@ class InsightOutput(BaseModel):
             recommended_action="Investigate upstream data or signal pipeline.",
             priority="high",
             confidence_score=0.0,
+            pipeline_status=pipeline_status,
         )
 
 

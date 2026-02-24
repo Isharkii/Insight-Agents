@@ -2,63 +2,34 @@
 app/mappers/schema_mapper.py
 
 Dynamic schema mapping engine for CSV-to-canonical mapping.
+
+Delegates fuzzy matching to rapidfuzz (via canonical_mapper utilities)
+and adds mapping_config DB integration, override merging, and
+MappingValidator enforcement on top.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from difflib import SequenceMatcher
 from typing import Any, Mapping, Sequence
 
+from rapidfuzz import fuzz, process
+
 from app.domain.canonical_insight import CanonicalInsightInput
+from app.mappers.canonical_mapper import (
+    CANONICAL_FIELDS,
+    CATEGORY_AWARE_ALIASES,
+    DEFAULT_COLUMN_ALIASES,
+    REQUIRED_CANONICAL_FIELDS,
+    normalize_header,
+)
 from app.validators.mapping_validator import MappingErrorDetail, MappingValidator, SchemaMappingError
 from db.models.canonical_insight_record import CanonicalInsightRecord
-
-CANONICAL_FIELDS: tuple[str, ...] = (
-    "source_type",
-    "entity_name",
-    "category",
-    "metric_name",
-    "metric_value",
-    "timestamp",
-    "region",
-    "metadata_json",
-)
-
-REQUIRED_CANONICAL_FIELDS: tuple[str, ...] = (
-    "source_type",
-    "entity_name",
-    "category",
-    "metric_name",
-    "metric_value",
-    "timestamp",
-)
-
-DEFAULT_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
-    "source_type": ("source", "source kind", "source_kind", "input_source"),
-    "entity_name": ("entity", "company", "client", "competitor", "account_name"),
-    "category": ("insight_category", "metric_category", "domain", "topic"),
-    "metric_name": ("metric", "kpi", "measure_name", "metric_key"),
-    "metric_value": ("value", "metric_amount", "measure_value", "kpi_value"),
-    "timestamp": ("date", "datetime", "event_time", "measured_at", "recorded_at"),
-    "region": ("geo", "geography", "country", "market_region", "location"),
-    "metadata_json": ("metadata", "meta", "context_json", "attributes"),
-}
-
-
-def normalize_header(header: str) -> str:
-    """
-    Normalize a column name for flexible matching.
-    """
-
-    return "".join(ch for ch in header.strip().lower() if ch.isalnum())
 
 
 @dataclass(frozen=True)
 class MappingResolution:
-    """
-    Final resolved mapping metadata.
-    """
+    """Final resolved mapping metadata."""
 
     canonical_to_source: dict[str, str]
     source_headers: tuple[str, ...]
@@ -69,6 +40,11 @@ class MappingResolution:
 class SchemaMapper:
     """
     Resolves source CSV schemas into canonical field mappings.
+
+    Resolution order per canonical field:
+      1. Manual / DB-config overrides
+      2. Exact normalized match (field name + static aliases + category aliases)
+      3. Fuzzy match (rapidfuzz token_sort_ratio + partial_ratio)
     """
 
     def __init__(
@@ -76,7 +52,8 @@ class SchemaMapper:
         *,
         aliases: Mapping[str, Sequence[str]] | None = None,
         validator: MappingValidator | None = None,
-        fuzzy_threshold: float = 0.84,
+        fuzzy_threshold: float = 80.0,
+        category_hint: str | None = None,
     ) -> None:
         self._aliases: dict[str, tuple[str, ...]] = {
             canonical: tuple(values)
@@ -86,7 +63,8 @@ class SchemaMapper:
             required_fields=REQUIRED_CANONICAL_FIELDS,
             canonical_fields=CANONICAL_FIELDS,
         )
-        self._fuzzy_threshold = max(0.0, min(1.0, fuzzy_threshold))
+        self._fuzzy_threshold = max(0.0, min(100.0, fuzzy_threshold))
+        self._category_hint = category_hint
 
     def resolve_mapping(
         self,
@@ -94,11 +72,18 @@ class SchemaMapper:
         *,
         manual_overrides: Mapping[str, str] | None = None,
         mapping_config: Any | None = None,
+        category_hint: str | None = None,
     ) -> MappingResolution:
         """
         Resolve canonical-to-source mapping from headers, overrides, and DB config.
-        """
 
+        Args:
+            headers:          Raw CSV column headers.
+            manual_overrides: Explicit canonical→source column overrides.
+            mapping_config:   DB MappingConfig object (has field_mapping_json,
+                              alias_overrides_json).
+            category_hint:    Business category to activate domain-specific aliases.
+        """
         source_headers = tuple(header for header in headers if header and header.strip())
         normalized_header_lookup: dict[str, str] = {
             normalize_header(header): header
@@ -125,6 +110,7 @@ class SchemaMapper:
         strategies: dict[str, str] = {}
         mapping_errors: list[MappingErrorDetail] = []
 
+        # Phase 0: Apply explicit overrides
         for canonical_field, source_column in overrides.items():
             normalized_canonical = canonical_field.strip()
             if normalized_canonical not in CANONICAL_FIELDS:
@@ -154,26 +140,35 @@ class SchemaMapper:
             resolved[normalized_canonical] = matched_source
             strategies[normalized_canonical] = "override"
 
+        # Resolve category hint (parameter > constructor > None)
+        active_category = (category_hint or self._category_hint or "").strip().lower() or None
+
         used_headers = set(resolved.values())
         for canonical_field in CANONICAL_FIELDS:
             if canonical_field in resolved:
                 continue
 
-            exact = self._find_exact_or_alias_match(
-                canonical_field=canonical_field,
-                normalized_header_lookup=normalized_header_lookup,
+            candidates = self._build_candidates(
+                canonical_field, mapping_config, active_category
             )
-            if exact is not None and exact not in used_headers:
+
+            # Phase 1: Exact/alias match
+            exact = self._find_exact_or_alias_match(
+                candidates=candidates,
+                normalized_header_lookup=normalized_header_lookup,
+                used_headers=used_headers,
+            )
+            if exact is not None:
                 resolved[canonical_field] = exact
                 strategies[canonical_field] = "exact_or_alias"
                 used_headers.add(exact)
                 continue
 
+            # Phase 2: Fuzzy match (rapidfuzz)
             fuzzy_match = self._find_best_fuzzy_match(
-                canonical_field=canonical_field,
+                candidates=candidates,
                 normalized_header_lookup=normalized_header_lookup,
                 used_headers=used_headers,
-                mapping_config=mapping_config,
             )
             if fuzzy_match is not None:
                 resolved[canonical_field] = fuzzy_match
@@ -203,10 +198,7 @@ class SchemaMapper:
         raw_row: Mapping[str, str | None],
         mapping: MappingResolution,
     ) -> dict[str, str | None]:
-        """
-        Map one source CSV row into canonical raw field values.
-        """
-
+        """Map one source CSV row into canonical raw field values."""
         return {
             canonical_field: raw_row.get(source_column)
             for canonical_field, source_column in mapping.canonical_to_source.items()
@@ -214,14 +206,12 @@ class SchemaMapper:
 
     @staticmethod
     def to_canonical_record(value: CanonicalInsightInput) -> CanonicalInsightRecord:
-        """
-        Convert validated canonical input into a canonical record model object.
-        """
-
+        """Convert validated canonical input into a canonical record model object."""
         return CanonicalInsightRecord(
             source_type=value.source_type,
             entity_name=value.entity_name,
             category=value.category,
+            role=value.role,
             metric_name=value.metric_name,
             metric_value=value.metric_value,
             timestamp=value.timestamp,
@@ -229,52 +219,102 @@ class SchemaMapper:
             metadata_json=value.metadata_json,
         )
 
-    def _find_exact_or_alias_match(
+    # ------------------------------------------------------------------
+    # Candidate construction
+    # ------------------------------------------------------------------
+
+    def _build_candidates(
         self,
-        *,
         canonical_field: str,
+        mapping_config: Any | None,
+        category: str | None,
+    ) -> list[str]:
+        """Build ordered candidate list for one canonical field.
+
+        Order: field name → category aliases → static aliases → DB config aliases.
+        """
+        candidates: list[str] = [canonical_field]
+
+        # Category-aware aliases (highest priority after field name)
+        if category:
+            cat_fields = CATEGORY_AWARE_ALIASES.get(category, {})
+            candidates.extend(cat_fields.get(canonical_field, ()))
+
+        # Static aliases
+        candidates.extend(self._aliases.get(canonical_field, ()))
+
+        # DB mapping config alias overrides
+        candidates.extend(self._config_aliases_for_field(mapping_config, canonical_field))
+
+        return candidates
+
+    # ------------------------------------------------------------------
+    # Match strategies
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _find_exact_or_alias_match(
+        *,
+        candidates: Sequence[str],
         normalized_header_lookup: Mapping[str, str],
+        used_headers: set[str],
     ) -> str | None:
-        candidates = (
-            canonical_field,
-            *self._aliases.get(canonical_field, ()),
-        )
+        """Try exact normalized match against ordered candidate list."""
         for candidate in candidates:
             match = normalized_header_lookup.get(normalize_header(candidate))
-            if match:
+            if match is not None and match not in used_headers:
                 return match
         return None
 
     def _find_best_fuzzy_match(
         self,
         *,
-        canonical_field: str,
+        candidates: Sequence[str],
         normalized_header_lookup: Mapping[str, str],
         used_headers: set[str],
-        mapping_config: Any | None,
     ) -> str | None:
-        alias_candidates = [canonical_field, *self._aliases.get(canonical_field, ())]
-        alias_candidates.extend(self._config_aliases_for_field(mapping_config, canonical_field))
-        normalized_candidates = [normalize_header(item) for item in alias_candidates if normalize_header(item)]
+        """Find best fuzzy match using rapidfuzz.
+
+        Uses token_sort_ratio for word-order resilience and partial_ratio
+        for substring containment. Best score across both scorers wins.
+        """
+        available: dict[str, str] = {
+            norm: raw
+            for norm, raw in normalized_header_lookup.items()
+            if raw not in used_headers
+        }
+        if not available:
+            return None
+
+        normalized_candidates = [
+            normalize_header(c) for c in candidates if normalize_header(c)
+        ]
         if not normalized_candidates:
             return None
 
+        available_norms = list(available.keys())
         best_header: str | None = None
-        best_score = 0.0
-        for header_norm, header_raw in normalized_header_lookup.items():
-            if header_raw in used_headers:
-                continue
-            for candidate in normalized_candidates:
-                score = SequenceMatcher(None, header_norm, candidate).ratio()
-                if header_norm in candidate or candidate in header_norm:
-                    score = max(score, 0.9)
-                if score > best_score:
-                    best_score = score
-                    best_header = header_raw
+        best_score: float = 0.0
 
-        if best_header is not None and best_score >= self._fuzzy_threshold:
-            return best_header
-        return None
+        for candidate in normalized_candidates:
+            for scorer in (fuzz.token_sort_ratio, fuzz.partial_ratio):
+                result = process.extractOne(
+                    candidate,
+                    available_norms,
+                    scorer=scorer,
+                    score_cutoff=self._fuzzy_threshold,
+                )
+                if result is not None:
+                    match_norm, score, _ = result
+                    if score > best_score:
+                        best_score = score
+                        best_header = available[match_norm]
+
+        return best_header
+
+    # ------------------------------------------------------------------
+    # Override / config helpers
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _merge_overrides(

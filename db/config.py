@@ -61,6 +61,14 @@ def resolve_database_url() -> str:
     if app_mode is None or app_mode.strip().lower() not in ("local", "cloud"):
         raise RuntimeError("APP_MODE must be set to 'local' or 'cloud'.")
 
+    is_local = app_mode.strip().lower() == "local"
+
+    # In local mode, prefer LOCAL_DATABASE_URL over the Docker-internal DATABASE_URL.
+    if is_local:
+        local_url = os.getenv("LOCAL_DATABASE_URL")
+        if local_url:
+            return normalize_postgres_url(local_url)
+
     direct_url = os.getenv("DATABASE_URL")
     if direct_url:
         return normalize_postgres_url(direct_url)

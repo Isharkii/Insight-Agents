@@ -12,6 +12,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from agent.nodes.node_result import failed, skipped, success
 from agent.state import AgentState
 from db.repositories.kpi_repository import KPIRepository
 from db.session import SessionLocal
@@ -72,22 +73,27 @@ def saas_kpi_fetch_node(state: AgentState) -> AgentState:
                 if payload["computed_kpis"]:
                     records.append(payload)
 
-        saas_kpi_data: dict[str, Any] = {
+        payload: dict[str, Any] = {
             "records": records,
             "fetched_for": entity_name,
             "period_start": period_start.isoformat(),
             "period_end": period_end.isoformat(),
             "metrics": sorted(_SAAS_METRICS),
         }
+        if records:
+            saas_kpi_data = success(payload)
+        else:
+            saas_kpi_data = skipped("no_kpi_records", payload)
 
     except Exception as exc:  # noqa: BLE001
-        saas_kpi_data = {
-            "records": [],
+        saas_kpi_data = failed(
+            str(exc),
+            {
             "fetched_for": entity_name,
             "period_start": period_start.isoformat(),
             "period_end": period_end.isoformat(),
             "metrics": sorted(_SAAS_METRICS),
-            "error": str(exc),
-        }
+            },
+        )
 
     return {**state, "saas_kpi_data": saas_kpi_data}
