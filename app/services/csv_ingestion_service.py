@@ -38,6 +38,11 @@ from app.validators.csv_validator import (
     normalize_category,
     parse_timestamp_with_dateutil,
 )
+from app.services.category_inference import (
+    CategoryInferenceResult,
+    infer_category,
+    validate_category_match,
+)
 from app.validators.mapping_validator import MappingErrorDetail, SchemaMappingError
 from db.models.canonical_insight_record import CanonicalSourceType
 
@@ -204,8 +209,23 @@ class CSVIngestionService:
             sample_df = pd.read_csv(
                 raw_file, nrows=20, dtype=str, encoding="utf-8-sig", keep_default_na=False,
             )
+            sample_rows_raw: list[dict[str, str]] = [
+                {str(col).strip(): str(val) for col, val in row.items()}
+                for _, row in sample_df.iterrows()
+            ]
 
-            # --- Wide-to-long detection & normalisation ---
+            # Stage 1: schema interpreter/mapping on original upload shape.
+            initial_mapping = self._resolve_mapping(
+                db=db,
+                headers=headers,
+                client_name=client_name,
+                mapping_config_name=mapping_config_name,
+                manual_mapping=manual_mapping,
+                sample_rows=sample_rows_raw,
+            )
+            initial_mapping_confidence = self._mapping_confidence(initial_mapping)
+
+            # Stage 2: wide-to-long normalization.
             wide_normalizer = WideToLongNormalizer()
             wide_meta = wide_normalizer.detect(sample_df)
             wide_normalized_df: pd.DataFrame | None = None
@@ -237,7 +257,7 @@ class CSVIngestionService:
                 for _, row in sample_df.iterrows()
             ]
 
-            # --- Resolve canonical mapping ---
+            # Stage 3: resolve mapping for downstream canonical validation.
             mapping = self._resolve_mapping(
                 db=db,
                 headers=headers,
@@ -245,6 +265,25 @@ class CSVIngestionService:
                 mapping_config_name=mapping_config_name,
                 manual_mapping=manual_mapping,
                 sample_rows=sample_rows,
+            )
+            mapping_confidence = min(
+                1.0,
+                max(
+                    0.0,
+                    round(
+                        (initial_mapping_confidence + self._mapping_confidence(mapping)) / 2.0,
+                        6,
+                    ),
+                ),
+            )
+            provenance = self._build_ingestion_provenance(
+                mapping=mapping,
+                initial_mapping=initial_mapping,
+                wide_meta=wide_meta,
+                headers=headers,
+                client_name=client_name,
+                mapping_config_name=mapping_config_name,
+                upload_file=upload_file,
             )
             if "entity_name" not in mapping.canonical_to_source:
                 return self._summary_with_error(
@@ -255,6 +294,8 @@ class CSVIngestionService:
                     ),
                     column="entity_name",
                     context={"required_field": "entity_name"},
+                    confidence_score=mapping_confidence,
+                    provenance=provenance,
                 )
             if "category" not in mapping.canonical_to_source:
                 return self._summary_with_error(
@@ -265,6 +306,8 @@ class CSVIngestionService:
                     ),
                     column="category",
                     context={"required_field": "category"},
+                    confidence_score=mapping_confidence,
+                    provenance=provenance,
                 )
 
             rename_map = {v: k for k, v in mapping.canonical_to_source.items()}
@@ -292,6 +335,8 @@ class CSVIngestionService:
                     ),
                     column="entity_name",
                     context={"required_field": "entity_name"},
+                    confidence_score=mapping_confidence,
+                    provenance=provenance,
                 )
 
             detected_categories = self._detect_categories_for_mapping(
@@ -308,12 +353,34 @@ class CSVIngestionService:
                     ),
                     column="category",
                     context={"required_field": "category"},
+                    confidence_score=mapping_confidence,
+                    provenance=provenance,
                 )
+
+            # --- Category inference ---
+            detected_metrics = self._detect_distinct_values_for_mapping(
+                raw_file=raw_file,
+                usecols=usecols,
+                rename_map=rename_map,
+                canonical_field="metric_name",
+            )
+            inference_result = self._run_category_inference(
+                metric_names=detected_metrics,
+                column_names=headers,
+                row_count=self._estimate_row_count(raw_file, usecols),
+                unique_entity_count=len(detected_entities),
+                user_categories=detected_categories,
+            )
 
             if len(detected_entities) > 1 and behavior == "error":
                 return IngestionSummary(
                     rows_processed=0,
                     rows_failed=0,
+                    pipeline_status="failed",
+                    confidence_score=mapping_confidence,
+                    warnings=[],
+                    provenance=provenance,
+                    diagnostics={},
                     validation_errors=[
                         RowValidationError(
                             row_number=1,
@@ -337,6 +404,19 @@ class CSVIngestionService:
             rows_processed = 0
             rows_failed = 0
             captured_errors: list[RowValidationError] = []
+            ingestion_context = {
+                "schema_confidence": mapping_confidence,
+                "mapping_config_id": mapping.mapping_config_id,
+                "canonical_to_source": dict(mapping.canonical_to_source),
+                "match_strategies": dict(mapping.match_strategies),
+                "wide_to_long": {
+                    "applied": wide_normalized_df is not None,
+                    "periodicity": wide_meta.inferred_periodicity,
+                    "wide_columns_detected": list(wide_meta.wide_columns_detected),
+                    "dropped_rows": wide_meta.dropped_rows,
+                    "preserved_rows": wide_meta.preserved_rows,
+                },
+            }
 
             if wide_normalized_df is not None:
                 # Wide-to-long already produced a fully normalised DataFrame;
@@ -386,7 +466,9 @@ class CSVIngestionService:
                     for entity in chunk_entities:
                         entity_chunk = chunk.loc[entity_series == entity]
                         valid_inputs, n_failed = self._validate_and_normalize_chunk(
-                            entity_chunk, captured_errors
+                            entity_chunk,
+                            captured_errors,
+                            ingestion_context=ingestion_context,
                         )
                         rows_failed += n_failed
                         if valid_inputs:
@@ -397,7 +479,9 @@ class CSVIngestionService:
                     if remainder_mask.any():
                         remainder_chunk = chunk.loc[remainder_mask]
                         valid_inputs, n_failed = self._validate_and_normalize_chunk(
-                            remainder_chunk, captured_errors
+                            remainder_chunk,
+                            captured_errors,
+                            ingestion_context=ingestion_context,
                         )
                         rows_failed += n_failed
                         if valid_inputs:
@@ -406,7 +490,9 @@ class CSVIngestionService:
                             )
                 else:
                     valid_inputs, n_failed = self._validate_and_normalize_chunk(
-                        chunk, captured_errors
+                        chunk,
+                        captured_errors,
+                        ingestion_context=ingestion_context,
                     )
                     rows_failed += n_failed
 
@@ -427,10 +513,59 @@ class CSVIngestionService:
                         ),
                     )
 
+            summary_warnings = self._collect_ingestion_warnings(
+                mapping=mapping,
+                wide_meta=wide_meta,
+                validation_errors=captured_errors,
+            )
+
+            # Add category inference warnings
+            inference_warnings = validate_category_match(
+                user_category=(
+                    detected_categories[0] if len(detected_categories) == 1 else None
+                ),
+                inference_result=inference_result,
+            )
+            summary_warnings.extend(inference_warnings)
+
+            # Propagate inference confidence into dataset confidence
+            effective_confidence = mapping_confidence
+            if inference_result.status == "success":
+                effective_confidence = min(
+                    1.0,
+                    round(
+                        (mapping_confidence + inference_result.confidence_score) / 2.0,
+                        6,
+                    ),
+                )
+
+            pipeline_status = "success"
+            if rows_processed == 0:
+                pipeline_status = "failed"
+            elif rows_failed > 0 or summary_warnings:
+                pipeline_status = "partial"
+
             summary = IngestionSummary(
                 rows_processed=rows_processed,
                 rows_failed=rows_failed,
+                pipeline_status=pipeline_status,
+                confidence_score=effective_confidence,
+                warnings=summary_warnings,
+                provenance=provenance,
+                diagnostics={
+                    "mapping_confidence": mapping_confidence,
+                    "detected_entities": detected_entities,
+                    "detected_categories": detected_categories,
+                    "multi_entity_behavior": behavior,
+                    "rows_total_considered": rows_processed + rows_failed,
+                    "wide_to_long_applied": wide_normalized_df is not None,
+                },
                 validation_errors=captured_errors,
+                inferred_category=inference_result.inferred_category,
+                category_confidence=inference_result.confidence_score,
+                category_inference_status=inference_result.status,
+                category_inference_evidence=inference_result.evidence,
+                category_alternatives=inference_result.alternative_candidates,
             )
             if summary.rows_processed == 0:
                 no_valid_error = RowValidationError(
@@ -448,6 +583,11 @@ class CSVIngestionService:
                 return IngestionSummary(
                     rows_processed=0,
                     rows_failed=summary.rows_failed,
+                    pipeline_status="failed",
+                    confidence_score=summary.confidence_score,
+                    warnings=summary.warnings,
+                    provenance=summary.provenance,
+                    diagnostics=summary.diagnostics,
                     validation_errors=[*summary.validation_errors, no_valid_error],
                 )
             return summary
@@ -538,6 +678,8 @@ class CSVIngestionService:
         self,
         chunk: pd.DataFrame,
         captured_errors: list[RowValidationError],
+        *,
+        ingestion_context: Mapping[str, Any] | None = None,
     ) -> tuple[list[CanonicalInsightInput], int]:
         """Validate and normalize one DataFrame chunk.
 
@@ -714,7 +856,12 @@ class CSVIngestionService:
         if valid_idx.empty:
             return [], n_failed
 
-        return self._build_inputs(stripped, ts_parsed, valid_idx), n_failed
+        return self._build_inputs(
+            stripped,
+            ts_parsed,
+            valid_idx,
+            ingestion_context=ingestion_context,
+        ), n_failed
 
     # ------------------------------------------------------------------
     # Record construction from validated chunk
@@ -725,6 +872,8 @@ class CSVIngestionService:
         stripped: pd.DataFrame,
         ts_parsed: pd.Series,
         valid_idx: pd.Index,
+        *,
+        ingestion_context: Mapping[str, Any] | None = None,
     ) -> list[CanonicalInsightInput]:
         """Construct CanonicalInsightInput list from validated rows."""
         s = stripped.loc[valid_idx]
@@ -781,6 +930,22 @@ class CSVIngestionService:
             md = metadata_json.at[idx]
             if isinstance(md, float) and not isinstance(md, bool):
                 md = None
+            if not isinstance(md, dict):
+                md = {} if md is None else {"raw_metadata": md}
+            if ingestion_context:
+                existing_ingestion = md.get("_ingestion")
+                if not isinstance(existing_ingestion, dict):
+                    existing_ingestion = {}
+                existing_ingestion.update(
+                    {
+                        "schema_confidence": ingestion_context.get("schema_confidence"),
+                        "mapping_config_id": ingestion_context.get("mapping_config_id"),
+                        "canonical_to_source": ingestion_context.get("canonical_to_source"),
+                        "match_strategies": ingestion_context.get("match_strategies"),
+                        "wide_to_long": ingestion_context.get("wide_to_long"),
+                    }
+                )
+                md["_ingestion"] = existing_ingestion
 
             inputs.append(
                 CanonicalInsightInput(
@@ -792,7 +957,7 @@ class CSVIngestionService:
                     metric_value=metric_value.at[idx],
                     timestamp=ts,
                     region=rgn,
-                    metadata_json=md,
+                    metadata_json=md or None,
                 )
             )
         return inputs
@@ -848,6 +1013,89 @@ class CSVIngestionService:
             raise CSVSchemaMappingError(
                 message=exc.message, errors=list(exc.errors)
             ) from exc
+
+    @staticmethod
+    def _mapping_confidence(mapping: MappingResolution) -> float:
+        interpretation = mapping.interpretation
+        if interpretation is None or not interpretation.decisions:
+            return 0.5
+        confidences = [float(decision.confidence) for decision in interpretation.decisions]
+        if not confidences:
+            return 0.5
+        average = sum(confidences) / len(confidences)
+        return max(0.0, min(1.0, round(average, 6)))
+
+    @staticmethod
+    def _build_ingestion_provenance(
+        *,
+        mapping: MappingResolution,
+        initial_mapping: MappingResolution,
+        wide_meta: Any,
+        headers: Sequence[str],
+        client_name: str | None,
+        mapping_config_name: str | None,
+        upload_file: UploadFile,
+    ) -> dict[str, Any]:
+        interpretation = mapping.interpretation
+        initial_interpretation = initial_mapping.interpretation
+        return {
+            "file_name": upload_file.filename,
+            "content_type": upload_file.content_type,
+            "headers": [str(header) for header in headers],
+            "client_name": client_name,
+            "mapping_config_name": mapping_config_name,
+            "mapping_config_id": mapping.mapping_config_id,
+            "canonical_to_source": dict(mapping.canonical_to_source),
+            "match_strategies": dict(mapping.match_strategies),
+            "schema_interpreter": {
+                "decision_count": len(interpretation.decisions) if interpretation else 0,
+                "warnings": list(interpretation.warnings) if interpretation else [],
+                "errors": list(interpretation.errors) if interpretation else [],
+                "initial_decision_count": (
+                    len(initial_interpretation.decisions)
+                    if initial_interpretation
+                    else 0
+                ),
+            },
+            "wide_to_long": {
+                "inferred_periodicity": getattr(wide_meta, "inferred_periodicity", "none"),
+                "wide_columns_detected": list(getattr(wide_meta, "wide_columns_detected", ()) or ()),
+                "id_columns": list(getattr(wide_meta, "id_columns", ()) or ()),
+                "dropped_rows": int(getattr(wide_meta, "dropped_rows", 0) or 0),
+                "preserved_rows": int(getattr(wide_meta, "preserved_rows", 0) or 0),
+                "parse_failures": list(getattr(wide_meta, "parse_failures", ()) or ()),
+            },
+        }
+
+    @staticmethod
+    def _collect_ingestion_warnings(
+        *,
+        mapping: MappingResolution,
+        wide_meta: Any,
+        validation_errors: Sequence[RowValidationError],
+    ) -> list[str]:
+        warnings: list[str] = []
+        interpretation = mapping.interpretation
+        if interpretation:
+            warnings.extend(str(item) for item in interpretation.warnings)
+        parse_failures = list(getattr(wide_meta, "parse_failures", ()) or ())
+        if parse_failures:
+            warnings.append(
+                f"Wide-to-long parse failures for columns: {sorted(parse_failures)}"
+            )
+        warning_like = [
+            error
+            for error in validation_errors
+            if str(error.code or "").strip().lower().endswith("_warning")
+        ]
+        if warning_like:
+            warnings.append(f"{len(warning_like)} interpreter warning entries captured.")
+        deduped: list[str] = []
+        for warning in warnings:
+            normalized = str(warning).strip()
+            if normalized and normalized not in deduped:
+                deduped.append(normalized)
+        return deduped
 
     def _detect_entities_for_mapping(
         self,
@@ -907,6 +1155,57 @@ class CSVIngestionService:
         raw_file.seek(0)
         return sorted(values_set)
 
+    def _estimate_row_count(
+        self,
+        raw_file: Any,
+        usecols: Sequence[str],
+    ) -> int:
+        """Estimate total row count without reading entire file."""
+        raw_file.seek(0)
+        count = 0
+        try:
+            reader = pd.read_csv(
+                raw_file,
+                chunksize=self._chunksize,
+                dtype=str,
+                encoding="utf-8-sig",
+                usecols=list(usecols),
+                keep_default_na=False,
+            )
+            for chunk in reader:
+                count += len(chunk)
+        except Exception:
+            pass
+        raw_file.seek(0)
+        return count
+
+    @staticmethod
+    def _run_category_inference(
+        *,
+        metric_names: list[str],
+        column_names: list[str],
+        row_count: int,
+        unique_entity_count: int,
+        user_categories: list[str],
+    ) -> CategoryInferenceResult:
+        """Run deterministic category inference. Never raises."""
+        try:
+            return infer_category(
+                metric_names=metric_names,
+                column_names=column_names,
+                row_count=row_count,
+                unique_entity_count=unique_entity_count,
+            )
+        except Exception:
+            logger.warning("Category inference failed; returning insufficient_data.", exc_info=True)
+            return CategoryInferenceResult(
+                inferred_category=None,
+                confidence_score=0.0,
+                evidence=["inference_engine_error"],
+                alternative_candidates=[],
+                status="insufficient_data",
+            )
+
     def _resolve_multi_entity_behavior(self, multi_entity_behavior: str | None) -> str:
         raw = (
             multi_entity_behavior
@@ -930,10 +1229,17 @@ class CSVIngestionService:
         column: str | None = None,
         value: str | None = None,
         context: dict[str, Any] | None = None,
+        confidence_score: float = 0.0,
+        provenance: dict[str, Any] | None = None,
     ) -> IngestionSummary:
         return IngestionSummary(
             rows_processed=0,
             rows_failed=0,
+            pipeline_status="failed",
+            confidence_score=max(0.0, min(1.0, confidence_score)),
+            warnings=[],
+            provenance=provenance or {},
+            diagnostics={},
             validation_errors=[
                 RowValidationError(
                     row_number=row_number,

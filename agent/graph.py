@@ -580,6 +580,372 @@ def _fetch_macro_context_rows(
     return inflation_rows, benchmark_rows
 
 
+def growth_engine_node(state: AgentState) -> AgentState:
+    """Compute deterministic growth signals from KPI time series."""
+    try:
+        kpi_payload = _resolve_kpi_payload(state)
+        records = kpi_payload.get("records") if isinstance(kpi_payload, dict) else None
+        if not isinstance(records, list) or not records:
+            return {**state, "growth_data": skipped("kpi_unavailable", {"records": 0})}
+
+        metric_series = _metric_series_from_kpi_payload(records)
+        if not metric_series:
+            return {**state, "growth_data": skipped("series_unavailable", {"records": len(records)})}
+
+        business_type = str(state.get("business_type") or "").strip().lower()
+        aliases = metric_aliases_for_business_type(business_type)
+        revenue_candidates = aliases.get("recurring_revenue", ("recurring_revenue",))
+        growth_context = compute_growth_context(
+            metric_series,
+            preferred_metric_candidates=revenue_candidates,
+        )
+
+        dataset_confidence = _dataset_confidence_from_state(state)
+        warnings = [str(item) for item in growth_context.get("warnings", [])]
+        if dataset_confidence < 1.0:
+            warnings.append(
+                f"Dataset confidence reduced growth reliability ({dataset_confidence:.2f})."
+            )
+        confidence = min(
+            dataset_confidence,
+            float(growth_context.get("confidence_score") or 1.0),
+        )
+        growth_data = success(growth_context, warnings=warnings, confidence_score=confidence)
+        return {**state, "growth_data": growth_data}
+    except Exception as exc:  # noqa: BLE001
+        return {**state, "growth_data": failed(str(exc), {"stage": "growth_engine"})}
+
+
+def timeseries_factors_node(state: AgentState) -> AgentState:
+    """Compute deterministic time-series factor flags."""
+    try:
+        kpi_payload = _resolve_kpi_payload(state)
+        records = kpi_payload.get("records") if isinstance(kpi_payload, dict) else None
+        if not isinstance(records, list) or not records:
+            return {
+                **state,
+                "timeseries_factors_data": skipped("kpi_unavailable", {"records": 0}),
+            }
+
+        metric_series = _metric_series_from_kpi_payload(records)
+        if not metric_series:
+            return {
+                **state,
+                "timeseries_factors_data": skipped("series_unavailable", {"records": len(records)}),
+            }
+
+        growth_payload = payload_of(state.get("growth_data")) or {}
+        primary_metric = str(growth_payload.get("primary_metric") or "").strip()
+        if primary_metric not in metric_series:
+            primary_metric = sorted(metric_series, key=lambda name: (-len(metric_series[name]), name))[0]
+
+        factors = compute_timeseries_factors(metric_series.get(primary_metric, []))
+        warnings: list[str] = []
+        if str(factors.get("volatility_regime") or "") == "insufficient_history":
+            warnings.append("Insufficient history for volatility regime detection.")
+        if str(factors.get("cycle_state") or "") == "insufficient_history":
+            warnings.append("Insufficient history for cycle state detection.")
+
+        dataset_confidence = _dataset_confidence_from_state(state)
+        base_confidence = 0.7 if warnings else 1.0
+        confidence = min(dataset_confidence, base_confidence)
+        payload = {
+            "primary_metric": primary_metric,
+            "series_points": len(metric_series.get(primary_metric, [])),
+            "factors": factors,
+        }
+        return {
+            **state,
+            "timeseries_factors_data": success(
+                payload,
+                warnings=warnings,
+                confidence_score=confidence,
+            ),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            **state,
+            "timeseries_factors_data": failed(str(exc), {"stage": "timeseries_factors"}),
+        }
+
+
+def cohort_analytics_node(state: AgentState) -> AgentState:
+    """Compute cohort analytics when cohort keys are available."""
+    try:
+        kpi_payload = _resolve_kpi_payload(state)
+        records = kpi_payload.get("records") if isinstance(kpi_payload, dict) else None
+        if not isinstance(records, list) or not records:
+            return {**state, "cohort_data": skipped("kpi_unavailable", {"records": 0})}
+
+        business_type = str(state.get("business_type") or "").strip().lower()
+        entity_name = str(
+            kpi_payload.get("fetched_for")
+            or state.get("entity_name")
+            or ""
+        ).strip()
+        period_start, period_end = _resolve_period_bounds(kpi_payload)
+        cohort_rows = _cohort_rows_for_records(
+            records=records,
+            entity_name=entity_name,
+            business_type=business_type,
+            period_start=period_start,
+            period_end=period_end,
+        )
+        if not cohort_rows:
+            return {**state, "cohort_data": skipped("cohort_not_applicable", {"records": len(records)})}
+
+        aliases = metric_aliases_for_business_type(business_type)
+        active_candidates = aliases.get("active_customer_count", ("active_customer_count",))
+        churn_candidates = aliases.get("churned_customer_count", ("churned_customer_count",))
+        cohort = compute_cohort_analytics(
+            cohort_rows,
+            cohort_keys=DEFAULT_COHORT_KEYS,
+            active_metric_names=active_candidates,
+            churn_metric_names=churn_candidates,
+        )
+
+        dataset_confidence = _dataset_confidence_from_state(state)
+        warnings = [str(item) for item in cohort.get("warnings", [])]
+        confidence = min(dataset_confidence, float(cohort.get("confidence_score") or 1.0))
+        return {
+            **state,
+            "cohort_data": success(
+                cohort,
+                warnings=warnings,
+                confidence_score=confidence,
+            ),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {**state, "cohort_data": failed(str(exc), {"stage": "cohort_analytics"})}
+
+
+def _dependency_value(
+    *,
+    source: str,
+    agg: Mapping[str, Any],
+    extra: Mapping[str, Any],
+    default: Any,
+) -> Any:
+    prefix, _, key = source.partition(".")
+    prefix = prefix.strip().lower()
+    key = key.strip()
+    if prefix == "agg":
+        value = agg.get(key)
+        return default if value is None else value
+    if prefix == "extra":
+        return extra.get(key, default)
+    return default
+
+
+def _is_missing(value: Any, *, missing_when: str) -> bool:
+    if missing_when == "is_empty":
+        if value is None:
+            return True
+        if isinstance(value, (str, bytes)):
+            return not value
+        if isinstance(value, (list, tuple, set, dict)):
+            return len(value) == 0
+        return False
+    return value is None
+
+
+def category_formula_node(state: AgentState) -> AgentState:
+    """Run category-pack deterministic formula using registry bindings."""
+    try:
+        business_type = str(state.get("business_type") or "").strip().lower()
+        try:
+            pack = require_category_pack(business_type)
+        except CategoryRegistryError:
+            pack = require_category_pack("general_timeseries")
+
+        kpi_payload = _resolve_kpi_payload(state)
+        records = kpi_payload.get("records") if isinstance(kpi_payload, dict) else None
+        if not isinstance(records, list) or not records:
+            return {
+                **state,
+                "category_formula_data": skipped("kpi_unavailable", {"category": pack.name}),
+            }
+
+        metric_series = _metric_series_from_kpi_payload(records)
+        aliases = pack.metric_aliases
+        revenue_aliases = aliases.get("recurring_revenue", ("recurring_revenue",))
+        active_aliases = aliases.get("active_customer_count", ("active_customer_count",))
+        churn_aliases = aliases.get("churned_customer_count", ("churned_customer_count",))
+
+        def _pick_series(candidates: tuple[str, ...]) -> list[float]:
+            for candidate in candidates:
+                if candidate in metric_series:
+                    return list(metric_series[candidate])
+            return []
+
+        revenue_series = _pick_series(revenue_aliases)
+        active_series = _pick_series(active_aliases)
+        churn_series = _pick_series(churn_aliases)
+        agg_values: dict[str, Any] = {
+            "subscription_revenues": list(revenue_series),
+            "active_customers": int(round(active_series[-1])) if active_series else 0,
+            "lost_customers": int(round(churn_series[-1])) if churn_series else 0,
+            "previous_revenue": float(revenue_series[-2]) if len(revenue_series) >= 2 else 0.0,
+        }
+        extra_values: dict[str, Any] = {}
+
+        formula_inputs: dict[str, Any] = {}
+        for key, binding in pack.formula_input_bindings.items():
+            formula_inputs[key] = _dependency_value(
+                source=binding.source,
+                agg=agg_values,
+                extra=extra_values,
+                default=binding.default,
+            )
+        metrics = pack.formula.calculate(formula_inputs)
+
+        optional_missing: list[str] = []
+        required_missing: list[str] = []
+        for metric_name, dependencies in pack.validity_rules.items():
+            missing = []
+            for dependency in dependencies:
+                value = _dependency_value(
+                    source=dependency.source,
+                    agg=agg_values,
+                    extra=extra_values,
+                    default=None,
+                )
+                if _is_missing(value, missing_when=dependency.missing_when):
+                    missing.append(dependency.source)
+            if missing:
+                if metric_name in pack.optional_signals:
+                    optional_missing.append(metric_name)
+                else:
+                    required_missing.append(metric_name)
+
+        metric_payload: dict[str, Any] = {}
+        for name, value in metrics.items():
+            metric_payload[name] = {
+                "value": _coerce_numeric(value),
+                "status": (
+                    "missing_optional"
+                    if name in optional_missing
+                    else ("missing_required" if name in required_missing else "success")
+                ),
+            }
+
+        warnings: list[str] = []
+        if optional_missing:
+            warnings.append(f"Optional metrics unavailable: {sorted(optional_missing)}")
+        if required_missing:
+            warnings.append(f"Required formula dependencies missing: {sorted(required_missing)}")
+
+        dataset_confidence = _dataset_confidence_from_state(state)
+        optional_ratio = (len(optional_missing) / max(1, len(pack.optional_signals))) if pack.optional_signals else 0.0
+        confidence = max(0.2, min(dataset_confidence, round(1.0 - (optional_ratio * 0.4), 6)))
+        payload = {
+            "category": pack.name,
+            "required_fields": list(pack.required_inputs),
+            "canonical_metric_aliases": {k: list(v) for k, v in pack.metric_aliases.items()},
+            "optional_missing": sorted(optional_missing),
+            "metrics": metric_payload,
+        }
+        return {
+            **state,
+            "category_formula_data": success(
+                payload,
+                warnings=warnings,
+                confidence_score=confidence,
+            ),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            **state,
+            "category_formula_data": failed(str(exc), {"stage": "category_formula"}),
+        }
+
+
+def multivariate_scenario_node(state: AgentState) -> AgentState:
+    """Compute statistical, multivariate, and deterministic scenario payloads."""
+    try:
+        kpi_payload = _resolve_kpi_payload(state)
+        records = kpi_payload.get("records") if isinstance(kpi_payload, dict) else None
+        if not isinstance(records, list) or not records:
+            return {
+                **state,
+                "multivariate_scenario_data": skipped("kpi_unavailable", {"records": 0}),
+            }
+
+        metric_series = _metric_series_from_kpi_payload(records)
+        if not metric_series:
+            return {
+                **state,
+                "multivariate_scenario_data": skipped("series_unavailable", {"records": len(records)}),
+            }
+
+        business_type = str(state.get("business_type") or "").strip().lower()
+        aliases = metric_aliases_for_business_type(business_type)
+        revenue_candidates = aliases.get("recurring_revenue", ("recurring_revenue",))
+        growth_context = payload_of(state.get("growth_data")) or compute_growth_context(
+            metric_series,
+            preferred_metric_candidates=revenue_candidates,
+        )
+        statistical_context = _build_statistical_context(metric_series)
+
+        entity_name = str(
+            kpi_payload.get("fetched_for")
+            or state.get("entity_name")
+            or ""
+        ).strip()
+        period_start, period_end = _resolve_period_bounds(kpi_payload)
+        cohort_rows = _cohort_rows_for_records(
+            records=records,
+            entity_name=entity_name,
+            business_type=business_type,
+            period_start=period_start,
+            period_end=period_end,
+        )
+        multivariate_context = compute_multivariate_context(
+            metric_series,
+            segment_rows=cohort_rows,
+            preferred_metric_candidates=revenue_candidates,
+        )
+        scenario_simulation = simulate_deterministic_scenarios(
+            metric_series,
+            growth_context=growth_context,
+            statistical_context=statistical_context,
+            multivariate_context=multivariate_context,
+            preferred_metric_candidates=revenue_candidates,
+        )
+        payload = {
+            "statistical_context": statistical_context,
+            "multivariate_context": multivariate_context,
+            "scenario_simulation": scenario_simulation,
+        }
+        confidence_candidates = [
+            float(statistical_context.get("confidence_score") or 0.5),
+            float(multivariate_context.get("confidence_score") or 0.5),
+            float(scenario_simulation.get("base_confidence") or 0.5),
+            _dataset_confidence_from_state(state),
+        ]
+        confidence = max(0.2, min(confidence_candidates))
+        warnings: list[str] = []
+        warnings.extend(str(item) for item in statistical_context.get("warnings", []))
+        warnings.extend(str(item) for item in multivariate_context.get("warnings", []))
+        warnings.extend(str(item) for item in scenario_simulation.get("warnings", []))
+        return {
+            **state,
+            "multivariate_scenario_data": success(
+                payload,
+                warnings=warnings,
+                confidence_score=confidence,
+            ),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            **state,
+            "multivariate_scenario_data": failed(
+                str(exc),
+                {"stage": "multivariate_scenario"},
+            ),
+        }
+
+
 def role_analytics_node(state: AgentState) -> AgentState:
     """
     Role analytics stage inserted between KPI and risk.
@@ -645,46 +1011,48 @@ def role_analytics_node(state: AgentState) -> AgentState:
             metric_candidates=revenue_candidates,
         )
 
-        cohort_rows: list[dict[str, Any]] = []
-        if entity_name:
-            try:
-                cohort_rows = _fetch_canonical_cohort_rows(
-                    entity_name=entity_name,
-                    business_type=business_type,
-                    period_start=period_start,
-                    period_end=period_end,
-                )
-            except Exception:
-                cohort_rows = []
-        if not cohort_rows:
-            cohort_rows = _cohort_rows_from_kpi_payload(records)
-
+        cohort_rows = _cohort_rows_for_records(
+            records=records,
+            entity_name=entity_name,
+            business_type=business_type,
+            period_start=period_start,
+            period_end=period_end,
+        )
         active_candidates = aliases.get("active_customer_count", ("active_customer_count",))
         churn_candidates = aliases.get("churned_customer_count", ("churned_customer_count",))
-        cohort_analytics = compute_cohort_analytics(
+        metric_series = _metric_series_from_kpi_payload(records)
+        growth_context = payload_of(state.get("growth_data")) or compute_growth_context(
+            metric_series,
+            preferred_metric_candidates=revenue_candidates,
+        )
+        timeseries_factors = payload_of(state.get("timeseries_factors_data")) or {}
+        cohort_analytics = payload_of(state.get("cohort_data")) or compute_cohort_analytics(
             cohort_rows,
             cohort_keys=DEFAULT_COHORT_KEYS,
             active_metric_names=active_candidates,
             churn_metric_names=churn_candidates,
         )
-        metric_series = _metric_series_from_kpi_payload(records)
-        statistical_context = _build_statistical_context(metric_series)
-        growth_context = compute_growth_context(
-            metric_series,
-            preferred_metric_candidates=revenue_candidates,
-        )
-        multivariate_context = compute_multivariate_context(
-            metric_series,
-            segment_rows=cohort_rows,
-            preferred_metric_candidates=revenue_candidates,
-        )
-        scenario_simulation = simulate_deterministic_scenarios(
-            metric_series,
-            growth_context=growth_context,
-            statistical_context=statistical_context,
-            multivariate_context=multivariate_context,
-            preferred_metric_candidates=revenue_candidates,
-        )
+        category_formula = payload_of(state.get("category_formula_data")) or {}
+        multivariate_bundle = payload_of(state.get("multivariate_scenario_data")) or {}
+        statistical_context = multivariate_bundle.get("statistical_context")
+        if not isinstance(statistical_context, Mapping):
+            statistical_context = _build_statistical_context(metric_series)
+        multivariate_context = multivariate_bundle.get("multivariate_context")
+        if not isinstance(multivariate_context, Mapping):
+            multivariate_context = compute_multivariate_context(
+                metric_series,
+                segment_rows=cohort_rows,
+                preferred_metric_candidates=revenue_candidates,
+            )
+        scenario_simulation = multivariate_bundle.get("scenario_simulation")
+        if not isinstance(scenario_simulation, Mapping):
+            scenario_simulation = simulate_deterministic_scenarios(
+                metric_series,
+                growth_context=growth_context,
+                statistical_context=statistical_context,
+                multivariate_context=multivariate_context,
+                preferred_metric_candidates=revenue_candidates,
+            )
         statistical_context = {
             **statistical_context,
             "derived": {
@@ -714,6 +1082,35 @@ def role_analytics_node(state: AgentState) -> AgentState:
                 }
 
         role_scores = score_role_performance(scoring_input, category=business_type)
+        node_warnings: list[str] = []
+        for key in (
+            "growth_data",
+            "timeseries_factors_data",
+            "cohort_data",
+            "category_formula_data",
+            "multivariate_scenario_data",
+        ):
+            envelope = state.get(key)
+            if isinstance(envelope, Mapping):
+                node_warnings.extend(str(item) for item in envelope.get("warnings", []) if str(item).strip())
+
+        confidence_inputs = [_dataset_confidence_from_state(state)]
+        for key in (
+            "growth_data",
+            "timeseries_factors_data",
+            "cohort_data",
+            "category_formula_data",
+            "multivariate_scenario_data",
+        ):
+            envelope = state.get(key)
+            if isinstance(envelope, Mapping):
+                raw_conf = envelope.get("confidence_score")
+                try:
+                    conf = float(raw_conf)
+                except (TypeError, ValueError):
+                    continue
+                confidence_inputs.append(max(0.0, min(1.0, conf)))
+
         role_analytics_data = success(
             {
                 "dimensions": summary.get("dimensions", []),
@@ -726,11 +1123,15 @@ def role_analytics_node(state: AgentState) -> AgentState:
                 "role_scoring": role_scores,
                 "macro_context": macro_context,
                 "cohort_analytics": cohort_analytics,
+                "timeseries_factors": timeseries_factors,
+                "category_formula": category_formula,
                 "statistical_context": statistical_context,
                 "growth_context": growth_context,
                 "multivariate_context": multivariate_context,
                 "scenario_simulation": scenario_simulation,
-            }
+            },
+            warnings=node_warnings,
+            confidence_score=min(confidence_inputs),
         )
         return {**state, "segmentation": role_analytics_data}
 
@@ -749,6 +1150,11 @@ def build_graph():
     graph.add_node("saas_kpi_fetch", saas_kpi_fetch_node)
     graph.add_node("ecommerce_kpi_fetch", ecommerce_kpi_fetch_node)
     graph.add_node("agency_kpi_fetch", agency_kpi_fetch_node)
+    graph.add_node("growth_engine", growth_engine_node)
+    graph.add_node("timeseries_factors", timeseries_factors_node)
+    graph.add_node("cohort_analytics", cohort_analytics_node)
+    graph.add_node("category_formulas", category_formula_node)
+    graph.add_node("multivariate_scenario", multivariate_scenario_node)
     graph.add_node("role_analytics", role_analytics_node)
     graph.add_node("risk", risk_node)
     graph.add_node("prioritization", prioritization_node)
@@ -767,10 +1173,15 @@ def build_graph():
             "agency_kpi_fetch": "agency_kpi_fetch",
         },
     )
-    graph.add_edge("kpi_fetch", "role_analytics")
-    graph.add_edge("saas_kpi_fetch", "role_analytics")
-    graph.add_edge("ecommerce_kpi_fetch", "role_analytics")
-    graph.add_edge("agency_kpi_fetch", "role_analytics")
+    graph.add_edge("kpi_fetch", "growth_engine")
+    graph.add_edge("saas_kpi_fetch", "growth_engine")
+    graph.add_edge("ecommerce_kpi_fetch", "growth_engine")
+    graph.add_edge("agency_kpi_fetch", "growth_engine")
+    graph.add_edge("growth_engine", "timeseries_factors")
+    graph.add_edge("timeseries_factors", "cohort_analytics")
+    graph.add_edge("cohort_analytics", "category_formulas")
+    graph.add_edge("category_formulas", "multivariate_scenario")
+    graph.add_edge("multivariate_scenario", "role_analytics")
     graph.add_edge("role_analytics", "risk")
     graph.add_edge("risk", "prioritization")
     graph.add_edge("prioritization", "pipeline_status")

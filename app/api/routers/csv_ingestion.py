@@ -79,6 +79,11 @@ def upload_csv(
     return CSVIngestionSummaryResponse(
         rows_processed=summary.rows_processed,
         rows_failed=summary.rows_failed,
+        pipeline_status=summary.pipeline_status,
+        confidence_score=summary.confidence_score,
+        warnings=summary.warnings,
+        provenance=summary.provenance,
+        diagnostics=summary.diagnostics,
         validation_errors=[
             CSVValidationErrorResponse(
                 row_number=error.row_number,

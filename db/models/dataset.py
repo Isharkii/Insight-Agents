@@ -18,6 +18,7 @@ from db.base import Base, TimestampMixin
 
 if TYPE_CHECKING:
     from db.models.client import Client
+    from db.models.scoring import ScoringRun, ScoringSubject
 
 
 class DatasetStatus:
@@ -70,6 +71,18 @@ class Dataset(Base, TimestampMixin):
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     client: Mapped["Client"] = relationship("Client", back_populates="datasets")
+    scoring_runs: Mapped[list["ScoringRun"]] = relationship(
+        "ScoringRun",
+        back_populates="dataset",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    scoring_subjects: Mapped[list["ScoringSubject"]] = relationship(
+        "ScoringSubject",
+        back_populates="dataset",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
     __table_args__ = (
         Index("ix_datasets_client_id", "client_id"),

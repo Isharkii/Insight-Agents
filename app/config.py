@@ -209,6 +209,28 @@ class WorldBankSettings:
     latest_periods: int = 20
 
 
+@dataclass(frozen=True)
+class FREDSettings:
+    """
+    FRED macro API settings.
+    """
+
+    enabled: bool = True
+    api_key: str | None = None
+    base_url: str = "https://api.stlouisfed.org/fred/series/observations"
+
+
+@dataclass(frozen=True)
+class MacroIngestionSettings:
+    """
+    Runtime settings for macro ingestion pipeline.
+    """
+
+    default_provider: str = "fred"
+    default_country_code: str = "US"
+    batch_size: int = 500
+
+
 @lru_cache(maxsize=1)
 def get_csv_ingestion_settings() -> CSVIngestionSettings:
     """
@@ -294,4 +316,33 @@ def get_world_bank_settings() -> WorldBankSettings:
         indicator_code=_get_str_env("WORLD_BANK_INDICATOR_CODE", "NY.GDP.MKTP.CD"),
         per_page=max(1, _get_int_env("WORLD_BANK_PER_PAGE", 200)),
         latest_periods=max(1, _get_int_env("WORLD_BANK_LATEST_PERIODS", 20)),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_fred_settings() -> FREDSettings:
+    """
+    Return FRED connector settings from environment variables.
+    """
+
+    return FREDSettings(
+        enabled=_get_bool_env("FRED_ENABLED", True),
+        api_key=_get_optional_str_env("FRED_API_KEY"),
+        base_url=_get_str_env(
+            "FRED_BASE_URL",
+            "https://api.stlouisfed.org/fred/series/observations",
+        ),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_macro_ingestion_settings() -> MacroIngestionSettings:
+    """
+    Return macro ingestion settings from environment variables.
+    """
+
+    return MacroIngestionSettings(
+        default_provider=_get_str_env("MACRO_INGEST_DEFAULT_PROVIDER", "fred").lower(),
+        default_country_code=_get_str_env("MACRO_INGEST_DEFAULT_COUNTRY", "US").upper(),
+        batch_size=max(1, _get_int_env("MACRO_INGEST_BATCH_SIZE", 500)),
     )

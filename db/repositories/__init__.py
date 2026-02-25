@@ -4,6 +4,7 @@ Repository layer exports.
 
 from db.repositories.dataset_repository import DatasetRepository
 from db.repositories.ingestion_job_repository import IngestionJobRepository
+from db.repositories.macro_metrics_repository import MacroMetricsRepository
 from db.repositories.errors import (
     ClientInactiveError,
     ClientNotFoundError,
@@ -19,6 +20,7 @@ from db.repositories.upload_repository import NoOpPostStoreHook, PostStoreHook, 
 __all__ = [
     "DatasetRepository",
     "IngestionJobRepository",
+    "MacroMetricsRepository",
     "UploadRepository",
     "UploadFileInput",
     "StoredFileMetadata",

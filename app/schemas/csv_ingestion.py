@@ -29,4 +29,12 @@ class CSVIngestionSummaryResponse(BaseModel):
 
     rows_processed: int = Field(..., ge=0)
     rows_failed: int = Field(..., ge=0)
+    pipeline_status: str
+    confidence_score: float = Field(..., ge=0.0, le=1.0)
+    warnings: list[str] = Field(default_factory=list)
+    provenance: dict[str, object] = Field(default_factory=dict)
+    diagnostics: dict[str, object] = Field(default_factory=dict)
     validation_errors: list[CSVValidationErrorResponse] = Field(default_factory=list)
+    inferred_category: str | None = None
+    category_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    category_inference_status: str | None = None

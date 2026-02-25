@@ -8,10 +8,15 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Mapping
 
 from app.config import ExternalHTTPSettings, WorldBankSettings
-from app.connectors.base import BaseConnector, ConnectorFetchResult
+from app.connectors.base import BaseConnector, ConnectorFetchResult, ConnectorRequestError
+from app.connectors.macro import (
+    BaseMacroProvider,
+    MacroProviderError,
+    WorldBankMacroProvider,
+)
 from app.domain.canonical_insight import CanonicalInsightInput
 from db.models.canonical_insight_record import CanonicalCategory, CanonicalSourceType
 
@@ -28,38 +33,36 @@ class WorldBankConnector(BaseConnector):
         *,
         settings: WorldBankSettings,
         http_settings: ExternalHTTPSettings,
+        provider: BaseMacroProvider | None = None,
     ) -> None:
         super().__init__(source="world_bank", http_settings=http_settings)
         self._settings = settings
+        self._provider = provider or WorldBankMacroProvider(
+            http_settings=http_settings,
+            base_url=settings.base_url,
+            per_page=settings.per_page,
+            latest_periods=settings.latest_periods,
+        )
 
     def fetch_records(self) -> ConnectorFetchResult:
         if not self._settings.enabled:
             return ConnectorFetchResult(source=self.source, records=[], failed_records=0)
 
-        endpoint = (
-            f"{self._settings.base_url.rstrip('/')}/country/"
-            f"{self._settings.country_code}/indicator/{self._settings.indicator_code}"
-        )
-        payload = self._request_json(
-            method="GET",
-            url=endpoint,
-            params={
-                "format": "json",
-                "per_page": self._settings.per_page,
-                "mrv": self._settings.latest_periods,
-            },
-        )
+        try:
+            rows = self._provider.fetch(
+                country=self._settings.country_code,
+                metric=self._settings.indicator_code,
+                limit=self._settings.latest_periods,
+            )
+        except MacroProviderError as exc:
+            logger.error("World Bank macro provider failed: %s", exc)
+            raise ConnectorRequestError(f"{self.source}: {exc}") from exc
 
-        if not isinstance(payload, list) or len(payload) < 2 or not isinstance(payload[1], list):
-            logger.error("Unexpected World Bank payload shape.")
-            return ConnectorFetchResult(source=self.source, records=[], failed_records=1)
-
-        rows = payload[1]
         records: list[CanonicalInsightInput] = []
         failed_records = 0
         for index, row in enumerate(rows):
             try:
-                normalized = self._normalize_row(row)
+                normalized = self._normalize_observation(row)
                 if normalized is None:
                     failed_records += 1
                     continue
@@ -78,36 +81,36 @@ class WorldBankConnector(BaseConnector):
             failed_records=failed_records,
         )
 
-    def _normalize_row(self, row: Any) -> CanonicalInsightInput | None:
-        if not isinstance(row, dict):
+    def _normalize_observation(self, row: Mapping[str, Any]) -> CanonicalInsightInput | None:
+        if not isinstance(row, Mapping):
             return None
 
         value = row.get("value")
-        period_raw = (row.get("date") or "").strip()
-        if value is None or not period_raw:
+        period_end = str(row.get("period_end") or "").strip()
+        period_start = str(row.get("period_start") or "").strip() or None
+        metric_name = str(row.get("metric") or self._settings.indicator_code).strip() or self._settings.indicator_code
+        if value is None or not period_end:
             return None
 
-        timestamp = self._parse_world_bank_period(period_raw)
+        timestamp = self._parse_period_end(period_end)
         if timestamp is None:
             return None
 
-        country_meta = row.get("country") if isinstance(row.get("country"), dict) else {}
-        indicator_meta = row.get("indicator") if isinstance(row.get("indicator"), dict) else {}
-        country_name = (country_meta.get("value") or self._settings.country_code).strip()
+        country_name = str(row.get("country") or self._settings.country_code).strip()
+        source_name = str(row.get("source") or self.source).strip() or self.source
 
         metadata_json = {
-            "country_id": country_meta.get("id"),
             "country_code": self._settings.country_code,
-            "indicator_name": indicator_meta.get("value"),
-            "obs_status": row.get("obs_status"),
-            "decimal_places": row.get("decimal"),
+            "provider": source_name,
+            "period_start": period_start,
+            "period_end": period_end,
         }
 
         return CanonicalInsightInput(
             source_type=CanonicalSourceType.API,
             entity_name=country_name,
             category=CanonicalCategory.MACRO,
-            metric_name=self._settings.indicator_code,
+            metric_name=metric_name,
             metric_value=value,
             timestamp=timestamp,
             region=self._settings.country_code,
@@ -115,9 +118,11 @@ class WorldBankConnector(BaseConnector):
         )
 
     @staticmethod
-    def _parse_world_bank_period(period_raw: str) -> datetime | None:
+    def _parse_period_end(period_raw: str) -> datetime | None:
         try:
-            year = int(period_raw[:4])
-            return datetime(year=year, month=1, day=1, tzinfo=timezone.utc)
+            parsed = datetime.fromisoformat(period_raw.replace("Z", "+00:00"))
         except (TypeError, ValueError):
             return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)

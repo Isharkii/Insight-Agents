@@ -206,5 +206,12 @@
         "confidence_impact": -0.08
       }
     }
+  },
+  "scoring": {
+    "defaults": {
+      "use_macro_adjustment": false,
+      "macro_resilience_sensitivity": 1.0,
+      "zero_guard": 0.000000001
+    }
   }
 }

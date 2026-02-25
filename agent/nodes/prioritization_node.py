@@ -74,10 +74,28 @@ def _to_focus_text(issue: str) -> str:
     return issue.replace("_", " ")
 
 
-def _cohort_signals(state: AgentState) -> dict[str, Any]:
+def _segmentation_or_node_payload(
+    state: AgentState,
+    *,
+    segmentation_key: str,
+    node_key: str,
+) -> dict[str, Any]:
     segmentation: dict[str, Any] = payload_of(state.get("segmentation")) or {}
-    cohort = segmentation.get("cohort_analytics")
-    if not isinstance(cohort, dict):
+    if isinstance(segmentation, dict):
+        candidate = segmentation.get(segmentation_key)
+        if isinstance(candidate, dict):
+            return candidate
+    candidate = payload_of(state.get(node_key))
+    return candidate if isinstance(candidate, dict) else {}
+
+
+def _cohort_signals(state: AgentState) -> dict[str, Any]:
+    cohort = _segmentation_or_node_payload(
+        state,
+        segmentation_key="cohort_analytics",
+        node_key="cohort_data",
+    )
+    if not cohort:
         return {
             "status": "missing",
             "confidence_score": 1.0,
@@ -133,9 +151,12 @@ def _cohort_focus_text(snapshot: dict[str, Any]) -> str | None:
 
 
 def _growth_signals(state: AgentState) -> dict[str, Any]:
-    segmentation: dict[str, Any] = payload_of(state.get("segmentation")) or {}
-    growth = segmentation.get("growth_context")
-    if not isinstance(growth, dict):
+    growth = _segmentation_or_node_payload(
+        state,
+        segmentation_key="growth_context",
+        node_key="growth_data",
+    )
+    if not growth:
         return {
             "status": "missing",
             "confidence_score": 1.0,
@@ -197,7 +218,17 @@ def _growth_focus_text(snapshot: dict[str, Any]) -> str | None:
 
 def _scenario_signals(state: AgentState) -> dict[str, Any]:
     segmentation: dict[str, Any] = payload_of(state.get("segmentation")) or {}
-    scenario = segmentation.get("scenario_simulation")
+    scenario = segmentation.get("scenario_simulation") if isinstance(segmentation, dict) else None
+    if not isinstance(scenario, dict):
+        bundled = _segmentation_or_node_payload(
+            state,
+            segmentation_key="multivariate_scenario",
+            node_key="multivariate_scenario_data",
+        )
+        if isinstance(bundled, dict):
+            candidate = bundled.get("scenario_simulation")
+            if isinstance(candidate, dict):
+                scenario = candidate
     if not isinstance(scenario, dict):
         return {
             "status": "missing",

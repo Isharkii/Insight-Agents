@@ -58,3 +58,13 @@ class IngestionSummary(BaseModel):
     rows_processed: int
     rows_failed: int
     validation_errors: list[RowValidationError] = Field(default_factory=list)
+    pipeline_status: str = "failed"
+    confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    warnings: list[str] = Field(default_factory=list)
+    provenance: dict[str, Any] = Field(default_factory=dict)
+    diagnostics: dict[str, Any] = Field(default_factory=dict)
+    inferred_category: str | None = None
+    category_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    category_inference_status: str | None = None
+    category_inference_evidence: list[str] = Field(default_factory=list)
+    category_alternatives: list[dict[str, Any]] = Field(default_factory=list)

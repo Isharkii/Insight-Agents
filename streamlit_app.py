@@ -31,7 +31,11 @@ _BUSINESS_TYPE_OPTIONS = [
     "ecommerce",
     "agency",
     "general_timeseries",
-    "financial_market",
+    "financial_markets",
+    "marketing_analytics",
+    "operations",
+    "retail",
+    "healthcare",
     "generic_timeseries",
 ]
 _MULTI_ENTITY_OPTIONS = ["auto", "split", "error"]
@@ -171,6 +175,123 @@ def run_pipeline(
         return _ensure_final_response_contract(FinalInsightResponse.failure(str(exc)))
 
 
+def fetch_report_payload(
+    *,
+    entity_name: str,
+    prompt: str,
+    business_type: str | None,
+) -> dict[str, Any] | None:
+    """Fetch backend-generated report payload for charts and report download."""
+    try:
+        params: dict[str, str] = {
+            "entity_name": entity_name,
+            "prompt": prompt,
+            "format": "json",
+        }
+        if business_type:
+            params["business_type"] = business_type
+        resp = requests.get(
+            f"{API_BASE_URL}/export/report",
+            params=params,
+            timeout=120,
+        )
+        if resp.status_code >= 400:
+            logger.warning("Report payload fetch failed: %s", _api_error_message(resp))
+            return None
+        payload = resp.json()
+        return payload if isinstance(payload, dict) else None
+    except requests.RequestException:
+        logger.exception("Report payload request failed")
+        return None
+
+
+def fetch_export_bytes(
+    *,
+    dataset: str,
+    output_format: str,
+    entity_name: str | None,
+) -> bytes | None:
+    """Download backend export bytes for CSV/PowerBI actions."""
+    try:
+        params: dict[str, str] = {
+            "dataset": dataset,
+            "format": output_format,
+        }
+        if entity_name:
+            params["entity_name"] = entity_name
+        resp = requests.get(
+            f"{API_BASE_URL}/export/powerbi",
+            params=params,
+            timeout=120,
+        )
+        if resp.status_code >= 400:
+            logger.warning("Export fetch failed: %s", _api_error_message(resp))
+            return None
+        return resp.content
+    except requests.RequestException:
+        logger.exception("Export request failed")
+        return None
+
+
+def fetch_export_json(
+    *,
+    dataset: str,
+    entity_name: str | None,
+    limit: int = 2000,
+) -> dict[str, Any] | None:
+    """Fetch backend export JSON payload for chart rendering."""
+    try:
+        params: dict[str, str | int] = {
+            "dataset": dataset,
+            "format": "json",
+            "limit": limit,
+        }
+        if entity_name:
+            params["entity_name"] = entity_name
+        resp = requests.get(
+            f"{API_BASE_URL}/export/powerbi",
+            params=params,
+            timeout=120,
+        )
+        if resp.status_code >= 400:
+            logger.warning("Export JSON fetch failed: %s", _api_error_message(resp))
+            return None
+        payload = resp.json()
+        return payload if isinstance(payload, dict) else None
+    except requests.RequestException:
+        logger.exception("Export JSON request failed")
+        return None
+
+
+def fetch_report_markdown(
+    *,
+    entity_name: str,
+    prompt: str,
+    business_type: str | None,
+) -> bytes | None:
+    """Download backend-formatted report markdown."""
+    try:
+        params: dict[str, str] = {
+            "entity_name": entity_name,
+            "prompt": prompt,
+            "format": "md",
+        }
+        if business_type:
+            params["business_type"] = business_type
+        resp = requests.get(
+            f"{API_BASE_URL}/export/report",
+            params=params,
+            timeout=120,
+        )
+        if resp.status_code >= 400:
+            logger.warning("Report markdown fetch failed: %s", _api_error_message(resp))
+            return None
+        return resp.content
+    except requests.RequestException:
+        logger.exception("Report markdown request failed")
+        return None
+
+
 def _first_available(mapping: dict[str, Any], keys: list[str]) -> Any:
     """Return the first available backend-provided value by key."""
     for key in keys:
@@ -273,6 +394,16 @@ if "used_cached_run" not in st.session_state:
     st.session_state.used_cached_run = False
 if "last_client_id" not in st.session_state:
     st.session_state.last_client_id = None
+if "report_payload" not in st.session_state:
+    st.session_state.report_payload = None
+if "export_csv_bytes" not in st.session_state:
+    st.session_state.export_csv_bytes = None
+if "export_powerbi_bytes" not in st.session_state:
+    st.session_state.export_powerbi_bytes = None
+if "report_markdown_bytes" not in st.session_state:
+    st.session_state.report_markdown_bytes = None
+if "export_kpi_json" not in st.session_state:
+    st.session_state.export_kpi_json = None
 
 
 with st.sidebar:
@@ -324,6 +455,11 @@ with st.sidebar:
         st.session_state.last_run_signature = None
         st.session_state.used_cached_run = False
         st.session_state.last_client_id = None
+        st.session_state.report_payload = None
+        st.session_state.export_csv_bytes = None
+        st.session_state.export_powerbi_bytes = None
+        st.session_state.report_markdown_bytes = None
+        st.session_state.export_kpi_json = None
         st.rerun()
 
 
@@ -425,11 +561,48 @@ if run_clicked:
                         st.session_state.execution_time_s = time.perf_counter() - started
                         st.session_state.last_run_signature = run_signature
                         st.session_state.last_client_id = chosen_client_id
+                        st.session_state.report_payload = (
+                            fetch_report_payload(
+                                entity_name=chosen_client_id or "",
+                                prompt=prompt.strip(),
+                                business_type=chosen_business_type,
+                            )
+                            if chosen_client_id
+                            else None
+                        )
+                        st.session_state.export_csv_bytes = fetch_export_bytes(
+                            dataset="records",
+                            output_format="csv",
+                            entity_name=chosen_client_id,
+                        )
+                        st.session_state.export_powerbi_bytes = fetch_export_bytes(
+                            dataset="kpis",
+                            output_format="csv",
+                            entity_name=chosen_client_id,
+                        )
+                        st.session_state.export_kpi_json = fetch_export_json(
+                            dataset="kpis",
+                            entity_name=chosen_client_id,
+                        )
+                        st.session_state.report_markdown_bytes = (
+                            fetch_report_markdown(
+                                entity_name=chosen_client_id or "",
+                                prompt=prompt.strip(),
+                                business_type=chosen_business_type,
+                            )
+                            if chosen_client_id
+                            else None
+                        )
                     except Exception as exc:  # noqa: BLE001
                         st.session_state.pipeline_result = None
                         st.session_state.pipeline_error = f"Pipeline error: {exc}"
                         st.session_state.execution_time_s = None
                         st.session_state.last_client_id = None
+                        st.session_state.report_payload = None
+                        st.session_state.export_csv_bytes = None
+                        st.session_state.export_powerbi_bytes = None
+                        st.session_state.report_markdown_bytes = None
+                        st.session_state.export_kpi_json = None
 
 
 st.subheader("Section 3: Execution Results")
@@ -439,8 +612,17 @@ elif st.session_state.pipeline_result is None:
     st.info("Run analysis to view results.")
 else:
     output: FinalInsightResponse = st.session_state.pipeline_result
-    raw_state: dict[str, Any] = {}
     selected_client_id: str | None = st.session_state.last_client_id
+    report_payload = (
+        st.session_state.report_payload
+        if isinstance(st.session_state.report_payload, dict)
+        else {}
+    )
+    derived_signals = (
+        report_payload.get("derived_signals")
+        if isinstance(report_payload.get("derived_signals"), dict)
+        else {}
+    )
 
     if st.session_state.execution_time_s is not None:
         st.caption(f"Execution time: {st.session_state.execution_time_s:.2f}s")
@@ -456,38 +638,102 @@ else:
     st.markdown(f"**Confidence Score:** {output.confidence_score}")
     st.markdown(f"**Pipeline Status:** {output.pipeline_status}")
 
-    powerbi_record = _build_powerbi_record(
-        output,
-        raw_state,
-        fallback_client_id=selected_client_id,
+    if output.diagnostics is not None:
+        st.markdown("**Ingestion / Signal Diagnostics**")
+        st.json(output.diagnostics.model_dump())
+
+    kpi_export = (
+        st.session_state.export_kpi_json
+        if isinstance(st.session_state.export_kpi_json, dict)
+        else {}
     )
-    summary_record = _insight_record(output)
+    kpi_rows = kpi_export.get("data") if isinstance(kpi_export.get("data"), list) else []
+    if kpi_rows:
+        kpi_df = pd.DataFrame(kpi_rows)
+        required_cols = {"period_end", "metric_name", "metric_value"}
+        if required_cols.issubset(set(kpi_df.columns)):
+            kpi_df["period_end"] = pd.to_datetime(kpi_df["period_end"], errors="coerce")
+            kpi_df = kpi_df.dropna(subset=["period_end"])
+            if not kpi_df.empty:
+                chart_df = kpi_df.pivot_table(
+                    index="period_end",
+                    columns="metric_name",
+                    values="metric_value",
+                    aggfunc="last",
+                ).sort_index()
+                st.markdown("**Time-Series Chart**")
+                st.line_chart(chart_df, use_container_width=True)
 
-    json_bytes = json.dumps(powerbi_record, indent=2).encode("utf-8")
+    role_payload = derived_signals.get("role_contribution")
+    if isinstance(role_payload, dict):
+        contributors = role_payload.get("top_contributors")
+        if isinstance(contributors, list) and contributors:
+            role_df = pd.DataFrame(contributors)
+            if {"name", "contribution_value"}.issubset(set(role_df.columns)):
+                st.markdown("**Role Contribution Chart**")
+                st.bar_chart(
+                    role_df.set_index("name")["contribution_value"],
+                    use_container_width=True,
+                )
 
-    csv_buffer = io.StringIO()
-    pd.DataFrame([summary_record]).to_csv(csv_buffer, index=False)
-    csv_bytes = csv_buffer.getvalue().encode("utf-8")
+    risk_payload = derived_signals.get("risk")
+    if isinstance(risk_payload, dict):
+        risk_score = risk_payload.get("risk_score")
+        try:
+            risk_score_value = float(risk_score)
+        except (TypeError, ValueError):
+            risk_score_value = None
+        if risk_score_value is not None:
+            st.markdown("**Risk Gauge**")
+            st.progress(min(100, max(0, int(round(risk_score_value)))) / 100.0)
+            st.caption(f"Risk score: {risk_score_value:.2f}")
 
-    powerbi_columns = [
-        "insight",
-        "evidence",
-        "impact",
-        "recommended_action",
-        "priority",
-        "confidence_score",
-        "pipeline_status",
-        "timestamp",
-        "client_id",
-    ]
-    powerbi_buffer = io.StringIO()
-    pd.DataFrame([powerbi_record], columns=powerbi_columns).to_csv(
-        powerbi_buffer,
-        index=False,
+    multivariate_payload = derived_signals.get("multivariate_scenario")
+    if isinstance(multivariate_payload, dict):
+        scenario_simulation = multivariate_payload.get("scenario_simulation")
+        scenarios = (
+            scenario_simulation.get("scenarios")
+            if isinstance(scenario_simulation, dict)
+            else None
+        )
+        if isinstance(scenarios, dict):
+            rows: list[dict[str, Any]] = []
+            for name, scenario in scenarios.items():
+                if not isinstance(scenario, dict):
+                    continue
+                rows.append(
+                    {
+                        "scenario": name,
+                        "projected_value": scenario.get("projected_value"),
+                        "projected_growth": scenario.get("projected_growth"),
+                    }
+                )
+            if rows:
+                scenario_df = pd.DataFrame(rows).set_index("scenario")
+                st.markdown("**Scenario Comparison**")
+                st.bar_chart(
+                    scenario_df[["projected_value", "projected_growth"]],
+                    use_container_width=True,
+                )
+
+    json_bytes = json.dumps(output.model_dump(), indent=2).encode("utf-8")
+    csv_bytes = (
+        st.session_state.export_csv_bytes
+        if isinstance(st.session_state.export_csv_bytes, (bytes, bytearray))
+        else None
     )
-    powerbi_bytes = powerbi_buffer.getvalue().encode("utf-8")
+    powerbi_bytes = (
+        st.session_state.export_powerbi_bytes
+        if isinstance(st.session_state.export_powerbi_bytes, (bytes, bytearray))
+        else None
+    )
+    report_md_bytes = (
+        st.session_state.report_markdown_bytes
+        if isinstance(st.session_state.report_markdown_bytes, (bytes, bytearray))
+        else None
+    )
 
-    dcol1, dcol2, dcol3 = st.columns(3)
+    dcol1, dcol2, dcol3, dcol4 = st.columns(4)
     with dcol1:
         st.download_button(
             label="Download JSON",
@@ -499,19 +745,35 @@ else:
     with dcol2:
         st.download_button(
             label="Download CSV",
-            data=csv_bytes,
-            file_name="insight_summary.csv",
+            data=csv_bytes or b"",
+            file_name="insight_records.csv",
             mime="text/csv",
             use_container_width=True,
+            disabled=csv_bytes is None,
         )
     with dcol3:
         st.download_button(
             label="Download PowerBI Dataset",
-            data=powerbi_bytes,
+            data=powerbi_bytes or b"",
             file_name="powerbi_dataset.csv",
             mime="text/csv",
             use_container_width=True,
+            disabled=powerbi_bytes is None,
+        )
+    with dcol4:
+        st.download_button(
+            label="Download Report",
+            data=report_md_bytes or b"",
+            file_name="insight_report.md",
+            mime="text/markdown",
+            use_container_width=True,
+            disabled=report_md_bytes is None,
         )
 
     with st.expander("Show Internal Analysis"):
-        st.json({"final_insight_response": output.model_dump()})
+        st.json(
+            {
+                "final_insight_response": output.model_dump(),
+                "report_payload": report_payload,
+            }
+        )

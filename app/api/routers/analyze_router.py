@@ -252,6 +252,43 @@ def _infer_analytics_strategy_from_dataset(*, db: Session, entity_name: str) -> 
     return infer_analytics_strategy_from_categories(categories)
 
 
+def _estimate_dataset_confidence(
+    *,
+    db: Session,
+    entity_name: str,
+    processing_strategy: str | None = None,
+) -> float:
+    """
+    Estimate dataset confidence from stored ingestion provenance in metadata_json.
+    Falls back to 1.0 when no provenance confidence is found.
+    """
+    categories = category_aliases_for_business_type(processing_strategy or "")
+    stmt = select(CanonicalInsightRecord.metadata_json).where(
+        CanonicalInsightRecord.entity_name == entity_name,
+    )
+    if categories:
+        stmt = stmt.where(CanonicalInsightRecord.category.in_(categories))
+    rows = db.execute(stmt.limit(1000)).all()
+
+    confidences: list[float] = []
+    for row in rows:
+        metadata = row[0]
+        if not isinstance(metadata, dict):
+            continue
+        ingestion = metadata.get("_ingestion")
+        if not isinstance(ingestion, dict):
+            continue
+        raw = ingestion.get("schema_confidence")
+        try:
+            confidence = float(raw)
+        except (TypeError, ValueError):
+            continue
+        confidences.append(max(0.0, min(1.0, confidence)))
+    if not confidences:
+        return 1.0
+    return max(0.0, min(1.0, sum(confidences) / len(confidences)))
+
+
 def _is_benign_no_valid_records(ingest_summary: Any) -> bool:
     """
     Return True when ingestion produced only a synthetic no_valid_records marker.
@@ -320,6 +357,12 @@ def analyze(
         dataset_uploaded = file is not None
         ingestion_started_at = datetime.now(tz=timezone.utc) - timedelta(seconds=1)
         fallback_upload_entities: list[str] = []
+        ingestion_confidence = 1.0
+        ingestion_warnings: list[str] = []
+        ingestion_provenance: dict[str, Any] = {}
+        ingestion_pipeline_status: str | None = None
+        ingestion_inferred_category: str | None = None
+        ingestion_category_confidence: float = 0.0
         if dataset_uploaded:
             try:
                 effective_multi_entity_behavior = multi_entity_behavior or (
@@ -332,6 +375,11 @@ def analyze(
                     multi_entity_behavior=effective_multi_entity_behavior,
                 )
                 if ingest_summary.validation_errors:
+                    fatal_errors = [
+                        err
+                        for err in ingest_summary.validation_errors
+                        if str(err.code or "").strip().lower() not in {"schema_interpreter_warning"}
+                    ]
                     if _is_benign_no_valid_records(ingest_summary):
                         try:
                             fallback_upload_entities = csv_service.detect_csv_entities(
@@ -350,8 +398,8 @@ def analyze(
                             ingest_summary.rows_failed,
                             fallback_upload_entities,
                         )
-                    else:
-                        first_error = ingest_summary.validation_errors[0]
+                    elif fatal_errors and ingest_summary.rows_processed == 0:
+                        first_error = fatal_errors[0]
                         raise HTTPException(
                             status_code=status.HTTP_400_BAD_REQUEST,
                             detail=build_error_detail(
@@ -365,6 +413,25 @@ def analyze(
                                 },
                             ),
                         )
+                    elif fatal_errors:
+                        logger.warning(
+                            "Analyze: continuing with partial ingestion rows_processed=%s rows_failed=%s",
+                            ingest_summary.rows_processed,
+                            ingest_summary.rows_failed,
+                        )
+                ingestion_confidence = float(ingest_summary.confidence_score or 1.0)
+                ingestion_confidence = max(0.0, min(1.0, ingestion_confidence))
+                ingestion_warnings = [str(item) for item in (ingest_summary.warnings or [])]
+                ingestion_provenance = (
+                    ingest_summary.provenance
+                    if isinstance(ingest_summary.provenance, dict)
+                    else {}
+                )
+                ingestion_pipeline_status = str(ingest_summary.pipeline_status or "").strip() or None
+                ingestion_inferred_category = ingest_summary.inferred_category
+                ingestion_category_confidence = float(
+                    ingest_summary.category_confidence or 0.0
+                )
             finally:
                 file.file.close()
 
@@ -418,19 +485,38 @@ def analyze(
             )
 
         if dataset_uploaded and not analytics_strategy and not business_type:
-            inferred_strategy = _infer_analytics_strategy_from_dataset(
-                db=db,
-                entity_name=resolved_entity_name,
-            )
-            if inferred_strategy:
-                processing_strategy = inferred_strategy
-                analytics_strategy = inferred_strategy
-                logger.info(
-                    "Analyze: inferred processing_strategy=%r from dataset categories "
-                    "for entity=%r",
-                    inferred_strategy,
-                    resolved_entity_name,
+            # Prefer category inference from ingestion (confidence-scored)
+            if (
+                ingestion_inferred_category
+                and ingestion_category_confidence >= 0.80
+            ):
+                inferred_pack_strategy = get_processing_strategy(ingestion_inferred_category)
+                if inferred_pack_strategy and inferred_pack_strategy in supported:
+                    processing_strategy = inferred_pack_strategy
+                    analytics_strategy = inferred_pack_strategy
+                    logger.info(
+                        "Analyze: inferred processing_strategy=%r from category inference "
+                        "(confidence=%.2f) for entity=%r",
+                        inferred_pack_strategy,
+                        ingestion_category_confidence,
+                        resolved_entity_name,
+                    )
+
+            # Fallback to dataset category scan
+            if not analytics_strategy:
+                inferred_strategy = _infer_analytics_strategy_from_dataset(
+                    db=db,
+                    entity_name=resolved_entity_name,
                 )
+                if inferred_strategy:
+                    processing_strategy = inferred_strategy
+                    analytics_strategy = inferred_strategy
+                    logger.info(
+                        "Analyze: inferred processing_strategy=%r from dataset categories "
+                        "for entity=%r",
+                        inferred_strategy,
+                        resolved_entity_name,
+                    )
 
         # Step 4: Ensure KPI + forecast data exist for the resolved entity.
         # On first upload the computed_kpis table is empty for this entity;
@@ -467,6 +553,20 @@ def analyze(
             "business_type": processing_strategy,
             "entity_name": resolved_entity_name,
         }
+        dataset_confidence = (
+            ingestion_confidence
+            if dataset_uploaded
+            else _estimate_dataset_confidence(
+                db=db,
+                entity_name=resolved_entity_name,
+                processing_strategy=processing_strategy,
+            )
+        )
+        invoke_state["dataset_confidence"] = dataset_confidence
+        if ingestion_warnings:
+            invoke_state["ingestion_warnings"] = ingestion_warnings
+        if ingestion_provenance:
+            invoke_state["ingestion_provenance"] = ingestion_provenance
 
         state = insight_graph.invoke(invoke_state)
 
@@ -483,7 +583,23 @@ def analyze(
             raise ValueError("Pipeline did not produce final_response.")
 
         payload = json.loads(response)
-        return InsightOutput.model_validate(payload)
+        output_model = InsightOutput.model_validate(payload)
+
+        # Keep strict response schema unchanged while surfacing ingestion
+        # pipeline state as diagnostics warnings.
+        diagnostics = output_model.diagnostics
+        if ingestion_pipeline_status and diagnostics is not None:
+            if ingestion_pipeline_status != "success":
+                warnings = list(diagnostics.warnings)
+                warnings.append(
+                    f"Ingestion pipeline status was {ingestion_pipeline_status}; partial data path applied."
+                )
+                output_model = output_model.model_copy(
+                    update={
+                        "diagnostics": diagnostics.model_copy(update={"warnings": warnings})
+                    }
+                )
+        return output_model
 
     except HTTPException:
         raise
