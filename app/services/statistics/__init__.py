@@ -9,6 +9,16 @@ from app.services.statistics.multivariate import (
     MultivariateConfig,
     compute_multivariate_context,
 )
+from app.services.statistics.base_projection import (
+    BaseProjectionConfig,
+    align_growth_to_periods,
+    build_projection_periods,
+    cagr_growth,
+    compute_growth_rates,
+    project_base_case,
+    project_revenue_from_growth,
+    rolling_average_growth,
+)
 from app.services.statistics.inflation_adjustment import (
     align_cpi_to_kpi_periods,
     build_inflation_adjusted_series,
@@ -38,6 +48,38 @@ from app.services.statistics.scenario_simulator import (
     ScenarioShock,
     simulate_deterministic_scenarios,
 )
+from app.services.statistics.recession_modeling import (
+    RecessionCurveProfile,
+    RecessionModelConfig,
+    build_recovery_multiplier_curve,
+    compute_revenue_shock_multiplier,
+    extract_macro_shock_inputs,
+    model_recession_projection,
+)
+from app.services.statistics.market_share_simulation import (
+    MarketScenarioAssumption,
+    MarketShareSimulationConfig,
+    simulate_market_share,
+)
+from app.services.statistics.scenario_orchestration import (
+    ScenarioOrchestrationConfig,
+    ScenarioToggles,
+    orchestrate_all_scenarios,
+    orchestrate_scenarios_batch,
+    orchestrate_scenario,
+    run_base_scenario,
+    run_combined_scenario,
+    run_erosion_scenario,
+    run_recession_scenario,
+)
+from app.services.statistics.competitive_erosion import (
+    CompetitiveErosionConfig,
+    apply_erosion_to_growth,
+    compute_erosion_curve,
+    project_market_share,
+    score_to_vulnerability,
+    simulate_competitive_erosion,
+)
 
 __all__ = [
     "MetricStatisticsConfig",
@@ -53,6 +95,14 @@ __all__ = [
     "compute_growth_context",
     "MultivariateConfig",
     "compute_multivariate_context",
+    "BaseProjectionConfig",
+    "compute_growth_rates",
+    "cagr_growth",
+    "rolling_average_growth",
+    "build_projection_periods",
+    "align_growth_to_periods",
+    "project_revenue_from_growth",
+    "project_base_case",
     "align_cpi_to_kpi_periods",
     "compute_cpi_inflation_rate",
     "compute_real_growth_rate_with_cpi",
@@ -69,4 +119,28 @@ __all__ = [
     "ScenarioConfig",
     "ScenarioShock",
     "simulate_deterministic_scenarios",
+    "RecessionCurveProfile",
+    "RecessionModelConfig",
+    "extract_macro_shock_inputs",
+    "compute_revenue_shock_multiplier",
+    "build_recovery_multiplier_curve",
+    "model_recession_projection",
+    "MarketScenarioAssumption",
+    "MarketShareSimulationConfig",
+    "simulate_market_share",
+    "ScenarioToggles",
+    "ScenarioOrchestrationConfig",
+    "orchestrate_scenario",
+    "orchestrate_all_scenarios",
+    "orchestrate_scenarios_batch",
+    "run_base_scenario",
+    "run_erosion_scenario",
+    "run_recession_scenario",
+    "run_combined_scenario",
+    "CompetitiveErosionConfig",
+    "score_to_vulnerability",
+    "compute_erosion_curve",
+    "apply_erosion_to_growth",
+    "project_market_share",
+    "simulate_competitive_erosion",
 ]

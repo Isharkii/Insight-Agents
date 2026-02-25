@@ -213,5 +213,120 @@
       "macro_resilience_sensitivity": 1.0,
       "zero_guard": 0.000000001
     }
+  },
+  "recession_modeling": {
+    "defaults": {
+      "recovery_curve": "u_shape",
+      "gdp_weight": 0.65,
+      "interest_weight": 0.35,
+      "min_shock_multiplier": 0.35,
+      "max_shock_multiplier": 1.0,
+      "recovery_threshold": 0.98,
+      "percent_threshold": 1.0,
+      "percent_ceiling": 500.0,
+      "zero_guard": 0.000000001
+    },
+    "curve_profiles": {
+      "v_shape": {
+        "recovery_quarters": 2,
+        "plateau_quarters": 0,
+        "target_ratio": 1.0
+      },
+      "u_shape": {
+        "recovery_quarters": 4,
+        "plateau_quarters": 1,
+        "target_ratio": 1.0
+      },
+      "l_shape": {
+        "recovery_quarters": 8,
+        "plateau_quarters": 2,
+        "target_ratio": 0.85
+      }
+    }
+  },
+  "market_share_simulation": {
+    "defaults": {
+      "default_scenario": "base",
+      "new_entrant_factor": 0.0,
+      "client_initial_share_fallback": 0.10,
+      "percent_threshold": 1.0,
+      "percent_ceiling": 500.0,
+      "rank_weight": 0.5,
+      "share_weight": 0.5,
+      "zero_guard": 0.000000001
+    },
+    "scenario_assumptions": {
+      "conservative": {
+        "client_projection_multiplier": 0.98,
+        "competitor_growth_multiplier": 1.05,
+        "industry_expansion_multiplier": 0.95,
+        "entrant_multiplier": 1.20
+      },
+      "base": {
+        "client_projection_multiplier": 1.0,
+        "competitor_growth_multiplier": 1.0,
+        "industry_expansion_multiplier": 1.0,
+        "entrant_multiplier": 1.0
+      },
+      "aggressive": {
+        "client_projection_multiplier": 1.03,
+        "competitor_growth_multiplier": 0.95,
+        "industry_expansion_multiplier": 1.05,
+        "entrant_multiplier": 0.80
+      }
+    }
+  },
+  "scenario_orchestration": {
+    "defaults": {
+      "downside_weight": 0.70,
+      "drawdown_weight": 0.30,
+      "upside_credit_weight": 0.40,
+      "default_market_share_value": 0.0,
+      "zero_guard": 0.000000001
+    },
+    "scenarios": {
+      "base": {
+        "use_erosion": false,
+        "use_recession": false,
+        "use_market_share": true
+      },
+      "erosion": {
+        "use_erosion": true,
+        "use_recession": false,
+        "use_market_share": true
+      },
+      "recession": {
+        "use_erosion": false,
+        "use_recession": true,
+        "use_market_share": true
+      },
+      "combined": {
+        "use_erosion": true,
+        "use_recession": true,
+        "use_market_share": true
+      }
+    }
+  },
+  "competitive_erosion": {
+    "defaults": {
+      "horizon_periods": 8,
+      "decay_mode": "linear",
+      "min_erosion": 0.0,
+      "max_erosion": 0.95,
+      "max_cumulative_erosion": 0.99,
+      "noise_std": 0.0,
+      "zero_guard": 0.000000001
+    },
+    "severity": {
+      "mild": {
+        "multiplier": 0.75
+      },
+      "moderate": {
+        "multiplier": 1.0
+      },
+      "severe": {
+        "multiplier": 1.35
+      }
+    }
   }
 }
