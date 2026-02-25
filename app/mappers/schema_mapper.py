@@ -10,7 +10,8 @@ MappingValidator enforcement on top.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import logging
+from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
 from rapidfuzz import fuzz, process
@@ -23,8 +24,15 @@ from app.mappers.canonical_mapper import (
     REQUIRED_CANONICAL_FIELDS,
     normalize_header,
 )
+from app.mappers.schema_interpreter import (
+    InterpretationResult,
+    MappingDecision,
+    SchemaInterpreter,
+)
 from app.validators.mapping_validator import MappingErrorDetail, MappingValidator, SchemaMappingError
 from db.models.canonical_insight_record import CanonicalInsightRecord
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -35,6 +43,7 @@ class MappingResolution:
     source_headers: tuple[str, ...]
     match_strategies: dict[str, str]
     mapping_config_id: str | None = None
+    interpretation: InterpretationResult | None = None
 
 
 class SchemaMapper:
@@ -65,6 +74,10 @@ class SchemaMapper:
         )
         self._fuzzy_threshold = max(0.0, min(100.0, fuzzy_threshold))
         self._category_hint = category_hint
+        self._interpreter = SchemaInterpreter(
+            aliases=aliases,
+            category_hint=category_hint,
+        )
 
     def resolve_mapping(
         self,
@@ -73,6 +86,7 @@ class SchemaMapper:
         manual_overrides: Mapping[str, str] | None = None,
         mapping_config: Any | None = None,
         category_hint: str | None = None,
+        sample_rows: Sequence[Mapping[str, str]] | None = None,
     ) -> MappingResolution:
         """
         Resolve canonical-to-source mapping from headers, overrides, and DB config.
@@ -83,6 +97,7 @@ class SchemaMapper:
             mapping_config:   DB MappingConfig object (has field_mapping_json,
                               alias_overrides_json).
             category_hint:    Business category to activate domain-specific aliases.
+            sample_rows:      Optional sample data rows for interpreter scoring.
         """
         source_headers = tuple(header for header in headers if header and header.strip())
         normalized_header_lookup: dict[str, str] = {
@@ -185,11 +200,27 @@ class SchemaMapper:
         if mapping_config is not None:
             raw_id = getattr(mapping_config, "id", None)
             config_id = str(raw_id) if raw_id is not None else None
+
+        # Run interpreter for audit/scoring metadata
+        active_category = (category_hint or self._category_hint or "").strip().lower() or None
+        interpretation = self._interpreter.interpret(
+            headers,
+            sample_rows=sample_rows,
+            category_hint=active_category,
+        )
+
+        # Log interpreter warnings
+        for warning in interpretation.warnings:
+            logger.warning("SchemaInterpreter: %s", warning)
+        for error in interpretation.errors:
+            logger.error("SchemaInterpreter: %s", error)
+
         return MappingResolution(
             canonical_to_source=resolved,
             source_headers=source_headers,
             match_strategies=strategies,
             mapping_config_id=config_id,
+            interpretation=interpretation,
         )
 
     def map_row(

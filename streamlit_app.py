@@ -30,6 +30,7 @@ _BUSINESS_TYPE_OPTIONS = [
     "saas",
     "ecommerce",
     "agency",
+    "general_timeseries",
     "financial_market",
     "generic_timeseries",
 ]
@@ -105,8 +106,11 @@ def _api_error_message(resp: requests.Response) -> str:
     if isinstance(payload, dict):
         detail = payload.get("detail")
         if isinstance(detail, dict):
+            code = str(detail.get("code") or "").strip()
             err_type = str(detail.get("error_type") or "").strip()
             message = str(detail.get("message") or "").strip()
+            if code and message:
+                return f"{code}: {message}"
             if err_type and message:
                 return f"{err_type}: {message}"
             if message:

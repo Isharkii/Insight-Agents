@@ -37,6 +37,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
+from app.failure_codes import INTERNAL_FAILURE, SCHEMA_CONFLICT, build_error_detail
 from app.services.bi_export_service import (
     BIExportService,
     ExportResult,
@@ -152,17 +153,26 @@ def export_bi(
     if dataset not in _VALID_DATASETS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid dataset {dataset!r}. Must be one of: {sorted(_VALID_DATASETS)}.",
+            detail=build_error_detail(
+                code=SCHEMA_CONFLICT,
+                message=f"Invalid dataset {dataset!r}. Must be one of: {sorted(_VALID_DATASETS)}.",
+            ),
         )
     if output_format not in _VALID_FORMATS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid format {output_format!r}. Must be one of: {sorted(_VALID_FORMATS)}.",
+            detail=build_error_detail(
+                code=SCHEMA_CONFLICT,
+                message=f"Invalid format {output_format!r}. Must be one of: {sorted(_VALID_FORMATS)}.",
+            ),
         )
     if date_from and date_to and date_from > date_to:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="date_from must not be later than date_to.",
+            detail=build_error_detail(
+                code=SCHEMA_CONFLICT,
+                message="date_from must not be later than date_to.",
+            ),
         )
 
     # --- Delegate all data work to the service ---
@@ -177,13 +187,20 @@ def export_bi(
         )
     except ValueError as exc:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=build_error_detail(
+                code=SCHEMA_CONFLICT,
+                message=str(exc),
+            ),
         ) from exc
     except Exception as exc:  # noqa: BLE001
         logger.exception("BI export failed dataset=%r entity=%r", dataset, entity_name)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Export failed; see server logs for details.",
+            detail=build_error_detail(
+                code=INTERNAL_FAILURE,
+                message="Export failed; see server logs for details.",
+            ),
         ) from exc
 
     logger.info(

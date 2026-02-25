@@ -56,11 +56,11 @@ class ChurnInput:
     that track subscription status transitions within the period.
     """
 
-    customers_at_start: int
-    """Number of active customers at the beginning of the period."""
+    customers_at_start: int | None
+    """Number of active customers at the beginning of the period, or None if missing."""
 
-    customers_lost: int
-    """Number of customers who cancelled or lapsed during the period."""
+    customers_lost: int | None
+    """Number of customers who cancelled or lapsed during the period, or None if missing."""
 
 
 @dataclass(frozen=True)
@@ -73,11 +73,17 @@ class LTVInput:
       - ``churn_rate`` from :class:`ChurnInput` via :meth:`KPIService.calculate_churn`
     """
 
-    average_revenue_per_user: float
-    """Mean revenue generated per active user in the period."""
+    average_revenue_per_user: float | None
+    """Mean revenue generated per active user in the period, or None if missing."""
 
-    churn_rate: float
-    """Churn rate as a decimal fraction (e.g. 0.05 = 5 %)."""
+    churn_rate: float | None
+    """Churn rate as a decimal fraction (e.g. 0.05 = 5 %), or None if missing."""
+
+    revenue_present: bool = True
+    """Whether the underlying revenue data existed in the source."""
+
+    active_customers_present: bool = True
+    """Whether the underlying active-customer data existed in the source."""
 
 
 @dataclass(frozen=True)
@@ -89,11 +95,11 @@ class GrowthRateInput:
     for each period window and populates both fields.
     """
 
-    current_period_revenue: float
-    """Total revenue recognised in the current measurement period."""
+    current_period_revenue: float | None
+    """Total revenue recognised in the current measurement period, or None if missing."""
 
-    previous_period_revenue: float
-    """Total revenue recognised in the immediately preceding period."""
+    previous_period_revenue: float | None
+    """Total revenue recognised in the immediately preceding period, or None if missing."""
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +113,14 @@ class KPIResult:
     Structured result returned by every KPI calculation method.
 
     ``value`` is ``None`` when the calculation cannot be completed
-    (e.g. division by zero). Inspect ``error`` for the reason.
+    (e.g. division by zero or missing input data).
+    Inspect ``error`` for the reason.
+
+    ``is_valid`` indicates whether all required input dependencies
+    were present and the computation succeeded.
+
+    ``missing_dependencies`` lists the names of input fields that
+    were absent or unusable.
     """
 
     metric: str
@@ -118,6 +131,12 @@ class KPIResult:
 
     unit: str
     """Unit of measurement (e.g. ``"currency"``, ``"rate"``, ``"ratio"``)."""
+
+    is_valid: bool = True
+    """``False`` when one or more required dependencies are missing."""
+
+    missing_dependencies: list[str] = field(default_factory=list)
+    """Names of input fields that were absent or unusable."""
 
     computed_at: datetime = field(
         default_factory=lambda: datetime.now(tz=timezone.utc)
@@ -175,7 +194,7 @@ class KPIService:
         revenues = list(data.active_subscription_revenues)
         mrr = sum(revenues)
         logger.debug("MRR computed from %d subscriptions: %.4f", len(revenues), mrr)
-        return KPIResult(metric="mrr", value=mrr, unit="currency")
+        return KPIResult(metric="mrr", value=mrr, unit="currency", is_valid=True)
 
     # ------------------------------------------------------------------
     # Churn Rate
@@ -191,6 +210,8 @@ class KPIService:
 
         Edge cases
         ----------
+        * ``customers_at_start`` is ``None`` → missing dependency.
+        * ``customers_lost`` is ``None`` → missing dependency.
         * ``customers_at_start == 0`` → cannot divide; returns ``None`` with
           an ``error`` message.
 
@@ -205,12 +226,33 @@ class KPIService:
         KPIResult
             ``metric="churn_rate"``, ``unit="rate"`` (decimal fraction 0–1).
         """
+        missing: list[str] = []
+        if data.customers_at_start is None:
+            missing.append("customers_at_start")
+        if data.customers_lost is None:
+            missing.append("customers_lost")
+
+        if missing:
+            logger.warning(
+                "Churn rate calculation skipped: missing dependencies %s.", missing
+            )
+            return KPIResult(
+                metric="churn_rate",
+                value=None,
+                unit="rate",
+                is_valid=False,
+                missing_dependencies=missing,
+                error="insufficient_data",
+            )
+
         if data.customers_at_start == 0:
             logger.warning("Churn rate calculation skipped: customers_at_start is zero.")
             return KPIResult(
                 metric="churn_rate",
                 value=None,
                 unit="rate",
+                is_valid=False,
+                missing_dependencies=[],
                 error="Division by zero: customers_at_start must be > 0.",
             )
 
@@ -221,7 +263,7 @@ class KPIService:
             data.customers_lost,
             data.customers_at_start,
         )
-        return KPIResult(metric="churn_rate", value=rate, unit="rate")
+        return KPIResult(metric="churn_rate", value=rate, unit="rate", is_valid=True)
 
     # ------------------------------------------------------------------
     # LTV
@@ -238,28 +280,60 @@ class KPIService:
         This is the standard simplified LTV model: it estimates the total
         revenue a business can expect from one customer before they churn.
 
+        LTV is null when any of its base dependencies are missing:
+        - revenue data (required for ARPU)
+        - active_customers data (required for ARPU)
+        - churn_rate (required for denominator)
+
         Edge cases
         ----------
+        * Any dependency missing → returns ``None`` with ``insufficient_data``.
         * ``churn_rate == 0.0`` → cannot divide; returns ``None`` with an
-          ``error`` message.  A zero churn rate would imply infinite LTV,
-          which is not a meaningful reportable value.
+          ``error`` message.
 
         Parameters
         ----------
         data:
             ARPU and churn rate (as a decimal fraction, e.g. ``0.05``).
+            Includes presence flags for upstream dependency validation.
 
         Returns
         -------
         KPIResult
             ``metric="ltv"``, ``unit="currency"``.
         """
+        missing: list[str] = []
+        if not data.revenue_present:
+            missing.append("revenue")
+        if not data.active_customers_present:
+            missing.append("active_customers")
+        if data.average_revenue_per_user is None:
+            if "revenue" not in missing and "active_customers" not in missing:
+                missing.append("average_revenue_per_user")
+        if data.churn_rate is None:
+            missing.append("churn_rate")
+
+        if missing:
+            logger.warning(
+                "LTV calculation skipped: missing dependencies %s.", missing
+            )
+            return KPIResult(
+                metric="ltv",
+                value=None,
+                unit="currency",
+                is_valid=False,
+                missing_dependencies=missing,
+                error="insufficient_data",
+            )
+
         if data.churn_rate == 0.0:
             logger.warning("LTV calculation skipped: churn_rate is zero (implies infinite LTV).")
             return KPIResult(
                 metric="ltv",
                 value=None,
                 unit="currency",
+                is_valid=False,
+                missing_dependencies=[],
                 error="Division by zero: churn_rate must be > 0 to compute a finite LTV.",
             )
 
@@ -270,7 +344,7 @@ class KPIService:
             data.average_revenue_per_user,
             data.churn_rate,
         )
-        return KPIResult(metric="ltv", value=ltv, unit="currency")
+        return KPIResult(metric="ltv", value=ltv, unit="currency", is_valid=True)
 
     # ------------------------------------------------------------------
     # Growth Rate
@@ -289,6 +363,8 @@ class KPIService:
 
         Edge cases
         ----------
+        * ``current_period_revenue`` is ``None`` → missing dependency.
+        * ``previous_period_revenue`` is ``None`` → missing dependency.
         * ``previous_period_revenue == 0.0`` → cannot divide; returns ``None``
           with an ``error`` message.  A zero baseline makes percentage growth
           undefined.
@@ -304,6 +380,25 @@ class KPIService:
             ``metric="growth_rate"``, ``unit="rate"`` (decimal fraction,
             e.g. ``0.25`` = 25 % growth).
         """
+        missing: list[str] = []
+        if data.current_period_revenue is None:
+            missing.append("current_period_revenue")
+        if data.previous_period_revenue is None:
+            missing.append("previous_period_revenue")
+
+        if missing:
+            logger.warning(
+                "Growth rate calculation skipped: missing dependencies %s.", missing
+            )
+            return KPIResult(
+                metric="growth_rate",
+                value=None,
+                unit="rate",
+                is_valid=False,
+                missing_dependencies=missing,
+                error="insufficient_data",
+            )
+
         if data.previous_period_revenue == 0.0:
             logger.warning(
                 "Growth rate calculation skipped: previous_period_revenue is zero."
@@ -312,6 +407,8 @@ class KPIService:
                 metric="growth_rate",
                 value=None,
                 unit="rate",
+                is_valid=False,
+                missing_dependencies=[],
                 error="Division by zero: previous_period_revenue must be != 0.",
             )
 
@@ -324,4 +421,4 @@ class KPIService:
             data.current_period_revenue,
             data.previous_period_revenue,
         )
-        return KPIResult(metric="growth_rate", value=rate, unit="rate")
+        return KPIResult(metric="growth_rate", value=rate, unit="rate", is_valid=True)

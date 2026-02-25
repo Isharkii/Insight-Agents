@@ -1,5 +1,7 @@
 import json
 
+import requests
+
 import streamlit_app
 from llm_synthesis.schema import FinalInsightResponse
 
@@ -20,51 +22,34 @@ def _assert_final_response_contract(response: object) -> None:
 
 
 def test_pipeline_success_returns_final_insight_response(monkeypatch) -> None:
-    class _GraphSuccess:
-        def invoke(self, _: dict) -> dict:
+    class _Response:
+        status_code = 200
+        text = ""
+
+        @staticmethod
+        def json() -> dict:
             return {
-                "final_response": json.dumps(
-                    {
-                        "insight": "Revenue dipped due to higher churn.",
-                        "evidence": "Churn increased 8% over baseline.",
-                        "impact": "ARR risk in upcoming quarter.",
-                        "recommended_action": "Launch retention program.",
-                        "priority": "high",
-                        "confidence_score": 0.91,
-                    }
-                )
+                "insight": "Revenue dipped due to higher churn.",
+                "evidence": "Churn increased 8% over baseline.",
+                "impact": "ARR risk in upcoming quarter.",
+                "recommended_action": "Launch retention program.",
+                "priority": "high",
+                "confidence_score": 0.91,
+                "pipeline_status": "success",
+                "diagnostics": None,
             }
 
-    monkeypatch.setattr(
-        streamlit_app,
-        "_load_backend_handles",
-        lambda: {
-            "graph": _GraphSuccess(),
-            "intent_node": lambda _: {},
-            "csv_service": object(),
-            "session_factory": object(),
-        },
-    )
+    monkeypatch.setattr(streamlit_app.requests, "post", lambda *_, **__: _Response())
 
     response = streamlit_app.run_pipeline(data=None, prompt="analyze business")
     _assert_final_response_contract(response)
 
 
 def test_pipeline_forced_failure_returns_final_insight_response(monkeypatch) -> None:
-    class _GraphFailure:
-        def invoke(self, _: dict) -> dict:
-            raise RuntimeError("forced pipeline failure")
+    def _raise(*_, **__):
+        raise requests.RequestException("forced pipeline failure")
 
-    monkeypatch.setattr(
-        streamlit_app,
-        "_load_backend_handles",
-        lambda: {
-            "graph": _GraphFailure(),
-            "intent_node": lambda _: {},
-            "csv_service": object(),
-            "session_factory": object(),
-        },
-    )
+    monkeypatch.setattr(streamlit_app.requests, "post", _raise)
 
     response = streamlit_app.run_pipeline(data=None, prompt="analyze business")
     _assert_final_response_contract(response)

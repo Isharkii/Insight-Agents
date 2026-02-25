@@ -1,0 +1,41 @@
+{
+  "name": "operations",
+  "metric_aliases": {
+    "recurring_revenue": ["recurring_revenue", "throughput", "output_value", "operating_output"],
+    "active_customer_count": ["active_customer_count", "active_units", "processed_units"],
+    "churned_customer_count": ["churned_customer_count", "failed_units", "defect_units"]
+  },
+  "required_inputs": [
+    "recurring_revenue",
+    "active_customer_count",
+    "churned_customer_count"
+  ],
+  "category_aliases": ["sales", "operations", "ops"],
+  "deterministic_formulas": {
+    "class": "app.services.formulas.operations:OperationsFormula",
+    "input_bindings": {
+      "throughput_series": { "source": "agg.subscription_revenues", "default": [] },
+      "active_units": { "source": "agg.active_customers", "default": 0 },
+      "failed_units": { "source": "agg.lost_customers", "default": 0 },
+      "previous_output": { "source": "agg.previous_revenue", "default": 0.0 },
+      "labor_hours": { "source": "extra.labor_hours", "default": null },
+      "downtime_hours": { "source": "extra.downtime_hours", "default": null },
+      "capacity_hours": { "source": "extra.capacity_hours", "default": null }
+    },
+    "validity_rules": {
+      "productivity": {
+        "dependencies": [
+          { "source": "extra.labor_hours", "missing_when": "is_none" }
+        ]
+      },
+      "uptime_rate": {
+        "dependencies": [
+          { "source": "extra.capacity_hours", "missing_when": "is_none" },
+          { "source": "extra.downtime_hours", "missing_when": "is_none" }
+        ]
+      }
+    }
+  },
+  "optional_signals": ["productivity", "uptime_rate"],
+  "rate_metrics": ["defect_rate", "growth_rate", "uptime_rate"]
+}

@@ -12,8 +12,10 @@ def _payload() -> dict:
         "evidence": "Churn increased in mid-market segment.",
         "impact": "ARR pressure in next quarter.",
         "recommended_action": "Launch retention campaign.",
-        "priority": "High",
+        "priority": "high",
         "confidence_score": 0.87,
+        "pipeline_status": "success",
+        "diagnostics": None,
     }
 
 
@@ -27,6 +29,8 @@ def test_insight_output_contract() -> None:
         "recommended_action",
         "priority",
         "confidence_score",
+        "pipeline_status",
+        "diagnostics",
     }
     assert set(output.model_dump().keys()) == required
     assert isinstance(output.confidence_score, float)

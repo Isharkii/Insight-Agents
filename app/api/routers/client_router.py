@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.failure_codes import SCHEMA_CONFLICT, build_error_detail
 from db.models.client import Client
 from db.session import get_db
 
@@ -68,6 +69,9 @@ def create_client(
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"A client with name {body.name!r} already exists.",
+            detail=build_error_detail(
+                code=SCHEMA_CONFLICT,
+                message=f"A client with name {body.name!r} already exists.",
+            ),
         )
     return ClientResponse.model_validate(client)

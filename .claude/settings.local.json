@@ -5,7 +5,11 @@
       "Bash(python3 -m pytest:*)",
       "Bash(where:*)",
       "Bash(py -m pytest tests/test_kpi_service.py -v)",
-      "Bash(py -c:*)"
+      "Bash(py -c:*)",
+      "Bash(ls -la /d/PitchWorxagents/InsightAgent/*.txt /d/PitchWorxagents/InsightAgent/*.toml)",
+      "Bash(py -m pytest tests/test_schema_interpreter.py -v)",
+      "Bash(py -m pytest tests/test_schema_mapper.py tests/test_mapping_validator.py -v)",
+      "Bash(py -m pytest tests/test_wide_to_long_normalizer.py -v)"
     ]
   }
 }

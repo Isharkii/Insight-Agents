@@ -2,36 +2,109 @@
 agent/graph.py
 
 LangGraph workflow assembly for the Insight Agent.
+
+Pipeline status semantics
+-------------------------
+Each business type declares which state keys are *required* (the pipeline
+cannot succeed without them) and which are *optional* (nice-to-have but
+their absence only downgrades status to ``"partial"``).
+
+    success → all required nodes produced a ``"success"`` envelope
+    partial → all required nodes succeeded, but one or more optional nodes
+              failed or were skipped
+    failed  → at least one required node did not succeed
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
 import numpy as np
 from langgraph.graph import END, START, StateGraph
+from sqlalchemy import select
 
+from agent.graph_config import (
+    KPI_KEY_BY_BUSINESS_TYPE,
+    graph_node_config_for_business_type,
+)
 from agent.nodes.agency_kpi_node import agency_kpi_fetch_node
 from agent.nodes.business_router import business_router_node, route_by_business_type
 from agent.nodes.ecommerce_kpi_node import ecommerce_kpi_fetch_node
 from agent.nodes.intent import intent_node
+from agent.nodes.kpi_node import kpi_fetch_node
 from agent.nodes.llm_node import llm_node
 from agent.nodes.node_result import failed, payload_of, skipped, status_of, success
+from agent.nodes.prioritization_node import prioritization_node
 from agent.nodes.risk_node import risk_node
 from agent.nodes.saas_kpi_node import saas_kpi_fetch_node
 from agent.state import AgentState
+from app.services.category_registry import CategoryRegistryError, require_category_pack
+from app.services.kpi_canonical_schema import (
+    category_aliases_for_business_type,
+    metric_aliases_for_business_type,
+)
+from app.services.cohort_analytics import DEFAULT_COHORT_KEYS, compute_cohort_analytics
+from app.services.macro_context_service import build_macro_context
+from app.services.role_dimension_analytics import build_role_dimension_summary
 from app.services.role_performance_scoring import score_role_performance
+from app.services.timeseries_factors import compute_timeseries_factors
+from app.services.statistics.anomaly import detect_iqr_anomalies
+from app.services.statistics.growth_engine import compute_growth_context
+from app.services.statistics.multivariate import compute_multivariate_context
+from app.services.statistics.normalization import (
+    metric_statistics_config,
+    rolling_mean,
+    rolling_median,
+    zscore_normalize,
+)
+from app.services.statistics.scenario_simulator import simulate_deterministic_scenarios
+from db.models.canonical_insight_record import CanonicalInsightRecord
+from db.session import SessionLocal
 
-_KPI_KEY_BY_BUSINESS_TYPE: dict[str, str] = {
-    "saas": "saas_kpi_data",
-    "ecommerce": "ecommerce_kpi_data",
-    "agency": "agency_kpi_data",
-}
+def derive_pipeline_status(state: AgentState) -> str:
+    """Compute pipeline status from required/optional node classification.
+
+    Rules
+    -----
+    * ``"success"`` — every *required* node produced ``status="success"``.
+    * ``"partial"`` — all required nodes succeeded, but at least one *optional*
+      node that is wired did not succeed.
+    * ``"failed"``  — at least one required node is ``"skipped"`` or ``"failed"``.
+
+    Unwired optional nodes (value is ``None`` in state because no graph
+    node ever wrote to them) are silently ignored — they cannot drag the
+    pipeline down to ``"partial"`` or ``"failed"``.
+    """
+    config = graph_node_config_for_business_type(str(state.get("business_type") or ""))
+    required_keys = config.required
+    optional_keys = config.optional
+
+    # --- required nodes ---
+    for key in required_keys:
+        if status_of(state.get(key)) != "success":
+            return "failed"
+
+    # --- optional nodes (only those actually wired / populated) ---
+    for key in optional_keys:
+        value = state.get(key)
+        # None means the node was never wired — skip entirely.
+        if value is None:
+            continue
+        if status_of(value) != "success":
+            return "partial"
+
+    return "success"
+
+
+def pipeline_status_node(state: AgentState) -> AgentState:
+    """Pre-LLM node that computes ``pipeline_status`` from node outcomes."""
+    return {**state, "pipeline_status": derive_pipeline_status(state)}
 
 
 def _resolve_kpi_payload(state: AgentState) -> dict[str, Any]:
     business_type = str(state.get("business_type") or "").lower()
-    preferred_key = _KPI_KEY_BY_BUSINESS_TYPE.get(business_type)
+    preferred_key = KPI_KEY_BY_BUSINESS_TYPE.get(business_type)
     if preferred_key:
         preferred = state.get(preferred_key)
         if status_of(preferred) == "success":
@@ -39,7 +112,7 @@ def _resolve_kpi_payload(state: AgentState) -> dict[str, Any]:
             if isinstance(payload, dict):
                 return payload
 
-    for key in ("saas_kpi_data", "ecommerce_kpi_data", "agency_kpi_data"):
+    for key in ("kpi_data", "saas_kpi_data", "ecommerce_kpi_data", "agency_kpi_data"):
         candidate = state.get(key)
         if status_of(candidate) == "success":
             payload = payload_of(candidate)
@@ -64,6 +137,449 @@ def _extract_numeric_metric(
     return None
 
 
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    normalized = raw.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _resolve_period_bounds(kpi_payload: Mapping[str, Any]) -> tuple[datetime, datetime]:
+    now = datetime.now(tz=timezone.utc)
+    records = kpi_payload.get("records")
+    if isinstance(records, list) and records:
+        bounds: list[tuple[datetime, datetime]] = []
+        for record in records:
+            if not isinstance(record, Mapping):
+                continue
+            start = _parse_iso_datetime(record.get("period_start"))
+            end = _parse_iso_datetime(record.get("period_end"))
+            if start is None or end is None:
+                continue
+            bounds.append((start, end))
+        if bounds:
+            latest = max(bounds, key=lambda item: item[1])
+            return latest
+
+    start = _parse_iso_datetime(kpi_payload.get("period_start"))
+    end = _parse_iso_datetime(kpi_payload.get("period_end"))
+    if start is not None and end is not None:
+        return start, end
+
+    return now - timedelta(days=90), now
+
+
+def _coerce_numeric(value: Any) -> float | None:
+    if isinstance(value, Mapping):
+        value = value.get("value")
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if np.isfinite(numeric):
+        return float(numeric)
+    return None
+
+
+def _rows_from_kpi_payload(records: list[Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        if not isinstance(record, Mapping):
+            continue
+        computed = record.get("computed_kpis")
+        if not isinstance(computed, Mapping):
+            continue
+        for metric_name, metric_entry in computed.items():
+            numeric = _coerce_numeric(metric_entry)
+            if numeric is None:
+                continue
+            rows.append(
+                {
+                    "role": record.get("role"),
+                    "team": record.get("team"),
+                    "channel": record.get("channel"),
+                    "region": record.get("region"),
+                    "product_line": record.get("product_line"),
+                    "source_type": record.get("source_type"),
+                    "metric_name": str(metric_name),
+                    "metric_value": numeric,
+                    "metadata_json": record.get("metadata_json"),
+                }
+            )
+    return rows
+
+
+def _metric_series_from_kpi_payload(records: list[Any]) -> dict[str, list[float]]:
+    series_entries: dict[str, list[tuple[str, float]]] = {}
+    for record in records:
+        if not isinstance(record, Mapping):
+            continue
+        computed = record.get("computed_kpis")
+        if not isinstance(computed, Mapping):
+            continue
+        sort_key = str(
+            record.get("period_end")
+            or record.get("created_at")
+            or record.get("period_start")
+            or ""
+        ).strip()
+        for metric_name, metric_entry in computed.items():
+            numeric = _coerce_numeric(metric_entry)
+            if numeric is None:
+                continue
+            metric = str(metric_name).strip()
+            if not metric:
+                continue
+            series_entries.setdefault(metric, []).append((sort_key, float(numeric)))
+
+    output: dict[str, list[float]] = {}
+    for metric_name, entries in series_entries.items():
+        ordered = sorted(entries, key=lambda item: item[0])
+        output[metric_name] = [float(value) for _, value in ordered]
+    return output
+
+
+def _dataset_confidence_from_state(state: AgentState) -> float:
+    raw = state.get("dataset_confidence")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = 1.0
+    return max(0.0, min(1.0, value))
+
+
+def _cohort_rows_for_records(
+    *,
+    records: list[Any],
+    entity_name: str,
+    business_type: str,
+    period_start: datetime,
+    period_end: datetime,
+) -> list[dict[str, Any]]:
+    cohort_rows: list[dict[str, Any]] = []
+    if entity_name:
+        try:
+            cohort_rows = _fetch_canonical_cohort_rows(
+                entity_name=entity_name,
+                business_type=business_type,
+                period_start=period_start,
+                period_end=period_end,
+            )
+        except Exception:
+            cohort_rows = []
+    if not cohort_rows:
+        cohort_rows = _cohort_rows_from_kpi_payload(records)
+    return cohort_rows
+
+
+def _build_statistical_context(metric_series: Mapping[str, list[float]]) -> dict[str, Any]:
+    if not metric_series:
+        return {
+            "status": "partial",
+            "confidence_score": 0.5,
+            "warnings": ["No metric series available for statistical context."],
+            "metrics": {},
+            "anomaly_summary": {
+                "metric_count_with_anomalies": 0,
+                "total_anomaly_points": 0,
+                "metrics": [],
+            },
+        }
+
+    metrics_payload: dict[str, Any] = {}
+    warnings: list[str] = []
+    partial_metrics = 0
+    anomaly_metric_names: list[str] = []
+    total_anomaly_points = 0
+
+    for metric_name in sorted(metric_series):
+        values = metric_series.get(metric_name, [])
+        config = metric_statistics_config(metric_name)
+        z_values = zscore_normalize(
+            values,
+            clip_abs=config.zscore_clip,
+            zero_guard=config.zero_guard,
+        )
+        smoothed_mean = rolling_mean(values, window=config.smoothing_window)
+        smoothed_median = rolling_median(values, window=config.smoothing_window)
+        selected_smoothing = (
+            smoothed_median if config.smoothing_method == "median" else smoothed_mean
+        )
+        anomaly = detect_iqr_anomalies(
+            values,
+            multiplier=config.anomaly_iqr_multiplier,
+        )
+
+        metric_status = "success"
+        if len(values) < config.min_points:
+            metric_status = "partial"
+            partial_metrics += 1
+            warnings.append(
+                f"Metric '{metric_name}' has {len(values)} points; "
+                f"minimum recommended is {config.min_points}."
+            )
+
+        anomaly_count = len(anomaly.get("anomaly_indexes", []))
+        if anomaly_count > 0:
+            anomaly_metric_names.append(metric_name)
+            total_anomaly_points += anomaly_count
+
+        metrics_payload[metric_name] = {
+            "status": metric_status,
+            "series_length": len(values),
+            "applied_config": {
+                "smoothing_window": config.smoothing_window,
+                "smoothing_method": config.smoothing_method,
+                "zscore_clip": config.zscore_clip,
+                "anomaly_iqr_multiplier": config.anomaly_iqr_multiplier,
+                "min_points": config.min_points,
+            },
+            "zscore": {
+                "values": z_values,
+                "clip_abs": config.zscore_clip,
+            },
+            "smoothing": {
+                "mean": smoothed_mean,
+                "median": smoothed_median,
+                "selected_method": config.smoothing_method,
+                "selected": selected_smoothing,
+            },
+            "anomaly": anomaly,
+        }
+
+    metric_count = max(1, len(metrics_payload))
+    confidence_penalty = (partial_metrics / metric_count) * 0.4
+    confidence_score = max(0.2, round(1.0 - confidence_penalty, 6))
+
+    return {
+        "status": "partial" if partial_metrics > 0 else "success",
+        "confidence_score": confidence_score,
+        "warnings": warnings,
+        "metrics": metrics_payload,
+        "anomaly_summary": {
+            "metric_count_with_anomalies": len(anomaly_metric_names),
+            "total_anomaly_points": total_anomaly_points,
+            "metrics": sorted(anomaly_metric_names),
+        },
+    }
+
+
+def _cohort_rows_from_kpi_payload(records: list[Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        if not isinstance(record, Mapping):
+            continue
+        computed = record.get("computed_kpis")
+        if not isinstance(computed, Mapping):
+            continue
+        for metric_name, metric_entry in computed.items():
+            numeric = _coerce_numeric(metric_entry)
+            if numeric is None:
+                continue
+            metadata = record.get("metadata_json")
+            if not isinstance(metadata, Mapping):
+                metadata = {}
+            rows.append(
+                {
+                    "timestamp": record.get("period_end") or record.get("created_at"),
+                    "metric_name": str(metric_name),
+                    "metric_value": numeric,
+                    "signup_month": record.get("signup_month") or metadata.get("signup_month"),
+                    "acquisition_channel": (
+                        record.get("acquisition_channel")
+                        or metadata.get("acquisition_channel")
+                        or record.get("channel")
+                        or metadata.get("channel")
+                    ),
+                    "segment": record.get("segment") or metadata.get("segment"),
+                    "metadata_json": dict(metadata),
+                }
+            )
+    return rows
+
+
+def _fetch_canonical_dimension_rows(
+    *,
+    entity_name: str,
+    business_type: str,
+    period_start: datetime,
+    period_end: datetime,
+) -> list[dict[str, Any]]:
+    categories = category_aliases_for_business_type(business_type)
+    aliases = metric_aliases_for_business_type(business_type)
+    revenue_metrics = aliases.get("recurring_revenue", ("recurring_revenue",))
+
+    with SessionLocal() as session:
+        stmt = (
+            select(
+                CanonicalInsightRecord.role,
+                CanonicalInsightRecord.region,
+                CanonicalInsightRecord.source_type,
+                CanonicalInsightRecord.metric_name,
+                CanonicalInsightRecord.metric_value,
+                CanonicalInsightRecord.metadata_json,
+            )
+            .where(
+                CanonicalInsightRecord.entity_name == entity_name,
+                CanonicalInsightRecord.category.in_(categories),
+                CanonicalInsightRecord.metric_name.in_(revenue_metrics),
+                CanonicalInsightRecord.timestamp >= period_start,
+                CanonicalInsightRecord.timestamp <= period_end,
+            )
+            .order_by(CanonicalInsightRecord.timestamp.asc(), CanonicalInsightRecord.metric_name.asc())
+        )
+        query_rows = session.execute(stmt).all()
+
+    result: list[dict[str, Any]] = []
+    for row in query_rows:
+        metric_value = _coerce_numeric(row.metric_value)
+        if metric_value is None:
+            continue
+        metadata = row.metadata_json if isinstance(row.metadata_json, Mapping) else {}
+        result.append(
+            {
+                "role": row.role,
+                "region": row.region,
+                "source_type": row.source_type,
+                "metric_name": row.metric_name,
+                "metric_value": metric_value,
+                "team": metadata.get("team"),
+                "channel": metadata.get("channel"),
+                "product_line": metadata.get("product_line"),
+                "metadata_json": dict(metadata),
+            }
+        )
+    return result
+
+
+def _fetch_canonical_cohort_rows(
+    *,
+    entity_name: str,
+    business_type: str,
+    period_start: datetime,
+    period_end: datetime,
+) -> list[dict[str, Any]]:
+    categories = category_aliases_for_business_type(business_type)
+    lookback_start = period_start - timedelta(days=365)
+    with SessionLocal() as session:
+        stmt = (
+            select(
+                CanonicalInsightRecord.metric_name,
+                CanonicalInsightRecord.metric_value,
+                CanonicalInsightRecord.timestamp,
+                CanonicalInsightRecord.metadata_json,
+            )
+            .where(
+                CanonicalInsightRecord.entity_name == entity_name,
+                CanonicalInsightRecord.category.in_(categories),
+                CanonicalInsightRecord.timestamp >= lookback_start,
+                CanonicalInsightRecord.timestamp <= period_end,
+            )
+            .order_by(CanonicalInsightRecord.timestamp.asc(), CanonicalInsightRecord.metric_name.asc())
+        )
+        query_rows = session.execute(stmt).all()
+
+    result: list[dict[str, Any]] = []
+    for row in query_rows:
+        metric_value = _coerce_numeric(row.metric_value)
+        if metric_value is None:
+            continue
+        metadata = row.metadata_json if isinstance(row.metadata_json, Mapping) else {}
+        result.append(
+            {
+                "timestamp": row.timestamp.isoformat() if row.timestamp else None,
+                "metric_name": row.metric_name,
+                "metric_value": metric_value,
+                "signup_month": metadata.get("signup_month"),
+                "acquisition_channel": metadata.get("acquisition_channel") or metadata.get("channel"),
+                "segment": metadata.get("segment") or metadata.get("customer_segment"),
+                "metadata_json": dict(metadata),
+            }
+        )
+    return result
+
+
+def _fetch_macro_context_rows(
+    *,
+    entity_name: str,
+    business_type: str,
+    period_start: datetime,
+    period_end: datetime,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    lookback_start = period_start - timedelta(days=730)
+    categories = category_aliases_for_business_type(business_type)
+
+    with SessionLocal() as session:
+        inflation_stmt = (
+            select(
+                CanonicalInsightRecord.entity_name,
+                CanonicalInsightRecord.category,
+                CanonicalInsightRecord.source_type,
+                CanonicalInsightRecord.metric_name,
+                CanonicalInsightRecord.metric_value,
+                CanonicalInsightRecord.timestamp,
+                CanonicalInsightRecord.metadata_json,
+            )
+            .where(
+                CanonicalInsightRecord.category == "macro",
+                CanonicalInsightRecord.timestamp >= lookback_start,
+                CanonicalInsightRecord.timestamp <= period_end,
+            )
+            .order_by(CanonicalInsightRecord.timestamp.asc(), CanonicalInsightRecord.metric_name.asc())
+        )
+        inflation_query_rows = session.execute(inflation_stmt).all()
+
+        benchmark_stmt = (
+            select(
+                CanonicalInsightRecord.entity_name,
+                CanonicalInsightRecord.category,
+                CanonicalInsightRecord.source_type,
+                CanonicalInsightRecord.metric_name,
+                CanonicalInsightRecord.metric_value,
+                CanonicalInsightRecord.timestamp,
+                CanonicalInsightRecord.metadata_json,
+            )
+            .where(
+                CanonicalInsightRecord.entity_name == entity_name,
+                CanonicalInsightRecord.category.in_(categories),
+                CanonicalInsightRecord.timestamp >= lookback_start,
+                CanonicalInsightRecord.timestamp <= period_end,
+            )
+            .order_by(CanonicalInsightRecord.timestamp.asc(), CanonicalInsightRecord.metric_name.asc())
+        )
+        benchmark_query_rows = session.execute(benchmark_stmt).all()
+
+    def _serialize(rows: list[Any]) -> list[dict[str, Any]]:
+        serialized: list[dict[str, Any]] = []
+        for row in rows:
+            metadata = row.metadata_json if isinstance(row.metadata_json, Mapping) else {}
+            serialized.append(
+                {
+                    "entity_name": row.entity_name,
+                    "category": row.category,
+                    "source_type": row.source_type,
+                    "metric_name": row.metric_name,
+                    "metric_value": row.metric_value,
+                    "timestamp": row.timestamp.isoformat() if row.timestamp else None,
+                    "metadata_json": dict(metadata),
+                }
+            )
+        return serialized
+
+    inflation_rows = _serialize(inflation_query_rows)
+    benchmark_rows = _serialize(benchmark_query_rows)
+    return inflation_rows, benchmark_rows
+
+
 def role_analytics_node(state: AgentState) -> AgentState:
     """
     Role analytics stage inserted between KPI and risk.
@@ -78,100 +594,142 @@ def role_analytics_node(state: AgentState) -> AgentState:
             role_analytics_data = skipped("kpi_unavailable", {"records": 0})
             return {**state, "segmentation": role_analytics_data}
 
-        has_role_column = any(isinstance(row, dict) and "role" in row for row in records)
-        if not has_role_column:
-            role_analytics_data = skipped("role_column_missing")
+        business_type = str(state.get("business_type") or "").strip().lower()
+        entity_name = str(
+            kpi_payload.get("fetched_for")
+            or state.get("entity_name")
+            or ""
+        ).strip()
+
+        period_start, period_end = _resolve_period_bounds(kpi_payload)
+        canonical_rows: list[dict[str, Any]] = []
+        if entity_name:
+            canonical_rows = _fetch_canonical_dimension_rows(
+                entity_name=entity_name,
+                business_type=business_type,
+                period_start=period_start,
+                period_end=period_end,
+            )
+
+        if not canonical_rows:
+            canonical_rows = _rows_from_kpi_payload(records)
+        if not canonical_rows:
+            role_analytics_data = skipped("dimension_values_missing", {"records": len(records)})
             return {**state, "segmentation": role_analytics_data}
 
-        aggregated: dict[str, dict[str, list[float]]] = {}
-        rows_with_role = 0
-
-        for row in records:
-            if not isinstance(row, dict):
-                continue
-            role = str(row.get("role") or "").strip()
-            if not role:
-                continue
-            rows_with_role += 1
-
-            computed_kpis = row.get("computed_kpis")
-            if not isinstance(computed_kpis, dict):
-                computed_kpis = {}
-
-            growth = _extract_numeric_metric(
-                computed_kpis,
-                ("growth_rate", "revenue_growth_delta", "mrr_growth_rate"),
-            )
-            efficiency = _extract_numeric_metric(
-                computed_kpis,
-                (
-                    "efficiency_metric",
-                    "utilization_rate",
-                    "conversion_rate",
-                    "revenue_per_employee",
-                ),
-            )
-            contribution = _extract_numeric_metric(
-                computed_kpis,
-                ("contribution_weight", "contribution", "revenue_share", "weight"),
-            )
-
-            slot = aggregated.setdefault(
-                role,
-                {
-                    "growth_rate": [],
-                    "efficiency_metric": [],
-                    "contribution_weight": [],
-                },
-            )
-            if growth is not None:
-                slot["growth_rate"].append(growth)
-            if efficiency is not None:
-                slot["efficiency_metric"].append(efficiency)
-            slot["contribution_weight"].append(
-                contribution if contribution is not None else 1.0
-            )
-
-        if rows_with_role == 0 or not aggregated:
-            role_analytics_data = skipped("role_values_missing")
+        summary = build_role_dimension_summary(canonical_rows, top_n=3)
+        if not summary.get("records_used"):
+            role_analytics_data = skipped("dimension_values_missing", {"records": len(canonical_rows)})
             return {**state, "segmentation": role_analytics_data}
 
-        statistical_engine: dict[str, dict[str, float | int]] = {}
+        inflation_rows: list[dict[str, Any]] = []
+        benchmark_rows: list[dict[str, Any]] = []
+        if entity_name:
+            try:
+                inflation_rows, benchmark_rows = _fetch_macro_context_rows(
+                    entity_name=entity_name,
+                    business_type=business_type,
+                    period_start=period_start,
+                    period_end=period_end,
+                )
+            except Exception:
+                inflation_rows = []
+                benchmark_rows = []
+
+        aliases = metric_aliases_for_business_type(business_type)
+        revenue_candidates = aliases.get("recurring_revenue", ("recurring_revenue",))
+        macro_context = build_macro_context(
+            kpi_payload=kpi_payload,
+            inflation_rows=inflation_rows,
+            benchmark_rows=benchmark_rows,
+            metric_candidates=revenue_candidates,
+        )
+
+        cohort_rows: list[dict[str, Any]] = []
+        if entity_name:
+            try:
+                cohort_rows = _fetch_canonical_cohort_rows(
+                    entity_name=entity_name,
+                    business_type=business_type,
+                    period_start=period_start,
+                    period_end=period_end,
+                )
+            except Exception:
+                cohort_rows = []
+        if not cohort_rows:
+            cohort_rows = _cohort_rows_from_kpi_payload(records)
+
+        active_candidates = aliases.get("active_customer_count", ("active_customer_count",))
+        churn_candidates = aliases.get("churned_customer_count", ("churned_customer_count",))
+        cohort_analytics = compute_cohort_analytics(
+            cohort_rows,
+            cohort_keys=DEFAULT_COHORT_KEYS,
+            active_metric_names=active_candidates,
+            churn_metric_names=churn_candidates,
+        )
+        metric_series = _metric_series_from_kpi_payload(records)
+        statistical_context = _build_statistical_context(metric_series)
+        growth_context = compute_growth_context(
+            metric_series,
+            preferred_metric_candidates=revenue_candidates,
+        )
+        multivariate_context = compute_multivariate_context(
+            metric_series,
+            segment_rows=cohort_rows,
+            preferred_metric_candidates=revenue_candidates,
+        )
+        scenario_simulation = simulate_deterministic_scenarios(
+            metric_series,
+            growth_context=growth_context,
+            statistical_context=statistical_context,
+            multivariate_context=multivariate_context,
+            preferred_metric_candidates=revenue_candidates,
+        )
+        statistical_context = {
+            **statistical_context,
+            "derived": {
+                "multivariate": multivariate_context,
+                "scenario_simulation": scenario_simulation,
+            },
+        }
+
         scoring_input: dict[str, dict[str, Any]] = {}
-        for role, metrics in aggregated.items():
-            growth_arr = np.asarray(metrics["growth_rate"], dtype=float)
-            eff_arr = np.asarray(metrics["efficiency_metric"], dtype=float)
-            contrib_arr = np.asarray(metrics["contribution_weight"], dtype=float)
+        for dimension, payload in summary.get("by_dimension", {}).items():
+            contributors = payload.get("contributors", [])
+            if not isinstance(contributors, list):
+                continue
+            for contributor in contributors:
+                if not isinstance(contributor, Mapping):
+                    continue
+                name = str(contributor.get("name") or "").strip()
+                if not name:
+                    continue
+                share = float(contributor.get("contribution_share") or 0.0)
+                key = f"{dimension}:{name}"
+                scoring_input[key] = {
+                    "growth_rate": [share],
+                    "efficiency_metric": [share],
+                    "contribution_weight": [share],
+                    "stability_series": [share],
+                }
 
-            stability_arr = growth_arr if growth_arr.size > 1 else eff_arr
-            variance = float(np.var(stability_arr)) if stability_arr.size > 1 else 0.0
-
-            statistical_engine[role] = {
-                "growth_mean": float(np.mean(growth_arr)) if growth_arr.size else 0.0,
-                "efficiency_mean": float(np.mean(eff_arr)) if eff_arr.size else 0.0,
-                "contribution_mean": float(np.mean(contrib_arr)) if contrib_arr.size else 0.0,
-                "stability_variance": variance,
-                "n_samples": int(
-                    max(growth_arr.size, eff_arr.size, contrib_arr.size, 1)
-                ),
-            }
-
-            scoring_input[role] = {
-                "growth_rate": growth_arr.tolist(),
-                "efficiency_metric": eff_arr.tolist(),
-                "contribution_weight": contrib_arr.tolist(),
-                "stability_series": stability_arr.tolist(),
-            }
-
-        category = str(state.get("business_type") or "").strip().lower() or None
-        role_scores = score_role_performance(scoring_input, category=category)
-
+        role_scores = score_role_performance(scoring_input, category=business_type)
         role_analytics_data = success(
             {
-                "role_aggregation": aggregated,
-                "statistical_engine": statistical_engine,
+                "dimensions": summary.get("dimensions", []),
+                "top_contributors": summary.get("top_contributors", []),
+                "laggards": summary.get("laggards", []),
+                "dependency_concentration": summary.get("dependency_concentration", {}),
+                "by_dimension": summary.get("by_dimension", {}),
+                "records_scanned": summary.get("records_scanned", 0),
+                "records_used": summary.get("records_used", 0),
                 "role_scoring": role_scores,
-                "roles_scored": len(role_scores),
+                "macro_context": macro_context,
+                "cohort_analytics": cohort_analytics,
+                "statistical_context": statistical_context,
+                "growth_context": growth_context,
+                "multivariate_context": multivariate_context,
+                "scenario_simulation": scenario_simulation,
             }
         )
         return {**state, "segmentation": role_analytics_data}
@@ -187,11 +745,14 @@ def build_graph():
 
     graph.add_node("intent", intent_node)
     graph.add_node("business_router", business_router_node)
+    graph.add_node("kpi_fetch", kpi_fetch_node)
     graph.add_node("saas_kpi_fetch", saas_kpi_fetch_node)
     graph.add_node("ecommerce_kpi_fetch", ecommerce_kpi_fetch_node)
     graph.add_node("agency_kpi_fetch", agency_kpi_fetch_node)
     graph.add_node("role_analytics", role_analytics_node)
     graph.add_node("risk", risk_node)
+    graph.add_node("prioritization", prioritization_node)
+    graph.add_node("pipeline_status", pipeline_status_node)
     graph.add_node("llm", llm_node)
 
     graph.add_edge(START, "intent")
@@ -200,16 +761,20 @@ def build_graph():
         "business_router",
         route_by_business_type,
         {
+            "kpi_fetch": "kpi_fetch",
             "saas_kpi_fetch": "saas_kpi_fetch",
             "ecommerce_kpi_fetch": "ecommerce_kpi_fetch",
             "agency_kpi_fetch": "agency_kpi_fetch",
         },
     )
+    graph.add_edge("kpi_fetch", "role_analytics")
     graph.add_edge("saas_kpi_fetch", "role_analytics")
     graph.add_edge("ecommerce_kpi_fetch", "role_analytics")
     graph.add_edge("agency_kpi_fetch", "role_analytics")
     graph.add_edge("role_analytics", "risk")
-    graph.add_edge("risk", "llm")
+    graph.add_edge("risk", "prioritization")
+    graph.add_edge("prioritization", "pipeline_status")
+    graph.add_edge("pipeline_status", "llm")
     graph.add_edge("llm", END)
 
     return graph.compile()

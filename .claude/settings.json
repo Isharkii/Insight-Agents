@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./venv/Scripts/pip list)",
+      "Bash(ls /d/PitchWorxagents/InsightAgent/venv/Scripts/py*)",
+      "Bash(ls /d/PitchWorxagents/InsightAgent/venv/Lib/site-packages/pytest*)"
+    ]
+  }
+}

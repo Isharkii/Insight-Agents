@@ -1,0 +1,41 @@
+{
+  "name": "healthcare",
+  "metric_aliases": {
+    "recurring_revenue": ["recurring_revenue", "patient_revenue", "care_revenue", "service_revenue"],
+    "active_customer_count": ["active_customer_count", "active_patients", "patient_count"],
+    "churned_customer_count": ["churned_customer_count", "readmissions", "churned_patients"]
+  },
+  "required_inputs": [
+    "recurring_revenue",
+    "active_customer_count",
+    "churned_customer_count"
+  ],
+  "category_aliases": ["sales", "healthcare", "clinical"],
+  "deterministic_formulas": {
+    "class": "app.services.formulas.healthcare:HealthcareFormula",
+    "input_bindings": {
+      "service_revenue": { "source": "agg.subscription_revenues", "default": [] },
+      "active_patients": { "source": "agg.active_customers", "default": 0 },
+      "readmissions": { "source": "agg.lost_customers", "default": 0 },
+      "previous_revenue": { "source": "agg.previous_revenue", "default": 0.0 },
+      "occupied_beds": { "source": "extra.occupied_beds", "default": null },
+      "total_beds": { "source": "extra.total_beds", "default": null },
+      "staff_hours": { "source": "extra.staff_hours", "default": null }
+    },
+    "validity_rules": {
+      "bed_occupancy_rate": {
+        "dependencies": [
+          { "source": "extra.occupied_beds", "missing_when": "is_none" },
+          { "source": "extra.total_beds", "missing_when": "is_none" }
+        ]
+      },
+      "revenue_per_staff_hour": {
+        "dependencies": [
+          { "source": "extra.staff_hours", "missing_when": "is_none" }
+        ]
+      }
+    }
+  },
+  "optional_signals": ["bed_occupancy_rate", "revenue_per_staff_hour"],
+  "rate_metrics": ["readmission_rate", "growth_rate", "bed_occupancy_rate"]
+}

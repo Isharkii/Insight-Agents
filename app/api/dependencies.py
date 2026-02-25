@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from fastapi import File, HTTPException, UploadFile, status
 
+from app.failure_codes import INGESTION_VALIDATION, build_error_detail
+
 CSV_CONTENT_TYPES = {
     "text/csv",
     "application/csv",
@@ -29,7 +31,10 @@ def get_csv_upload(file: UploadFile = File(...)) -> UploadFile:
     if not is_csv_filename and not is_csv_content_type:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only CSV files are allowed.",
+            detail=build_error_detail(
+                code=INGESTION_VALIDATION,
+                message="Only CSV files are allowed.",
+            ),
         )
 
     return file

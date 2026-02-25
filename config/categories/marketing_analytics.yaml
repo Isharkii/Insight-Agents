@@ -1,0 +1,46 @@
+{
+  "name": "marketing_analytics",
+  "metric_aliases": {
+    "recurring_revenue": ["recurring_revenue", "attributed_revenue", "campaign_revenue", "marketing_revenue"],
+    "active_customer_count": ["active_customer_count", "conversions", "converted_customers"],
+    "churned_customer_count": ["churned_customer_count", "lost_customers", "pipeline_dropoffs"]
+  },
+  "required_inputs": [
+    "recurring_revenue",
+    "active_customer_count",
+    "churned_customer_count"
+  ],
+  "category_aliases": ["sales", "marketing", "marketing_analytics"],
+  "deterministic_formulas": {
+    "class": "app.services.formulas.marketing_analytics:MarketingAnalyticsFormula",
+    "input_bindings": {
+      "campaign_revenue": { "source": "agg.subscription_revenues", "default": [] },
+      "conversions": { "source": "agg.active_customers", "default": 0 },
+      "churned_customers": { "source": "agg.lost_customers", "default": 0 },
+      "previous_revenue": { "source": "agg.previous_revenue", "default": 0.0 },
+      "ad_spend": { "source": "extra.ad_spend", "default": null },
+      "impressions": { "source": "extra.impressions", "default": null },
+      "clicks": { "source": "extra.clicks", "default": null }
+    },
+    "validity_rules": {
+      "roas": {
+        "dependencies": [
+          { "source": "extra.ad_spend", "missing_when": "is_none" }
+        ]
+      },
+      "ctr": {
+        "dependencies": [
+          { "source": "extra.impressions", "missing_when": "is_none" },
+          { "source": "extra.clicks", "missing_when": "is_none" }
+        ]
+      },
+      "cac": {
+        "dependencies": [
+          { "source": "extra.ad_spend", "missing_when": "is_none" }
+        ]
+      }
+    }
+  },
+  "optional_signals": ["roas", "ctr", "cac"],
+  "rate_metrics": ["pipeline_churn", "growth_rate", "ctr"]
+}

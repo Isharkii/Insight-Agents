@@ -1,0 +1,46 @@
+{
+  "name": "retail",
+  "metric_aliases": {
+    "recurring_revenue": ["recurring_revenue", "net_sales", "retail_revenue", "pos_sales"],
+    "active_customer_count": ["active_customer_count", "active_shoppers", "customers"],
+    "churned_customer_count": ["churned_customer_count", "churned_shoppers", "lost_shoppers"]
+  },
+  "required_inputs": [
+    "recurring_revenue",
+    "active_customer_count",
+    "churned_customer_count"
+  ],
+  "category_aliases": ["sales", "retail", "storefront"],
+  "deterministic_formulas": {
+    "class": "app.services.formulas.retail:RetailFormula",
+    "input_bindings": {
+      "sales_series": { "source": "agg.subscription_revenues", "default": [] },
+      "active_customers": { "source": "agg.active_customers", "default": 0 },
+      "churned_customers": { "source": "agg.lost_customers", "default": 0 },
+      "previous_sales": { "source": "agg.previous_revenue", "default": 0.0 },
+      "footfall": { "source": "extra.footfall", "default": null },
+      "orders": { "source": "extra.orders", "default": null },
+      "cogs": { "source": "extra.cogs", "default": null }
+    },
+    "validity_rules": {
+      "conversion_rate": {
+        "dependencies": [
+          { "source": "extra.footfall", "missing_when": "is_none" },
+          { "source": "extra.orders", "missing_when": "is_none" }
+        ]
+      },
+      "gross_margin_rate": {
+        "dependencies": [
+          { "source": "extra.cogs", "missing_when": "is_none" }
+        ]
+      },
+      "average_ticket": {
+        "dependencies": [
+          { "source": "extra.orders", "missing_when": "is_none" }
+        ]
+      }
+    }
+  },
+  "optional_signals": ["conversion_rate", "gross_margin_rate", "average_ticket"],
+  "rate_metrics": ["customer_churn", "growth_rate", "conversion_rate", "gross_margin_rate"]
+}

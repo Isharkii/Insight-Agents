@@ -18,8 +18,18 @@ from sqlalchemy.orm import Session
 
 from agent.graph import insight_graph
 from agent.nodes.intent import intent_node
-from category_registry import get_processing_strategy, supported_categories
+from app.failure_codes import (
+    INGESTION_VALIDATION,
+    INTERNAL_FAILURE,
+    SCHEMA_CONFLICT,
+    build_error_detail,
+)
 from app.repositories.dataset_repository import DatasetRepository
+from app.services.category_registry import (
+    get_processing_strategy,
+    primary_metric_for_business_type,
+    supported_categories,
+)
 from app.services.csv_ingestion_service import (
     CSVIngestionService,
     get_csv_ingestion_service,
@@ -37,12 +47,6 @@ from llm_synthesis.schema import InsightOutput
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["analysis"])
-
-_PRIMARY_METRIC_BY_PROCESSING_STRATEGY: dict[str, str] = {
-    "saas": "mrr",
-    "ecommerce": "revenue",
-    "agency": "total_revenue",
-}
 
 
 # ---------------------------------------------------------------------------
@@ -107,10 +111,7 @@ def _ensure_analytics_data(
 
     # --- Forecast generation ---
     try:
-        metric_name = _PRIMARY_METRIC_BY_PROCESSING_STRATEGY.get(
-            processing_strategy,
-            "revenue",
-        )
+        metric_name = primary_metric_for_business_type(processing_strategy)
         values = _extract_primary_metric_values(kpi_result, metric_name)
         forecast_result = ForecastOrchestrator(db).generate_forecast(
             entity_name=entity_name,
@@ -214,8 +215,9 @@ def _extract_primary_metric_values(
 
 def _has_kpi_data(state: dict[str, Any]) -> bool:
     """Check whether the pipeline produced any KPI records."""
-    for key in ("saas_kpi_data", "ecommerce_kpi_data", "agency_kpi_data"):
-        payload = state.get(key)
+    for key, payload in state.items():
+        if key != "kpi_data" and not key.endswith("_kpi_data"):
+            continue
         if isinstance(payload, dict):
             data = payload.get("payload") if "status" in payload else payload
             records = data.get("records") if isinstance(data, dict) else None
@@ -307,9 +309,10 @@ def analyze(
             resolved_business_type = business_type
 
         processing_strategy = get_processing_strategy(resolved_business_type)
+        supported = set(supported_categories())
         analytics_strategy = (
             processing_strategy
-            if processing_strategy in _PRIMARY_METRIC_BY_PROCESSING_STRATEGY
+            if processing_strategy in supported
             else None
         )
 
@@ -351,13 +354,16 @@ def analyze(
                         first_error = ingest_summary.validation_errors[0]
                         raise HTTPException(
                             status_code=status.HTTP_400_BAD_REQUEST,
-                            detail={
-                                "error_type": "ingestion_validation_failed",
-                                "message": first_error.message,
-                                "code": first_error.code,
-                                "column": first_error.column,
-                                "context": first_error.context,
-                            },
+                            detail=build_error_detail(
+                                code=INGESTION_VALIDATION,
+                                message=first_error.message,
+                                error_type="ingestion_validation_failed",
+                                context={
+                                    "validation_code": first_error.code,
+                                    "column": first_error.column,
+                                    "context": first_error.context,
+                                },
+                            ),
                         )
             finally:
                 file.file.close()
@@ -384,28 +390,31 @@ def analyze(
             if not dataset_entities:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail={
-                        "error_type": "entity_resolution_failed",
-                        "message": "No entity_name values were found in ingested canonical records.",
-                    },
+                    detail=build_error_detail(
+                        code=SCHEMA_CONFLICT,
+                        message="No entity_name values were found in ingested canonical records.",
+                        error_type="entity_resolution_failed",
+                    ),
                 )
             if len(dataset_entities) > 1:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail={
-                        "error_type": "entity_resolution_failed",
-                        "message": "Multiple entity_name values detected in dataset.",
-                        "entity_names": dataset_entities,
-                    },
+                    detail=build_error_detail(
+                        code=SCHEMA_CONFLICT,
+                        message="Multiple entity_name values detected in dataset.",
+                        error_type="entity_resolution_failed",
+                        context={"entity_names": dataset_entities},
+                    ),
                 )
             resolved_entity_name = dataset_entities[0]
         else:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail={
-                    "error_type": "entity_resolution_failed",
-                    "message": "client_id is required when no dataset is uploaded.",
-                },
+                detail=build_error_detail(
+                    code=SCHEMA_CONFLICT,
+                    message="client_id is required when no dataset is uploaded.",
+                    error_type="entity_resolution_failed",
+                ),
             )
 
         if dataset_uploaded and not analytics_strategy and not business_type:
@@ -485,5 +494,8 @@ def analyze(
         logger.exception("Analysis pipeline unexpected error")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Pipeline error: {exc}",
+            detail=build_error_detail(
+                code=INTERNAL_FAILURE,
+                message=f"Pipeline error: {exc}",
+            ),
         ) from exc

@@ -1,0 +1,47 @@
+{
+  "name": "saas",
+  "metric_aliases": {
+    "recurring_revenue": ["recurring_revenue", "mrr"],
+    "active_customer_count": ["active_customer_count", "active_customers"],
+    "churned_customer_count": ["churned_customer_count", "churned_subscriptions", "churned_customers"]
+  },
+  "required_inputs": [
+    "recurring_revenue",
+    "active_customer_count",
+    "churned_customer_count"
+  ],
+  "category_aliases": ["sales", "saas"],
+  "deterministic_formulas": {
+    "class": "kpi.saas:SaaSKPIFormula",
+    "input_bindings": {
+      "active_subscriptions": { "source": "agg.subscription_revenues", "default": [] },
+      "starting_customers": { "source": "agg.active_customers", "default": 0 },
+      "lost_customers": { "source": "agg.lost_customers", "default": 0 },
+      "gross_margin": { "source": "extra.gross_margin", "default": 0.0 },
+      "previous_mrr": { "source": "agg.previous_revenue", "default": 0.0 }
+    },
+    "validity_rules": {
+      "ltv": {
+        "dependencies": [
+          { "source": "agg.current_revenue", "missing_when": "is_none" },
+          { "source": "agg.active_customers", "missing_when": "is_none" },
+          { "source": "agg.lost_customers", "missing_when": "is_none" }
+        ]
+      },
+      "churn_rate": {
+        "dependencies": [
+          { "source": "agg.active_customers", "missing_when": "is_none" },
+          { "source": "agg.lost_customers", "missing_when": "is_none" }
+        ]
+      },
+      "growth_rate": {
+        "dependencies": [
+          { "source": "agg.current_revenue", "missing_when": "is_none" },
+          { "source": "agg.previous_revenue", "missing_when": "is_none" }
+        ]
+      }
+    }
+  },
+  "optional_signals": ["ltv", "growth_rate", "arpu"],
+  "rate_metrics": ["churn_rate", "growth_rate"]
+}

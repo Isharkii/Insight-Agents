@@ -9,6 +9,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from app.failure_codes import EXTERNAL_UNAVAILABLE, SCHEMA_CONFLICT, build_error_detail
 from app.schemas.external_ingestion import ExternalIngestionSummaryResponse
 from app.services.external_ingestion_service import (
     ExternalIngestionService,
@@ -34,7 +35,18 @@ def ingest_external(
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
+            detail=build_error_detail(
+                code=SCHEMA_CONFLICT,
+                message=str(exc),
+            ),
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=build_error_detail(
+                code=EXTERNAL_UNAVAILABLE,
+                message=str(exc),
+            ),
         ) from exc
 
     return [

@@ -1,0 +1,42 @@
+{
+  "name": "agency",
+  "metric_aliases": {
+    "recurring_revenue": ["recurring_revenue", "total_revenue"],
+    "active_customer_count": ["active_customer_count", "active_clients"],
+    "churned_customer_count": ["churned_customer_count", "churned_clients"]
+  },
+  "required_inputs": [
+    "recurring_revenue",
+    "active_customer_count",
+    "churned_customer_count"
+  ],
+  "category_aliases": ["sales", "agency"],
+  "deterministic_formulas": {
+    "class": "kpi.agency:AgencyKPIFormula",
+    "input_bindings": {
+      "retainer_fees": { "source": "agg.subscription_revenues", "default": [] },
+      "project_values": { "source": "extra.project_values", "default": [] },
+      "starting_clients": { "source": "agg.active_customers", "default": 0 },
+      "lost_clients": { "source": "agg.lost_customers", "default": 0 },
+      "billable_hours": { "source": "extra.billable_hours", "default": 0.0 },
+      "available_hours": { "source": "extra.available_hours", "default": 0.0 },
+      "total_employees": { "source": "extra.total_employees", "default": 0 },
+      "average_client_lifespan_months": { "source": "extra.average_client_lifespan_months", "default": 0 }
+    },
+    "validity_rules": {
+      "client_ltv": {
+        "dependencies": [
+          { "source": "agg.subscription_revenues", "missing_when": "is_empty" }
+        ]
+      },
+      "client_churn": {
+        "dependencies": [
+          { "source": "agg.active_customers", "missing_when": "is_none" },
+          { "source": "agg.lost_customers", "missing_when": "is_none" }
+        ]
+      }
+    }
+  },
+  "optional_signals": ["utilization_rate", "revenue_per_employee", "client_ltv"],
+  "rate_metrics": ["client_churn", "utilization_rate"]
+}

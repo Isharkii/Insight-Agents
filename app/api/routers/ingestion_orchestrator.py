@@ -10,6 +10,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, U
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_csv_upload
+from app.failure_codes import SCHEMA_CONFLICT, build_error_detail
 from app.schemas.ingestion_orchestrator import (
     IngestionJobAcceptedResponse,
     IngestionJobStatusResponse,
@@ -120,7 +121,10 @@ def get_ingestion_status(
         if job is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Ingestion job not found: {job_id}",
+                detail=build_error_detail(
+                    code=SCHEMA_CONFLICT,
+                    message=f"Ingestion job not found: {job_id}",
+                ),
             )
         return IngestionStatusListResponse(jobs=[_to_status_response(job)])
 

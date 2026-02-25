@@ -39,6 +39,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from llm_synthesis.schema import FinalInsightResponse
+from app.services.category_registry import (
+    churn_metric_for_business_type,
+    primary_metric_for_business_type,
+    supported_categories,
+)
 from app.services.kpi_orchestrator import KPIOrchestrator, KPIRunResult
 from db.models.client import Client
 from db.models.computed_kpi import ComputedKPI
@@ -49,13 +54,14 @@ from risk.orchestrator import RiskOrchestrator
 
 logger = logging.getLogger(__name__)
 
-_VALID_BUSINESS_TYPES: frozenset[str] = frozenset({"saas", "ecommerce", "agency"})
-
-_PRIMARY_METRIC_BY_BUSINESS_TYPE: dict[str, str] = {
-    "saas": "mrr",
-    "ecommerce": "revenue",
-    "agency": "total_revenue",
-}
+def _valid_business_types() -> frozenset[str]:
+    try:
+        values = tuple(supported_categories())
+        if values:
+            return frozenset(values)
+    except Exception:  # noqa: BLE001
+        logger.exception("Unable to load supported categories from registry.")
+    return frozenset({"saas", "ecommerce", "agency"})
 
 
 def _extract_primary_metric_values(
@@ -105,6 +111,7 @@ def _entities_from_env() -> list[tuple[str, str]]:
     raw = os.getenv("SCHEDULER_ENTITIES", "").strip()
     if not raw:
         return []
+    valid_business_types = _valid_business_types()
     entities: list[tuple[str, str]] = []
     for token in raw.split(","):
         token = token.strip()
@@ -118,7 +125,7 @@ def _entities_from_env() -> list[tuple[str, str]]:
         if not name:
             logger.warning("SCHEDULER_ENTITIES: skipping token with empty name %r", token)
             continue
-        if btype not in _VALID_BUSINESS_TYPES:
+        if btype not in valid_business_types:
             logger.warning(
                 "SCHEDULER_ENTITIES: skipping %r — unknown business_type %r", name, btype
             )
@@ -133,12 +140,13 @@ def _entities_from_db(session: Session) -> list[tuple[str, str]]:
     ``"business_type"`` key.  Returns (client.name, business_type) pairs.
     """
     try:
+        valid_business_types = list(_valid_business_types())
         rows = (
             session.query(Client.name, Client.config)
             .filter(
                 Client.is_active.is_(True),
                 Client.config.isnot(None),
-                Client.config["business_type"].astext.in_(list(_VALID_BUSINESS_TYPES)),
+                Client.config["business_type"].astext.in_(valid_business_types),
             )
             .all()
         )
@@ -259,7 +267,7 @@ def run_daily_forecast() -> FinalInsightResponse:
                         period_end=now,
                         db=db,
                     )
-                    metric_name = _PRIMARY_METRIC_BY_BUSINESS_TYPE.get(business_type, "revenue")
+                    metric_name = primary_metric_for_business_type(business_type)
                     values = _extract_primary_metric_values(kpi_result, metric_name)
                     result = ForecastOrchestrator(db).generate_forecast(
                         entity_name=entity_name,
@@ -325,7 +333,7 @@ def run_daily_risk() -> FinalInsightResponse:
                         )
 
                     # Fetch the most recent forecast for the primary metric.
-                    metric_name = _PRIMARY_METRIC_BY_BUSINESS_TYPE.get(business_type, "revenue")
+                    metric_name = primary_metric_for_business_type(business_type)
                     forecast_record = ForecastRepository(db).get_latest_forecast(
                         entity_name=entity_name,
                         metric_name=metric_name,
@@ -345,8 +353,7 @@ def run_daily_risk() -> FinalInsightResponse:
                         v = entry.get("value")
                         return float(v) if v is not None else 0.0
 
-                    # agency stores churn as "client_churn"; saas/ecommerce as "churn_rate".
-                    churn_key = "client_churn" if business_type == "agency" else "churn_rate"
+                    churn_key = churn_metric_for_business_type(business_type)
                     kpi_data: dict = {
                         "revenue_growth_delta": _kpi_value("growth_rate"),
                         "churn_delta":          _kpi_value(churn_key),

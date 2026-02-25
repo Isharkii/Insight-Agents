@@ -1,0 +1,41 @@
+{
+  "name": "ecommerce",
+  "metric_aliases": {
+    "recurring_revenue": ["recurring_revenue", "revenue", "gmv"],
+    "active_customer_count": ["active_customer_count", "active_customers"],
+    "churned_customer_count": ["churned_customer_count", "churned_customers", "lost_customers"]
+  },
+  "required_inputs": [
+    "recurring_revenue",
+    "active_customer_count",
+    "churned_customer_count"
+  ],
+  "category_aliases": ["sales", "ecommerce"],
+  "deterministic_formulas": {
+    "class": "kpi.ecommerce:EcommerceKPIFormula",
+    "input_bindings": {
+      "orders": { "source": "agg.subscription_revenues", "default": [] },
+      "total_visitors": { "source": "extra.total_visitors", "default": 0 },
+      "marketing_spend": { "source": "extra.marketing_spend", "default": 0.0 },
+      "new_customers": { "source": "extra.new_customers", "default": 0 },
+      "unique_customers": { "source": "agg.active_customers", "default": 0 },
+      "previous_revenue": { "source": "agg.previous_revenue", "default": 0.0 }
+    },
+    "validity_rules": {
+      "ltv": {
+        "dependencies": [
+          { "source": "agg.subscription_revenues", "missing_when": "is_empty" },
+          { "source": "agg.active_customers", "missing_when": "is_none" }
+        ]
+      },
+      "growth_rate": {
+        "dependencies": [
+          { "source": "agg.current_revenue", "missing_when": "is_none" },
+          { "source": "agg.previous_revenue", "missing_when": "is_none" }
+        ]
+      }
+    }
+  },
+  "optional_signals": ["aov", "cac", "purchase_frequency", "ltv", "growth_rate"],
+  "rate_metrics": ["conversion_rate", "purchase_frequency", "growth_rate"]
+}

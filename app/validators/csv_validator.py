@@ -27,7 +27,7 @@ ALLOWED_SOURCE_TYPES = {
 }
 
 TIMESTAMP_REQUIRED_CATEGORIES: frozenset[str] = frozenset(
-    {"saas", "financial_market", "generic_timeseries"}
+    {"saas", "financial_market", "generic_timeseries", "general_timeseries"}
 )
 
 

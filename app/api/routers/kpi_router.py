@@ -21,6 +21,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.failure_codes import INTERNAL_FAILURE, SCHEMA_CONFLICT, build_error_detail
+from app.services.category_registry import primary_metric_for_business_type
 from app.services.kpi_orchestrator import (
     KPIOrchestrator,
     KPIRunResult,
@@ -39,12 +41,6 @@ router = APIRouter(tags=["kpi"])
 # ---------------------------------------------------------------------------
 # Analytics helpers (formerly in csv_ingestion_service)
 # ---------------------------------------------------------------------------
-
-_PRIMARY_METRIC_BY_BUSINESS_TYPE: dict[str, str] = {
-    "saas": "mrr",
-    "ecommerce": "revenue",
-    "agency": "total_revenue",
-}
 
 
 def _extract_primary_metric_values(
@@ -155,17 +151,23 @@ def recompute_kpis(
     except KPIUnknownBusinessTypeError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unsupported business_type: {body.business_type}",
+            detail=build_error_detail(
+                code=SCHEMA_CONFLICT,
+                message=f"Unsupported business_type: {body.business_type}",
+            ),
         ) from exc
     except (KPIAggregationError, KPIPersistenceError) as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"KPI pipeline failed: {exc}",
+            detail=build_error_detail(
+                code=INTERNAL_FAILURE,
+                message=f"KPI pipeline failed: {exc}",
+            ),
         ) from exc
 
     # --- Step 2: Forecast ---
     try:
-        metric_name = _PRIMARY_METRIC_BY_BUSINESS_TYPE.get(body.business_type, "revenue")
+        metric_name = primary_metric_for_business_type(body.business_type)
         values = _extract_primary_metric_values(kpi_result, metric_name)
         forecast_result = ForecastOrchestrator(db).generate_forecast(
             entity_name=body.entity_name,

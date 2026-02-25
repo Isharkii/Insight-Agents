@@ -139,7 +139,7 @@ class AggregationService:
         entity_name: str,
         start_date: datetime,
         end_date: datetime,
-    ) -> float:
+    ) -> float | None:
         """
         Sum all recurring revenue records for *entity_name* within [start_date, end_date].
 
@@ -147,7 +147,7 @@ class AggregationService:
         -------
         Single aggregation::
 
-            SELECT COALESCE(SUM(metric_value::text::numeric), 0)
+            SELECT SUM(metric_value::text::numeric)
             FROM   canonical_insight_records
             WHERE  entity_name    = :entity
               AND  category       = 'sales'
@@ -156,10 +156,28 @@ class AggregationService:
 
         Returns
         -------
-        float
-            Total revenue for the period. ``0.0`` when no matching records exist.
+        float | None
+            Total revenue for the period. ``None`` when no matching records
+            exist — callers must not treat missing data as zero.
         """
         numeric_value = _to_numeric(CanonicalInsightRecord.metric_value)
+
+        # Count matching rows to distinguish "no data" from "sum is zero".
+        count_stmt = select(func.count()).where(
+            CanonicalInsightRecord.entity_name == entity_name,
+            CanonicalInsightRecord.category.in_(self._categories),
+            CanonicalInsightRecord.metric_name.in_(self._metric_revenue),
+            CanonicalInsightRecord.timestamp >= start_date,
+            CanonicalInsightRecord.timestamp <= end_date,
+        )
+        row_count = self._session.scalar(count_stmt) or 0
+
+        if row_count == 0:
+            logger.debug(
+                "get_period_revenue entity=%r [%s, %s] → None (no records)",
+                entity_name, start_date.isoformat(), end_date.isoformat(),
+            )
+            return None
 
         stmt = select(func.coalesce(func.sum(numeric_value), 0)).where(
             CanonicalInsightRecord.entity_name == entity_name,
@@ -181,7 +199,7 @@ class AggregationService:
         self,
         entity_name: str,
         start_date: datetime,
-    ) -> int:
+    ) -> int | None:
         """
         Return the most recent active-customer headcount at or before *start_date*.
 
@@ -204,9 +222,9 @@ class AggregationService:
 
         Returns
         -------
-        int
-            Active customer count. ``0`` when no snapshot exists at or before
-            *start_date*.
+        int | None
+            Active customer count. ``None`` when no snapshot exists at or
+            before *start_date* — callers must not treat missing data as zero.
         """
         stmt = (
             select(CanonicalInsightRecord.metric_value)
@@ -221,7 +239,13 @@ class AggregationService:
         )
 
         raw = self._session.scalar(stmt)
-        count = int(raw) if raw is not None else 0
+        if raw is None:
+            logger.debug(
+                "get_active_customers entity=%r at %s → None (no snapshot)",
+                entity_name, start_date.isoformat(),
+            )
+            return None
+        count = int(raw)
         logger.debug(
             "get_active_customers entity=%r at %s → %d",
             entity_name, start_date.isoformat(), count,
@@ -233,7 +257,7 @@ class AggregationService:
         entity_name: str,
         start_date: datetime,
         end_date: datetime,
-    ) -> int:
+    ) -> int | None:
         """
         Sum all churned-customer-count records within [start_date, end_date].
 
@@ -245,7 +269,7 @@ class AggregationService:
         -------
         Single aggregation::
 
-            SELECT COALESCE(SUM(metric_value::text::numeric), 0)
+            SELECT SUM(metric_value::text::numeric)
             FROM   canonical_insight_records
             WHERE  entity_name = :entity
               AND  category    = 'sales'
@@ -254,10 +278,28 @@ class AggregationService:
 
         Returns
         -------
-        int
-            Total customers lost in the period. ``0`` when no records exist.
+        int | None
+            Total customers lost in the period. ``None`` when no records
+            exist — callers must not treat missing data as zero.
         """
         numeric_value = _to_numeric(CanonicalInsightRecord.metric_value)
+
+        # Count matching rows to distinguish "no data" from "sum is zero".
+        count_stmt = select(func.count()).where(
+            CanonicalInsightRecord.entity_name == entity_name,
+            CanonicalInsightRecord.category.in_(self._categories),
+            CanonicalInsightRecord.metric_name.in_(self._metric_churned),
+            CanonicalInsightRecord.timestamp >= start_date,
+            CanonicalInsightRecord.timestamp <= end_date,
+        )
+        row_count = self._session.scalar(count_stmt) or 0
+
+        if row_count == 0:
+            logger.debug(
+                "get_lost_customers entity=%r [%s, %s] → None (no records)",
+                entity_name, start_date.isoformat(), end_date.isoformat(),
+            )
+            return None
 
         stmt = select(func.coalesce(func.sum(numeric_value), 0)).where(
             CanonicalInsightRecord.entity_name == entity_name,
@@ -280,7 +322,7 @@ class AggregationService:
         entity_name: str,
         start_date: datetime,
         end_date: datetime,
-    ) -> float:
+    ) -> float | None:
         """
         Compute Average Revenue Per User (ARPU) for *entity_name* over the period.
 
@@ -300,26 +342,27 @@ class AggregationService:
 
         Returns
         -------
-        float
-            ARPU for the period. ``0.0`` when revenue is zero **or** when no
-            active-customer snapshot exists (avoids division by zero; the caller
-            KPIService handles the zero-ARPU case when computing LTV).
+        float | None
+            ARPU for the period. ``None`` when revenue data is missing or
+            when no active-customer snapshot exists — callers must not treat
+            missing data as zero.
         """
         total_revenue = self.get_period_revenue(entity_name, start_date, end_date)
-        if total_revenue == 0.0:
+        if total_revenue is None:
             logger.debug(
-                "get_average_revenue_per_user entity=%r: revenue is zero, ARPU=0.0",
+                "get_average_revenue_per_user entity=%r: revenue missing, ARPU=None",
                 entity_name,
             )
-            return 0.0
+            return None
 
         customer_count = self.get_active_customers(entity_name, start_date)
-        if customer_count == 0:
+        if customer_count is None or customer_count == 0:
             logger.debug(
-                "get_average_revenue_per_user entity=%r: no active customers, ARPU=0.0",
+                "get_average_revenue_per_user entity=%r: active customers %s, ARPU=None",
                 entity_name,
+                "missing" if customer_count is None else "zero",
             )
-            return 0.0
+            return None
 
         arpu = total_revenue / customer_count
         logger.debug(

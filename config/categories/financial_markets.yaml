@@ -1,0 +1,40 @@
+{
+  "name": "financial_markets",
+  "metric_aliases": {
+    "recurring_revenue": ["recurring_revenue", "market_revenue", "net_trading_income", "aum_revenue"],
+    "active_customer_count": ["active_customer_count", "active_accounts", "active_investors"],
+    "churned_customer_count": ["churned_customer_count", "closed_accounts", "churned_accounts"]
+  },
+  "required_inputs": [
+    "recurring_revenue",
+    "active_customer_count",
+    "churned_customer_count"
+  ],
+  "category_aliases": ["sales", "financial_markets", "markets"],
+  "deterministic_formulas": {
+    "class": "app.services.formulas.financial_markets:FinancialMarketsFormula",
+    "input_bindings": {
+      "pnl_series": { "source": "agg.subscription_revenues", "default": [] },
+      "active_accounts": { "source": "agg.active_customers", "default": 0 },
+      "lost_accounts": { "source": "agg.lost_customers", "default": 0 },
+      "previous_revenue": { "source": "agg.previous_revenue", "default": 0.0 },
+      "risk_free_rate": { "source": "extra.risk_free_rate", "default": null },
+      "volatility_override": { "source": "extra.volatility_override", "default": null }
+    },
+    "validity_rules": {
+      "volatility": {
+        "dependencies": [
+          { "source": "agg.subscription_revenues", "missing_when": "is_empty" }
+        ]
+      },
+      "sharpe_like": {
+        "dependencies": [
+          { "source": "agg.subscription_revenues", "missing_when": "is_empty" },
+          { "source": "extra.risk_free_rate", "missing_when": "is_none" }
+        ]
+      }
+    }
+  },
+  "optional_signals": ["volatility", "sharpe_like"],
+  "rate_metrics": ["account_churn", "growth_rate", "volatility", "sharpe_like"]
+}

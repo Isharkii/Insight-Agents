@@ -43,10 +43,12 @@ division-by-zero guards produce ``None`` values rather than raising.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -56,39 +58,24 @@ from sqlalchemy.orm import Session
 
 from app.services.aggregation_service import AggregationService
 from app.services.canonical_validation import validate_canonical_inputs_for_kpi
+from app.services.category_registry import (
+    CategoryRegistryError,
+    CategoryPack,
+    DependencyRule,
+    require_category_pack,
+    supported_categories,
+)
 from app.services.kpi_canonical_schema import (
     category_aliases_for_business_type,
     metric_aliases_for_business_type,
 )
 from db.models.computed_kpi import ComputedKPI
 from db.repositories.kpi_repository import KPIRepository
-from kpi.agency import AgencyKPIFormula
-from kpi.base import BaseKPIFormula
-from kpi.ecommerce import EcommerceKPIFormula
-from kpi.saas import SaaSKPIFormula
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Formula registry
-# ---------------------------------------------------------------------------
-
-_FORMULA_REGISTRY: dict[str, BaseKPIFormula] = {
-    "saas": SaaSKPIFormula(),
-    "ecommerce": EcommerceKPIFormula(),
-    "agency": AgencyKPIFormula(),
-}
-
-# Metrics whose natural unit is a dimensionless rate rather than currency.
-_RATE_METRICS: frozenset[str] = frozenset(
-    {
-        "churn_rate",
-        "client_churn",
-        "conversion_rate",
-        "utilization_rate",
-        "growth_rate",
-        "purchase_frequency",
-    }
+_DEFAULT_RATE_METRICS: frozenset[str] = frozenset(
+    {"churn_rate", "client_churn", "conversion_rate", "utilization_rate", "growth_rate"}
 )
 
 
@@ -101,7 +88,7 @@ class KPIUnknownBusinessTypeError(ValueError):
     """
     Raised immediately when an unrecognised ``business_type`` is passed.
 
-    Valid values are the keys of :data:`_FORMULA_REGISTRY`.
+    Valid values are loaded from the category registry packs.
     """
 
 
@@ -248,11 +235,14 @@ class KPIOrchestrator:
             If ``period_start >= period_end``.
         """
         # Step 1 – validate business type early (cheap, no DB required)
-        if business_type not in _FORMULA_REGISTRY:
+        try:
+            pack = require_category_pack(business_type)
+        except CategoryRegistryError as exc:
             raise KPIUnknownBusinessTypeError(
                 f"Unknown business_type {business_type!r}. "
-                f"Valid types: {sorted(_FORMULA_REGISTRY)}"
-            )
+                f"Valid types: {list(supported_categories())}"
+            ) from exc
+        business_type = pack.name
 
         # Step 2 – validate period
         if period_start >= period_end:
@@ -311,14 +301,18 @@ class KPIOrchestrator:
         )
 
         # Step 6 – compute KPIs via the selected formula
-        metrics = self._compute(
+        metrics, validity = self._compute(
             business_type=business_type,
             agg_inputs=agg_inputs,
             extra_inputs=extra_inputs or {},
         )
 
-        # Step 7 – serialise
-        payload = _build_payload(metrics)
+        # Step 7 – serialise (includes validity flags for LLM consumption)
+        payload = _build_payload(
+            metrics,
+            validity,
+            rate_metrics=pack.rate_metrics or _DEFAULT_RATE_METRICS,
+        )
         has_errors = any(v.get("error") is not None for v in payload.values())
         if has_errors:
             logger.warning(
@@ -465,9 +459,10 @@ class KPIOrchestrator:
         business_type: str,
         agg_inputs: _AggregatedInputs,
         extra_inputs: dict[str, Any],
-    ) -> dict[str, float | None]:
+    ) -> tuple[dict[str, float | None], dict[str, dict[str, Any]]]:
         """
-        Build the formula input dict and invoke the registered formula.
+        Build the formula input dict, invoke the registered formula, and
+        collect per-metric validity information.
 
         Aggregated DB values are mapped to each formula's expected keys.
         Fields that cannot be derived from the database are taken from
@@ -477,7 +472,7 @@ class KPIOrchestrator:
         Parameters
         ----------
         business_type:
-            Key into :data:`_FORMULA_REGISTRY`.
+            Registry pack key (category/business type).
         agg_inputs:
             Numerical values fetched from ``CanonicalInsightRecord``.
         extra_inputs:
@@ -485,15 +480,19 @@ class KPIOrchestrator:
 
         Returns
         -------
-        dict[str, float | None]
-            Raw metric values keyed by metric name.
+        tuple[dict[str, float | None], dict[str, dict[str, Any]]]
+            Raw metric values keyed by metric name, and per-metric validity
+            metadata for the payload builder.
         """
-        formula_inputs = _build_formula_inputs(business_type, agg_inputs, extra_inputs)
-        formula = _FORMULA_REGISTRY[business_type]
+        pack = _require_pack_or_raise(business_type)
+        formula_inputs = _build_formula_inputs(pack, agg_inputs, extra_inputs)
+        formula = pack.formula
         logger.debug("_compute invoking formula for business_type=%r", business_type)
         metrics = formula.calculate(formula_inputs)
         logger.debug("_compute metrics=%s", metrics)
-        return metrics
+
+        validity = _build_validity(pack, agg_inputs, extra_inputs, metrics)
+        return metrics, validity
 
     # ------------------------------------------------------------------
     # Internal: persistence
@@ -556,11 +555,11 @@ class _AggregatedInputs:
     """Raw numerical values fetched from the aggregation layer."""
 
     subscription_revenues: list[float]
-    active_customers: int
-    lost_customers: int
-    arpu: float
-    current_revenue: float
-    previous_revenue: float
+    active_customers: int | None
+    lost_customers: int | None
+    arpu: float | None
+    current_revenue: float | None
+    previous_revenue: float | None
 
 
 # ---------------------------------------------------------------------------
@@ -585,79 +584,171 @@ def _previous_period(
     return period_start - duration, period_start
 
 
-def _build_formula_inputs(
-    business_type: str,
+def _require_pack_or_raise(business_type: str) -> CategoryPack:
+    try:
+        return require_category_pack(business_type)
+    except CategoryRegistryError as exc:  # pragma: no cover
+        raise KPIUnknownBusinessTypeError(
+            f"Unknown business_type {business_type!r}. "
+            f"Valid types: {list(supported_categories())}"
+        ) from exc
+
+
+def _resolve_source_value(
+    source: str,
     inputs: _AggregatedInputs,
-    extra: dict[str, Any],
+    extra: Mapping[str, Any],
+    *,
+    default: Any,
+) -> Any:
+    prefix, _, field_name = source.partition(".")
+    prefix = prefix.strip().lower()
+    key = field_name.strip()
+    if prefix == "agg":
+        value = getattr(inputs, key, None)
+        if value is None:
+            return _clone_default(default)
+        return value
+    if prefix == "extra":
+        if key in extra:
+            return extra[key]
+        return _clone_default(default)
+    raise ValueError(f"Unsupported binding source {source!r}")  # pragma: no cover
+
+
+def _clone_default(value: Any) -> Any:
+    return copy.deepcopy(value)
+
+
+def _dependency_missing(
+    rule: DependencyRule,
+    inputs: _AggregatedInputs,
+    extra: Mapping[str, Any],
+) -> bool:
+    value = _resolve_source_value(rule.source, inputs, extra, default=None)
+    if rule.missing_when == "is_empty":
+        if value is None:
+            return True
+        if isinstance(value, (str, bytes)):
+            return not value
+        if isinstance(value, (list, tuple, set, dict)):
+            return len(value) == 0
+        return False
+    return value is None
+
+
+def _dependency_label(source: str) -> str:
+    _, _, label = source.partition(".")
+    return label.strip() or source
+
+
+def _build_formula_inputs(
+    pack: CategoryPack,
+    inputs: _AggregatedInputs,
+    extra: Mapping[str, Any],
 ) -> dict[str, Any]:
     """
-    Map aggregated DB values and caller-supplied extras to the dict shape
-    expected by each formula's ``calculate()`` method.
-
-    Any extra key absent from *extra* defaults to ``0`` / ``0.0`` / ``[]``
-    so the formula's division-by-zero guards apply cleanly.
+    Build formula input dict from registry-defined bindings.
     """
-    if business_type == "saas":
-        return {
-            "active_subscriptions": inputs.subscription_revenues,
-            "starting_customers": inputs.active_customers,
-            "lost_customers": inputs.lost_customers,
-            "gross_margin": extra.get("gross_margin", 0.0),
-            "previous_mrr": inputs.previous_revenue,
-        }
-
-    if business_type == "ecommerce":
-        return {
-            "orders": inputs.subscription_revenues,
-            "total_visitors": extra.get("total_visitors", 0),
-            "marketing_spend": extra.get("marketing_spend", 0.0),
-            "new_customers": extra.get("new_customers", 0),
-            "unique_customers": inputs.active_customers,
-            "previous_revenue": inputs.previous_revenue,
-        }
-
-    if business_type == "agency":
-        return {
-            "retainer_fees": inputs.subscription_revenues,
-            "project_values": extra.get("project_values", []),
-            "starting_clients": inputs.active_customers,
-            "lost_clients": inputs.lost_customers,
-            "billable_hours": extra.get("billable_hours", 0.0),
-            "available_hours": extra.get("available_hours", 0.0),
-            "total_employees": extra.get("total_employees", 0),
-            "average_client_lifespan_months": extra.get(
-                "average_client_lifespan_months", 0
-            ),
-        }
-
-    # Registry guard: this branch is unreachable in normal operation because
-    # business_type is validated against _FORMULA_REGISTRY before _compute()
-    # is called.  Included defensively.
-    raise KPIUnknownBusinessTypeError(  # pragma: no cover
-        f"No input mapping defined for business_type={business_type!r}"
-    )
+    payload: dict[str, Any] = {}
+    for key, binding in pack.formula_input_bindings.items():
+        payload[key] = _resolve_source_value(binding.source, inputs, extra, default=binding.default)
+    return payload
 
 
-def _build_payload(metrics: dict[str, float | None]) -> dict[str, Any]:
+def _build_validity(
+    pack: CategoryPack,
+    inputs: _AggregatedInputs,
+    extra: Mapping[str, Any],
+    metrics: dict[str, float | None],
+) -> dict[str, dict[str, Any]]:
+    """
+    Build per-metric validity metadata from registry-defined dependency rules.
+    """
+    validity: dict[str, dict[str, Any]] = {}
+
+    for metric_name, dependencies in pack.validity_rules.items():
+        missing = [
+            _dependency_label(dep.source)
+            for dep in dependencies
+            if _dependency_missing(dep, inputs, extra)
+        ]
+        if missing:
+            validity[metric_name] = {
+                "is_valid": False,
+                "missing_dependencies": missing,
+                "status": "insufficient_data",
+            }
+
+    # For any metric the formula returned None that we haven't already
+    # flagged, mark as invalid with a generic error.
+    for name, value in metrics.items():
+        if value is None and name not in validity:
+            validity[name] = {
+                "is_valid": False,
+                "missing_dependencies": [],
+                "status": "division_by_zero",
+            }
+
+    return validity
+
+
+def _build_payload(
+    metrics: dict[str, float | None],
+    validity: dict[str, dict[str, Any]] | None = None,
+    *,
+    rate_metrics: frozenset[str] | None = None,
+) -> dict[str, Any]:
     """
     Serialise formula output into the JSONB structure stored in ``computed_kpis``.
 
     Shape::
 
         {
-            "mrr":         {"value": 12000.0, "unit": "currency", "error": null},
-            "churn_rate":  {"value": 0.05,    "unit": "rate",     "error": null},
-            "ltv":         {"value": None,    "unit": "currency", "error": "division_by_zero"},
+            "mrr":         {"value": 12000.0, "unit": "currency", "error": null,
+                            "is_valid": true, "missing_dependencies": []},
+            "churn_rate":  {"value": 0.05,    "unit": "rate",     "error": null,
+                            "is_valid": true, "missing_dependencies": []},
+            "ltv":         {"value": null,    "unit": "currency",
+                            "error": "insufficient_data", "is_valid": false,
+                            "missing_dependencies": ["revenue", "churn_rate"]},
         }
 
-    The ``"unit"`` is ``"rate"`` for metrics listed in :data:`_RATE_METRICS`
+    The ``"unit"`` is ``"rate"`` for metrics listed in ``rate_metrics``
     and ``"currency"`` for all others.
+
+    Parameters
+    ----------
+    metrics:
+        Raw metric values keyed by metric name.
+    validity:
+        Optional per-metric validity info.  Each entry may contain
+        ``"is_valid"`` (bool), ``"missing_dependencies"`` (list[str]),
+        and ``"status"`` (str).
+    rate_metrics:
+        Metrics that should be serialized as ``"unit": "rate"``.
     """
-    return {
-        name: {
+    val = validity or {}
+    rates = rate_metrics or _DEFAULT_RATE_METRICS
+    result: dict[str, Any] = {}
+    for name, value in metrics.items():
+        meta = val.get(name, {})
+        is_valid = meta.get("is_valid", value is not None)
+        missing_deps: list[str] = meta.get("missing_dependencies", [])
+        status = meta.get("status")
+
+        if not is_valid and value is None:
+            error = status or "insufficient_data"
+        elif value is None:
+            error = "division_by_zero"
+        else:
+            error = None
+
+        result[name] = {
             "value": value,
-            "unit": "rate" if name in _RATE_METRICS else "currency",
-            "error": "division_by_zero" if value is None else None,
+            "unit": "rate" if name in rates else "currency",
+            "error": error,
+            "is_valid": is_valid,
+            "missing_dependencies": missing_deps,
         }
-        for name, value in metrics.items()
-    }
+    return result

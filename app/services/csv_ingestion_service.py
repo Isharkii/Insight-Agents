@@ -29,6 +29,7 @@ from app.domain.canonical_insight import (
     RowValidationError,
 )
 from app.mappers.schema_mapper import MappingResolution, SchemaMapper
+from app.mappers.wide_to_long_normalizer import WideToLongNormalizer
 from app.repositories.canonical_insight_repository import CanonicalInsightRepository
 from app.repositories.mapping_config_repository import MappingConfigRepository
 from app.validators.csv_validator import (
@@ -198,6 +199,44 @@ class CSVIngestionService:
             if not headers:
                 raise CSVHeaderValidationError("CSV header row is missing.")
 
+            # --- Peek sample rows for interpreter scoring ---
+            raw_file.seek(0)
+            sample_df = pd.read_csv(
+                raw_file, nrows=20, dtype=str, encoding="utf-8-sig", keep_default_na=False,
+            )
+
+            # --- Wide-to-long detection & normalisation ---
+            wide_normalizer = WideToLongNormalizer()
+            wide_meta = wide_normalizer.detect(sample_df)
+            wide_normalized_df: pd.DataFrame | None = None
+
+            if len(wide_meta.wide_columns_detected) >= 2:
+                raw_file.seek(0)
+                full_df = pd.read_csv(
+                    raw_file, dtype=str, encoding="utf-8-sig", keep_default_na=False,
+                )
+                wide_normalized_df, wide_meta = wide_normalizer.normalize(
+                    full_df, meta=wide_meta,
+                )
+                headers = [
+                    str(c).strip()
+                    for c in wide_normalized_df.columns
+                    if str(c).strip()
+                ]
+                sample_df = wide_normalized_df.head(20)
+                logger.info(
+                    "Wide-to-long normalisation applied: "
+                    "preserved=%d dropped=%d periodicity=%s",
+                    wide_meta.preserved_rows,
+                    wide_meta.dropped_rows,
+                    wide_meta.inferred_periodicity,
+                )
+
+            sample_rows: list[dict[str, str]] = [
+                {str(col).strip(): str(val) for col, val in row.items()}
+                for _, row in sample_df.iterrows()
+            ]
+
             # --- Resolve canonical mapping ---
             mapping = self._resolve_mapping(
                 db=db,
@@ -205,6 +244,7 @@ class CSVIngestionService:
                 client_name=client_name,
                 mapping_config_name=mapping_config_name,
                 manual_mapping=manual_mapping,
+                sample_rows=sample_rows,
             )
             if "entity_name" not in mapping.canonical_to_source:
                 return self._summary_with_error(
@@ -298,16 +338,33 @@ class CSVIngestionService:
             rows_failed = 0
             captured_errors: list[RowValidationError] = []
 
-            reader = pd.read_csv(
-                raw_file,
-                chunksize=self._chunksize,
-                dtype=str,
-                encoding="utf-8-sig",
-                usecols=usecols,
-                keep_default_na=False,
-            )
+            if wide_normalized_df is not None:
+                # Wide-to-long already produced a fully normalised DataFrame;
+                # iterate over it in memory-sized chunks instead of re-reading
+                # the (wide-format) raw file.
+                norm_usecols = [
+                    c for c in usecols
+                    if c in wide_normalized_df.columns
+                ]
+                if norm_usecols:
+                    norm_df = wide_normalized_df[norm_usecols]
+                else:
+                    norm_df = wide_normalized_df
+                chunk_iter: Any = [
+                    norm_df.iloc[start:start + self._chunksize]
+                    for start in range(0, len(norm_df), self._chunksize)
+                ]
+            else:
+                chunk_iter = pd.read_csv(
+                    raw_file,
+                    chunksize=self._chunksize,
+                    dtype=str,
+                    encoding="utf-8-sig",
+                    usecols=usecols,
+                    keep_default_na=False,
+                )
 
-            for chunk in reader:
+            for chunk in chunk_iter:
                 chunk = chunk.rename(columns=rename_map)
 
                 # Add missing optional columns
@@ -357,6 +414,18 @@ class CSVIngestionService:
                             rows_processed += self._persist_batch(
                                 repository=repository, db=db, batch=valid_inputs
                             )
+
+            # Surface interpreter warnings as validation warnings
+            if mapping.interpretation:
+                for warn_msg in mapping.interpretation.warnings:
+                    self._record_error(
+                        captured_errors,
+                        RowValidationError(
+                            row_number=0,
+                            code="schema_interpreter_warning",
+                            message=warn_msg,
+                        ),
+                    )
 
             summary = IngestionSummary(
                 rows_processed=rows_processed,
@@ -761,6 +830,7 @@ class CSVIngestionService:
         client_name: str | None,
         mapping_config_name: str | None,
         manual_mapping: Mapping[str, str] | None,
+        sample_rows: Sequence[Mapping[str, str]] | None = None,
     ) -> MappingResolution:
         mapping_repository = MappingConfigRepository(db)
         mapping_config = mapping_repository.get_active(
@@ -772,6 +842,7 @@ class CSVIngestionService:
                 headers=headers,
                 manual_overrides=manual_mapping,
                 mapping_config=mapping_config,
+                sample_rows=sample_rows,
             )
         except SchemaMappingError as exc:
             raise CSVSchemaMappingError(

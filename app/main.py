@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 
 from fastapi import FastAPI
 
+from app.api.error_handling import register_exception_handlers
 from llm_synthesis.schema import FinalInsightResponse
 
 
@@ -174,6 +175,7 @@ def create_app() -> FastAPI:
         version="1.0.0",
         lifespan=_lifespan,
     )
+    register_exception_handlers(application)
 
     from app.api.routers import (
         analyze_router,

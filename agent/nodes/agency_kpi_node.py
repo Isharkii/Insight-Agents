@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from agent.nodes.node_result import failed, skipped, success
+from agent.signal_envelope import classify_kpi_completeness_for_type
 from agent.state import AgentState
 from db.repositories.kpi_repository import KPIRepository
 from db.session import SessionLocal
@@ -49,6 +50,16 @@ def _serialize_row(row: Any) -> dict[str, Any]:
     }
 
 
+def _merge_computed_kpis(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Merge computed_kpis from all records, latest value wins."""
+    merged: dict[str, Any] = {}
+    for record in records:
+        kpis = record.get("computed_kpis")
+        if isinstance(kpis, dict):
+            merged.update(kpis)
+    return merged
+
+
 def agency_kpi_fetch_node(state: AgentState) -> AgentState:
     """
     LangGraph node: fetch agency KPI records and store them in
@@ -80,7 +91,21 @@ def agency_kpi_fetch_node(state: AgentState) -> AgentState:
             "metrics": sorted(_AGENCY_METRICS),
         }
         if records:
-            agency_kpi_data = success(payload)
+            merged_kpis = _merge_computed_kpis(records)
+            status, warnings, errors, confidence = classify_kpi_completeness_for_type(
+                merged_kpis, "agency",
+            )
+            if status == "partial":
+                agency_kpi_data = success(
+                    payload, warnings=warnings, errors=errors,
+                    confidence_score=confidence,
+                )
+            elif status == "failed":
+                agency_kpi_data = failed(
+                    "; ".join(errors) or "missing_required_signals", payload,
+                )
+            else:
+                agency_kpi_data = success(payload)
         else:
             agency_kpi_data = skipped("no_kpi_records", payload)
 

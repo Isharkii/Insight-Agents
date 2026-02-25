@@ -14,17 +14,11 @@ from sqlalchemy import Text, and_, cast, or_, select
 from sqlalchemy.orm import Session
 
 from app.services.kpi_canonical_schema import (
-    KPI_REQUIRED_METRIC_KEYS,
     category_aliases_for_business_type,
     metric_aliases_for_business_type,
+    required_metric_keys_for_business_type,
 )
 from db.models.canonical_insight_record import CanonicalInsightRecord
-
-_REQUIRED_METRICS_BY_BUSINESS_TYPE: dict[str, tuple[str, ...]] = {
-    "saas": KPI_REQUIRED_METRIC_KEYS,
-    "ecommerce": KPI_REQUIRED_METRIC_KEYS,
-    "agency": KPI_REQUIRED_METRIC_KEYS,
-}
 
 
 @dataclass(frozen=True)
@@ -140,10 +134,7 @@ def validate_canonical_inputs_for_kpi(
 
 
 def _required_metrics_for_business_type(business_type: str) -> tuple[str, ...]:
-    return _REQUIRED_METRICS_BY_BUSINESS_TYPE.get(
-        business_type,
-        _REQUIRED_METRICS_BY_BUSINESS_TYPE["saas"],
-    )
+    return required_metric_keys_for_business_type(business_type)
 
 
 def _base_predicate(

@@ -1,0 +1,36 @@
+{
+  "name": "general_timeseries",
+  "metric_aliases": {
+    "recurring_revenue": ["recurring_revenue", "timeseries_value", "revenue", "value"],
+    "active_customer_count": ["active_customer_count", "active_entities", "active_units"],
+    "churned_customer_count": ["churned_customer_count", "churned_entities", "lost_units"]
+  },
+  "required_inputs": [
+    "recurring_revenue"
+  ],
+  "category_aliases": ["sales", "general_timeseries", "generic_timeseries"],
+  "deterministic_formulas": {
+    "class": "app.services.formulas.general_timeseries:GeneralTimeseriesFormula",
+    "input_bindings": {
+      "values": { "source": "agg.subscription_revenues", "default": [] },
+      "active_entities": { "source": "agg.active_customers", "default": 0 },
+      "churned_entities": { "source": "agg.lost_customers", "default": 0 },
+      "previous_value": { "source": "agg.previous_revenue", "default": 0.0 },
+      "baseline_target": { "source": "extra.baseline_target", "default": null }
+    },
+    "validity_rules": {
+      "volatility": {
+        "dependencies": [
+          { "source": "agg.subscription_revenues", "missing_when": "is_empty" }
+        ]
+      },
+      "target_attainment": {
+        "dependencies": [
+          { "source": "extra.baseline_target", "missing_when": "is_none" }
+        ]
+      }
+    }
+  },
+  "optional_signals": ["volatility", "target_attainment"],
+  "rate_metrics": ["churn_rate", "growth_rate", "target_attainment"]
+}
