@@ -4,11 +4,18 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from starlette.responses import FileResponse
 
 from app.api.error_handling import register_exception_handlers
 from llm_synthesis.schema import FinalInsightResponse
+
+# React production build directory
+_REACT_DIST = Path(__file__).resolve().parent.parent / "frontend-react" / "dist"
 
 
 def _validate_env() -> None:
@@ -177,6 +184,19 @@ def create_app() -> FastAPI:
     )
     register_exception_handlers(application)
 
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://localhost:8501",
+            "http://127.0.0.1:8501",
+        ],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     from app.api.routers import (
         analyze_router,
         bi_export_router,
@@ -186,6 +206,7 @@ def create_app() -> FastAPI:
         external_ingestion_router,
         ingestion_orchestrator_router,
         kpi_router,
+        dashboard_router,
     )
 
     application.include_router(analyze_router)
@@ -196,6 +217,7 @@ def create_app() -> FastAPI:
     application.include_router(ingestion_orchestrator_router)
     application.include_router(kpi_router)
     application.include_router(bi_export_router)
+    application.include_router(dashboard_router)
 
     @application.get("/health")
     def healthcheck() -> FinalInsightResponse:
@@ -207,6 +229,29 @@ def create_app() -> FastAPI:
             priority="low",
             confidence_score=1.0,
         )
+
+    # --- Serve React frontend from /dashboard/* ----------------------
+    if _REACT_DIST.is_dir():
+        _react_index = _REACT_DIST / "index.html"
+
+        @application.get("/dashboard")
+        @application.get("/dashboard/{full_path:path}")
+        async def _serve_react_spa(full_path: str = "") -> FileResponse:
+            """SPA catch-all: serve the React index.html for client-side routing."""
+            # Try to serve as a real static file first (JS, CSS, images)
+            requested = _REACT_DIST / full_path
+            if full_path and requested.is_file():
+                return FileResponse(requested)
+            return FileResponse(_react_index)
+
+        # Serve static assets (JS/CSS bundles) at /dashboard/assets/*
+        _assets_dir = _REACT_DIST / "assets"
+        if _assets_dir.is_dir():
+            application.mount(
+                "/dashboard/assets",
+                StaticFiles(directory=str(_assets_dir)),
+                name="react-assets",
+            )
 
     return application
 

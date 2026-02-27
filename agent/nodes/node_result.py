@@ -4,9 +4,14 @@ agent/nodes/node_result.py
 Shared helpers for node-level status/payload envelopes.
 
 Standard envelope statuses are:
-  - ``"success"``
-  - ``"skipped"``
-  - ``"failed"``
+  - ``"success"``            — node ran, produced a valid result.
+  - ``"insufficient_data"``  — node ran, data was too shallow or
+                                metrics were missing.  The node
+                                produced a best-effort payload that
+                                downstream consumers may use with
+                                degraded confidence.  NOT a failure.
+  - ``"skipped"``            — node did not run (pre-condition unmet).
+  - ``"failed"``             — node ran but hit an unrecoverable error.
 
 Envelopes may optionally include ``warnings``, ``errors``, and
 ``confidence_score`` to preserve degraded-signal diagnostics without
@@ -17,9 +22,9 @@ from __future__ import annotations
 
 from typing import Any, Literal, Sequence
 
-NodeStatus = Literal["success", "skipped", "failed"]
+NodeStatus = Literal["success", "insufficient_data", "skipped", "failed"]
 
-_VALID_STATUSES = {"success", "skipped", "failed"}
+_VALID_STATUSES = {"success", "insufficient_data", "skipped", "failed"}
 _LEGACY_PARTIAL_STATUS = "partial"
 
 
@@ -54,6 +59,31 @@ def partial(
         errors=errors,
         confidence_score=confidence_score,
     )
+
+
+def insufficient_data(
+    reason: str,
+    payload: dict[str, Any] | None = None,
+    *,
+    warnings: Sequence[str] = (),
+    confidence_score: float = 0.3,
+) -> dict[str, Any]:
+    """Build an insufficient_data envelope.
+
+    The node executed but the input data was too shallow (e.g. < 2
+    time-series periods) or required metrics were absent.  A
+    best-effort payload is included so downstream consumers can
+    degrade gracefully rather than treating this as a hard failure.
+    """
+    body = payload or {}
+    if reason:
+        body.setdefault("reason", reason)
+    return {
+        "status": "insufficient_data",
+        "payload": body or None,
+        "warnings": list(warnings),
+        "confidence_score": max(0.0, min(1.0, confidence_score)),
+    }
 
 
 def skipped(reason: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:

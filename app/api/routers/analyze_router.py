@@ -30,6 +30,7 @@ from app.services.category_registry import (
     primary_metric_for_business_type,
     supported_categories,
 )
+from app.domain.canonical_insight import IngestionStatus
 from app.services.csv_ingestion_service import (
     CSVIngestionService,
     get_csv_ingestion_service,
@@ -380,6 +381,13 @@ def analyze(
                         for err in ingest_summary.validation_errors
                         if str(err.code or "").strip().lower() not in {"schema_interpreter_warning"}
                     ]
+                    ingestion_status_str = str(
+                        ingest_summary.pipeline_status or ""
+                    ).strip().lower()
+                    is_hard_failure = ingestion_status_str in (
+                        IngestionStatus.FAILED.value,
+                        IngestionStatus.SCHEMA_MISMATCH.value,
+                    )
                     if _is_benign_no_valid_records(ingest_summary):
                         try:
                             fallback_upload_entities = csv_service.detect_csv_entities(
@@ -398,7 +406,7 @@ def analyze(
                             ingest_summary.rows_failed,
                             fallback_upload_entities,
                         )
-                    elif fatal_errors and ingest_summary.rows_processed == 0:
+                    elif is_hard_failure and fatal_errors and ingest_summary.rows_processed == 0:
                         first_error = fatal_errors[0]
                         raise HTTPException(
                             status_code=status.HTTP_400_BAD_REQUEST,
@@ -410,8 +418,19 @@ def analyze(
                                     "validation_code": first_error.code,
                                     "column": first_error.column,
                                     "context": first_error.context,
+                                    "ingestion_status": ingestion_status_str,
                                 },
                             ),
+                        )
+                    elif fatal_errors and ingest_summary.rows_processed == 0:
+                        # Soft failure (insufficient_data / empty_dataset):
+                        # log but do NOT abort — existing DB data may suffice.
+                        logger.warning(
+                            "Analyze: ingestion status=%s with zero rows processed. "
+                            "Attempting to continue with existing DB data. "
+                            "rows_failed=%s",
+                            ingestion_status_str,
+                            ingest_summary.rows_failed,
                         )
                     elif fatal_errors:
                         logger.warning(
@@ -589,11 +608,35 @@ def analyze(
         # pipeline state as diagnostics warnings.
         diagnostics = output_model.diagnostics
         if ingestion_pipeline_status and diagnostics is not None:
-            if ingestion_pipeline_status != "success":
+            if ingestion_pipeline_status not in (
+                IngestionStatus.SUCCESS.value,
+                "success",
+            ):
                 warnings = list(diagnostics.warnings)
-                warnings.append(
-                    f"Ingestion pipeline status was {ingestion_pipeline_status}; partial data path applied."
-                )
+                # Differentiate messaging by ingestion status severity.
+                if ingestion_pipeline_status in (
+                    IngestionStatus.FAILED.value,
+                    IngestionStatus.SCHEMA_MISMATCH.value,
+                ):
+                    warnings.append(
+                        f"Ingestion pipeline status was {ingestion_pipeline_status}; "
+                        f"data could not be loaded from the uploaded file."
+                    )
+                elif ingestion_pipeline_status == IngestionStatus.EMPTY_DATASET.value:
+                    warnings.append(
+                        f"Ingestion pipeline status was {ingestion_pipeline_status}; "
+                        f"the uploaded file contained no usable data rows."
+                    )
+                elif ingestion_pipeline_status == IngestionStatus.INSUFFICIENT_DATA.value:
+                    warnings.append(
+                        f"Ingestion pipeline status was {ingestion_pipeline_status}; "
+                        f"partial data path applied — some rows failed validation."
+                    )
+                else:
+                    warnings.append(
+                        f"Ingestion pipeline status was {ingestion_pipeline_status}; "
+                        f"partial data path applied."
+                    )
                 output_model = output_model.model_copy(
                     update={
                         "diagnostics": diagnostics.model_copy(update={"warnings": warnings})

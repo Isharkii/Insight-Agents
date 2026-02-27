@@ -252,9 +252,18 @@ def llm_node(state: AgentState) -> AgentState:
         ],
     )
 
+    # Enforce: deterministic confidence always overrides LLM self-assessment.
+    # The LLM must not inflate confidence beyond what the signals support.
+    deterministic_confidence = float(diagnostics.get("confidence_score", 1.0))
+    enforced_confidence = min(
+        final_payload.confidence_score,
+        deterministic_confidence,
+    )
+
     try:
         final_payload = final_payload.model_copy(
             update={
+                "confidence_score": enforced_confidence,
                 "pipeline_status": pipeline_status,
                 "diagnostics": diagnostics_model,
             }

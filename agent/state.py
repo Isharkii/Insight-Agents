@@ -36,4 +36,5 @@ class AgentState(TypedDict):
     cohort_data: Optional[dict]
     category_formula_data: Optional[dict]
     multivariate_scenario_data: Optional[dict]
+    synthesis_blocked: Optional[bool]
     final_response: Optional[str]

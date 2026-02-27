@@ -15,6 +15,7 @@ from typing import Any, Optional
 import pandas as pd
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from pydantic import ValidationError
 
 from llm_synthesis.schema import InsightOutput
@@ -776,4 +777,28 @@ else:
                 "final_insight_response": output.model_dump(),
                 "report_payload": report_payload,
             }
+        )
+
+    # --- Intelligence Dashboard (React embed) ---
+    st.subheader("Section 4: Intelligence Dashboard")
+    entity_for_dashboard = (
+        st.session_state.last_client_id or manual_client_id.strip() or ""
+    )
+    btype_for_dashboard = (
+        business_type_option if business_type_option != "auto" else "saas"
+    )
+    if entity_for_dashboard:
+        from urllib.parse import urlencode
+
+        embed_params = urlencode({
+            "embed": "1",
+            "entity_name": entity_for_dashboard,
+            "business_type": btype_for_dashboard,
+        })
+        embed_url = f"{API_BASE_URL}/dashboard?{embed_params}"
+        components.iframe(embed_url, height=900, scrolling=True)
+    else:
+        st.info(
+            "Intelligence Dashboard requires an entity name. "
+            "Provide one via the sidebar and re-run analysis."
         )

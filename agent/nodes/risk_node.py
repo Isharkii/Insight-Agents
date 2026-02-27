@@ -14,10 +14,14 @@ from typing import Any, Mapping
 
 from agent.state import AgentState
 from agent.nodes.node_result import (
-    failed, payload_of, skipped, status_of, success, warnings_of,
-    confidence_of,
+    failed, insufficient_data, payload_of, skipped, status_of, success,
+    warnings_of, confidence_of,
 )
-from agent.signal_normalizer import normalize_forecast_signals, normalize_kpi_signals
+from agent.signal_normalizer import (
+    check_kpi_readiness,
+    normalize_forecast_signals,
+    normalize_kpi_signals,
+)
 from db.session import SessionLocal
 from risk.orchestrator import RiskOrchestrator
 
@@ -310,11 +314,23 @@ def risk_node(state: AgentState) -> AgentState:
     try:
         kpi_signals = normalize_kpi_signals(kpi_payload)
     except Exception as exc:  # noqa: BLE001
-        risk_data = failed(
-            f"kpi_signal_normalization_failed: {exc}",
-            {"business_type": business_type},
-        )
-        return {**state, "risk_data": risk_data}
+        # Degrade to zero-signal baseline instead of hard failure.
+        # The risk score will reflect only forecast/growth/cohort context,
+        # and confidence will be heavily penalized.
+        kpi_signals = {
+            "revenue_growth_delta": 0.0,
+            "churn_delta": 0.0,
+            "conversion_delta": 0.0,
+            "_warnings": [f"full kpi normalization failed, using zero baseline: {exc}"],
+        }
+        upstream_warnings.append(f"kpi_signal_normalization_degraded: {exc}")
+        upstream_confidence = min(upstream_confidence, 0.3)
+
+    # Propagate per-signal derivation warnings from the normalizer.
+    normalizer_warnings = kpi_signals.pop("_warnings", [])
+    if isinstance(normalizer_warnings, list) and normalizer_warnings:
+        upstream_warnings.extend(normalizer_warnings)
+        upstream_confidence = min(upstream_confidence, 0.5)
 
     forecast_state = state.get("forecast_data")
     forecast_payload: dict = payload_of(forecast_state) or {}

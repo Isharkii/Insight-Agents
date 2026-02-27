@@ -3,7 +3,11 @@
     "allow": [
       "Bash(./venv/Scripts/pip list)",
       "Bash(ls /d/PitchWorxagents/InsightAgent/venv/Scripts/py*)",
-      "Bash(ls /d/PitchWorxagents/InsightAgent/venv/Lib/site-packages/pytest*)"
+      "Bash(ls /d/PitchWorxagents/InsightAgent/venv/Lib/site-packages/pytest*)",
+      "Bash(npx tsc --noEmit)",
+      "Bash(npm install)",
+      "Bash(npm run build)",
+      "Bash(grep -n \"def.*error\\\\|failure_codes\" /d/PitchWorxagents/InsightAgent/app/*.py)"
     ]
   }
 }

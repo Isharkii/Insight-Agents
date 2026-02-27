@@ -7,9 +7,47 @@ Pydantic domain models used by CSV ingestion flow.
 from __future__ import annotations
 
 from datetime import datetime
+from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class IngestionStatus(str, Enum):
+    """Granular ingestion pipeline status.
+
+    Differentiates hard structural failures from soft data-quality issues so
+    that downstream consumers can decide whether to abort or degrade.
+
+    Values ordered from most to least severe:
+        failed            — hard structural error (encoding, no header, DB write).
+        schema_mismatch   — columns could not be mapped to the canonical schema.
+        empty_dataset     — valid schema but zero data rows present.
+        insufficient_data — data exists but fails quality bar (nulls, timestamps).
+        partial           — some rows ingested, some rejected.
+        success           — all rows ingested cleanly.
+    """
+
+    FAILED = "failed"
+    SCHEMA_MISMATCH = "schema_mismatch"
+    EMPTY_DATASET = "empty_dataset"
+    INSUFFICIENT_DATA = "insufficient_data"
+    PARTIAL = "partial"
+    SUCCESS = "success"
+
+    @property
+    def is_hard_failure(self) -> bool:
+        """Return True for statuses that indicate unrecoverable problems."""
+        return self in (IngestionStatus.FAILED, IngestionStatus.SCHEMA_MISMATCH)
+
+    @property
+    def is_usable(self) -> bool:
+        """Return True if some data may still be available downstream."""
+        return self in (
+            IngestionStatus.SUCCESS,
+            IngestionStatus.PARTIAL,
+            IngestionStatus.INSUFFICIENT_DATA,
+        )
 
 
 class CanonicalInsightInput(BaseModel):

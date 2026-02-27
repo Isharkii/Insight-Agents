@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from app.config import get_csv_ingestion_settings
 from app.domain.canonical_insight import (
     CanonicalInsightInput,
+    IngestionStatus,
     IngestionSummary,
     RowValidationError,
 )
@@ -296,6 +297,7 @@ class CSVIngestionService:
                     context={"required_field": "entity_name"},
                     confidence_score=mapping_confidence,
                     provenance=provenance,
+                    ingestion_status=IngestionStatus.SCHEMA_MISMATCH,
                 )
             if "category" not in mapping.canonical_to_source:
                 return self._summary_with_error(
@@ -308,6 +310,7 @@ class CSVIngestionService:
                     context={"required_field": "category"},
                     confidence_score=mapping_confidence,
                     provenance=provenance,
+                    ingestion_status=IngestionStatus.SCHEMA_MISMATCH,
                 )
 
             rename_map = {v: k for k, v in mapping.canonical_to_source.items()}
@@ -337,6 +340,7 @@ class CSVIngestionService:
                     context={"required_field": "entity_name"},
                     confidence_score=mapping_confidence,
                     provenance=provenance,
+                    ingestion_status=IngestionStatus.EMPTY_DATASET,
                 )
 
             detected_categories = self._detect_categories_for_mapping(
@@ -355,6 +359,7 @@ class CSVIngestionService:
                     context={"required_field": "category"},
                     confidence_score=mapping_confidence,
                     provenance=provenance,
+                    ingestion_status=IngestionStatus.EMPTY_DATASET,
                 )
 
             # --- Category inference ---
@@ -539,11 +544,20 @@ class CSVIngestionService:
                     ),
                 )
 
-            pipeline_status = "success"
-            if rows_processed == 0:
-                pipeline_status = "failed"
-            elif rows_failed > 0 or summary_warnings:
-                pipeline_status = "partial"
+            # --- Classify pipeline status with granularity ---
+            if rows_processed > 0 and rows_failed == 0 and not summary_warnings:
+                pipeline_status = IngestionStatus.SUCCESS.value
+            elif rows_processed > 0:
+                pipeline_status = IngestionStatus.PARTIAL.value
+            elif rows_failed > 0:
+                # Rows existed but all failed validation — data is
+                # present but doesn't meet the quality bar.
+                pipeline_status = IngestionStatus.INSUFFICIENT_DATA.value
+            else:
+                # rows_processed == 0 AND rows_failed == 0:
+                # likely all rows deduped on insert — data already
+                # exists in the DB, so this is NOT a failure.
+                pipeline_status = IngestionStatus.INSUFFICIENT_DATA.value
 
             summary = IngestionSummary(
                 rows_processed=rows_processed,
@@ -583,7 +597,7 @@ class CSVIngestionService:
                 return IngestionSummary(
                     rows_processed=0,
                     rows_failed=summary.rows_failed,
-                    pipeline_status="failed",
+                    pipeline_status=pipeline_status,
                     confidence_score=summary.confidence_score,
                     warnings=summary.warnings,
                     provenance=summary.provenance,
@@ -597,28 +611,33 @@ class CSVIngestionService:
                 code="csv_encoding_error",
                 message="CSV must be UTF-8 encoded.",
                 context={"error": str(exc)},
+                ingestion_status=IngestionStatus.FAILED,
             )
         except pd.errors.ParserError as exc:
             return self._summary_with_error(
                 code="csv_format_error",
                 message=f"Invalid CSV format: {exc}",
                 context={"error": str(exc)},
+                ingestion_status=IngestionStatus.FAILED,
             )
         except CSVSchemaMappingError as exc:
             return self._summary_with_error(
                 code="schema_mapping_error",
                 message=str(exc),
                 context={"errors": exc.to_dict().get("errors", [])},
+                ingestion_status=IngestionStatus.SCHEMA_MISMATCH,
             )
         except CSVHeaderValidationError as exc:
             return self._summary_with_error(
                 code="csv_header_error",
                 message=str(exc),
+                ingestion_status=IngestionStatus.FAILED,
             )
         except CSVPersistenceError as exc:
             return self._summary_with_error(
                 code="csv_persistence_error",
                 message=str(exc),
+                ingestion_status=IngestionStatus.FAILED,
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Unhandled ingestion exception")
@@ -626,6 +645,7 @@ class CSVIngestionService:
                 code="ingestion_unexpected_error",
                 message="Unexpected ingestion failure.",
                 context={"error": str(exc)},
+                ingestion_status=IngestionStatus.FAILED,
             )
 
     def detect_csv_entities(
@@ -1231,11 +1251,12 @@ class CSVIngestionService:
         context: dict[str, Any] | None = None,
         confidence_score: float = 0.0,
         provenance: dict[str, Any] | None = None,
+        ingestion_status: IngestionStatus = IngestionStatus.FAILED,
     ) -> IngestionSummary:
         return IngestionSummary(
             rows_processed=0,
             rows_failed=0,
-            pipeline_status="failed",
+            pipeline_status=ingestion_status.value,
             confidence_score=max(0.0, min(1.0, confidence_score)),
             warnings=[],
             provenance=provenance or {},

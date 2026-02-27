@@ -31,6 +31,7 @@ from agent.graph_config import (
 from agent.nodes.agency_kpi_node import agency_kpi_fetch_node
 from agent.nodes.business_router import business_router_node, route_by_business_type
 from agent.nodes.ecommerce_kpi_node import ecommerce_kpi_fetch_node
+from agent.nodes.forecast_node import forecast_fetch_node
 from agent.nodes.intent import intent_node
 from agent.nodes.kpi_node import kpi_fetch_node
 from agent.nodes.llm_node import llm_node
@@ -38,6 +39,7 @@ from agent.nodes.node_result import failed, payload_of, skipped, status_of, succ
 from agent.nodes.prioritization_node import prioritization_node
 from agent.nodes.risk_node import risk_node
 from agent.nodes.saas_kpi_node import saas_kpi_fetch_node
+from agent.nodes.synthesis_gate import synthesis_gate_node
 from agent.state import AgentState
 from app.services.category_registry import CategoryRegistryError, require_category_pack
 from app.services.kpi_canonical_schema import (
@@ -1156,9 +1158,11 @@ def build_graph():
     graph.add_node("category_formulas", category_formula_node)
     graph.add_node("multivariate_scenario", multivariate_scenario_node)
     graph.add_node("role_analytics", role_analytics_node)
+    graph.add_node("forecast_fetch", forecast_fetch_node)
     graph.add_node("risk", risk_node)
     graph.add_node("prioritization", prioritization_node)
     graph.add_node("pipeline_status", pipeline_status_node)
+    graph.add_node("synthesis_gate", synthesis_gate_node)
     graph.add_node("llm", llm_node)
 
     graph.add_edge(START, "intent")
@@ -1182,10 +1186,23 @@ def build_graph():
     graph.add_edge("cohort_analytics", "category_formulas")
     graph.add_edge("category_formulas", "multivariate_scenario")
     graph.add_edge("multivariate_scenario", "role_analytics")
-    graph.add_edge("role_analytics", "risk")
+    graph.add_edge("role_analytics", "forecast_fetch")
+    graph.add_edge("forecast_fetch", "risk")
     graph.add_edge("risk", "prioritization")
     graph.add_edge("prioritization", "pipeline_status")
-    graph.add_edge("pipeline_status", "llm")
+    graph.add_edge("pipeline_status", "synthesis_gate")
+
+    # Conditional edge: if required signals failed, skip LLM entirely
+    def _route_after_gate(state: AgentState) -> str:
+        if state.get("synthesis_blocked"):
+            return "end"
+        return "llm"
+
+    graph.add_conditional_edges(
+        "synthesis_gate",
+        _route_after_gate,
+        {"llm": "llm", "end": END},
+    )
     graph.add_edge("llm", END)
 
     return graph.compile()

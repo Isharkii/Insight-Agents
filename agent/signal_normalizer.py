@@ -6,9 +6,13 @@ Normalize nested KPI and forecast payloads into a strict flat signal contract.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+import logging
+
+logger = logging.getLogger(__name__)
 
 SignalDict = dict[str, float]
 
@@ -52,14 +56,177 @@ def normalize_signals(
     return signals
 
 
-def normalize_kpi_signals(kpi_payload: dict) -> SignalDict:
-    """Normalize only KPI-derived flat signals."""
+def normalize_kpi_signals(
+    kpi_payload: dict,
+    *,
+    strict: bool = False,
+) -> SignalDict:
+    """Normalize only KPI-derived flat signals.
+
+    When *strict* is False (default), derivation failures for individual
+    signals fall back to 0.0 and are recorded as warnings.  This allows
+    downstream consumers (risk_node) to degrade gracefully instead of
+    hard-failing the entire pipeline.
+
+    When *strict* is True the original behaviour is preserved: any
+    derivation failure raises ``ValueError``.
+
+    The returned dict includes a ``_warnings`` key (list[str]) that
+    callers should inspect and propagate.
+    """
     kpi_series = _extract_kpi_series(kpi_payload)
-    return {
-        "revenue_growth_delta": _derive_revenue_growth_delta(kpi_series),
-        "churn_delta": _derive_churn_delta(kpi_series),
-        "conversion_delta": _derive_conversion_delta(kpi_series),
-    }
+    warnings: list[str] = []
+    signals: SignalDict = {}
+
+    for name, derive_fn in (
+        ("revenue_growth_delta", _derive_revenue_growth_delta),
+        ("churn_delta", _derive_churn_delta),
+        ("conversion_delta", _derive_conversion_delta),
+    ):
+        try:
+            signals[name] = derive_fn(kpi_series)
+        except ValueError as exc:
+            if strict:
+                raise
+            signals[name] = 0.0
+            warnings.append(f"{name}: defaulted to 0.0 ({exc})")
+            logger.warning("KPI signal '%s' derivation failed, defaulting to 0.0: %s", name, exc)
+
+    signals["_warnings"] = warnings  # type: ignore[assignment]
+    return signals
+
+
+@dataclass
+class KPIReadinessResult:
+    """Pre-flight assessment of KPI payload readiness for risk scoring."""
+
+    is_ready: bool
+    """True if there is enough data to attempt signal derivation."""
+
+    record_count: int
+    """Number of KPI records with usable computed_kpis."""
+
+    available_metrics: list[str]
+    """Metric names found across all records."""
+
+    missing_revenue_proxy: bool
+    """True if no revenue-family metric is available."""
+
+    missing_churn_proxy: bool
+    """True if no churn-family metric is available."""
+
+    missing_conversion_proxy: bool
+    """True if no conversion-family metric is available."""
+
+    max_series_depth: int
+    """Deepest time-series across all metrics (number of periods)."""
+
+    reasons: list[str]
+    """Human-readable list of reasons the data is not ready."""
+
+
+_REVENUE_FAMILY = frozenset({
+    "revenue_growth_delta", "growth_rate", "revenue", "mrr",
+    "total_revenue", "retainer_revenue",
+})
+_CHURN_FAMILY = frozenset({
+    "churn_delta", "churn_rate", "client_churn",
+})
+_CONVERSION_FAMILY = frozenset({
+    "conversion_delta", "conversion_rate",
+})
+
+# Minimum time-series depth needed for delta/pct-change derivation.
+MIN_SERIES_DEPTH_FOR_DELTA = 2
+
+
+def check_kpi_readiness(kpi_payload: dict) -> KPIReadinessResult:
+    """Non-throwing pre-flight check on KPI payload data readiness.
+
+    Inspects the payload structure and metric availability without
+    attempting signal derivation.  Returns a structured result that
+    callers (risk_node) can use to decide between ``success``,
+    ``insufficient_data``, or ``failed``.
+    """
+    reasons: list[str] = []
+
+    if not isinstance(kpi_payload, dict):
+        return KPIReadinessResult(
+            is_ready=False, record_count=0, available_metrics=[],
+            missing_revenue_proxy=True, missing_churn_proxy=True,
+            missing_conversion_proxy=True, max_series_depth=0,
+            reasons=["kpi_payload is not a dict"],
+        )
+
+    records = kpi_payload.get("records")
+    if not isinstance(records, list) or not records:
+        return KPIReadinessResult(
+            is_ready=False, record_count=0, available_metrics=[],
+            missing_revenue_proxy=True, missing_churn_proxy=True,
+            missing_conversion_proxy=True, max_series_depth=0,
+            reasons=["kpi_payload.records is empty or missing"],
+        )
+
+    # Count usable records and build metric inventory.
+    metric_series_depth: dict[str, int] = {}
+    usable_record_count = 0
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        computed = record.get("computed_kpis")
+        if not isinstance(computed, dict):
+            continue
+        usable_record_count += 1
+        for metric_name, raw_value in computed.items():
+            try:
+                _metric_to_float(raw_value)
+            except ValueError:
+                continue
+            metric_series_depth[metric_name] = metric_series_depth.get(metric_name, 0) + 1
+
+    if usable_record_count == 0:
+        return KPIReadinessResult(
+            is_ready=False, record_count=0, available_metrics=[],
+            missing_revenue_proxy=True, missing_churn_proxy=True,
+            missing_conversion_proxy=True, max_series_depth=0,
+            reasons=["no records contain usable computed_kpis"],
+        )
+
+    available = set(metric_series_depth.keys())
+    max_depth = max(metric_series_depth.values()) if metric_series_depth else 0
+
+    missing_rev = not bool(available & _REVENUE_FAMILY)
+    missing_churn = not bool(available & _CHURN_FAMILY)
+    missing_conv = not bool(available & _CONVERSION_FAMILY)
+
+    if missing_rev:
+        reasons.append(
+            f"no revenue-family metric found (need one of: {sorted(_REVENUE_FAMILY)})"
+        )
+    if missing_churn:
+        reasons.append(
+            f"no churn-family metric found (need one of: {sorted(_CHURN_FAMILY)})"
+        )
+    if missing_conv:
+        reasons.append(
+            f"no conversion-family metric found (need one of: {sorted(_CONVERSION_FAMILY)})"
+        )
+    if max_depth < MIN_SERIES_DEPTH_FOR_DELTA:
+        reasons.append(
+            f"max time-series depth is {max_depth}, need >= {MIN_SERIES_DEPTH_FOR_DELTA} for delta derivation"
+        )
+
+    is_ready = not reasons
+    return KPIReadinessResult(
+        is_ready=is_ready,
+        record_count=usable_record_count,
+        available_metrics=sorted(available),
+        missing_revenue_proxy=missing_rev,
+        missing_churn_proxy=missing_churn,
+        missing_conversion_proxy=missing_conv,
+        max_series_depth=max_depth,
+        reasons=reasons,
+    )
 
 
 def normalize_forecast_signals(forecast_payload: dict) -> SignalDict:

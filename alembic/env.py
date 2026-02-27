@@ -9,14 +9,26 @@ from sqlalchemy import engine_from_config, pool
 from db.base import Base
 from db.config import load_env_files, normalize_postgres_url, resolve_database_url
 from db.models import (  # noqa: F401  — imports trigger Base.metadata registration
+    Benchmark,
+    BenchmarkMetric,
+    BenchmarkSnapshot,
     BusinessRiskScore,
     CanonicalInsightRecord,
     Client,
+    CompositeScore,
     ComputedKPI,
     Dataset,
     ForecastMetric,
+    IndustryCategory,
     IngestionJob,
+    MacroMetric,
+    MacroMetricRun,
     MappingConfig,
+    RankingResult,
+    RelativeScore,
+    ScoreSignalReference,
+    ScoringRun,
+    ScoringSubject,
 )
 
 config = context.config
