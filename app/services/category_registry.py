@@ -64,6 +64,7 @@ class CategoryPack:
     optional_signals: tuple[str, ...]
     category_aliases: tuple[str, ...]
     rate_metrics: frozenset[str]
+    precomputed_metrics: tuple[str, ...]
 
 
 def _normalize(value: str | None) -> str:
@@ -291,6 +292,9 @@ def _parse_category_pack(path: Path) -> CategoryPack:
     rate_metrics = frozenset(
         _unique_normalized([str(item) for item in payload.get("rate_metrics", [])])
     )
+    precomputed_metrics = _unique_normalized(
+        [str(item) for item in payload.get("precomputed_metrics", [])]
+    )
 
     return CategoryPack(
         name=name,
@@ -303,6 +307,7 @@ def _parse_category_pack(path: Path) -> CategoryPack:
         optional_signals=optional_signals,
         category_aliases=category_aliases,
         rate_metrics=rate_metrics,
+        precomputed_metrics=precomputed_metrics,
     )
 
 

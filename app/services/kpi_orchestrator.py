@@ -307,6 +307,17 @@ class KPIOrchestrator:
             extra_inputs=extra_inputs or {},
         )
 
+        # Step 6b – backfill None metrics from precomputed canonical values
+        metrics, validity = self._backfill_from_precomputed(
+            metrics=metrics,
+            validity=validity,
+            entity_name=entity_name,
+            period_start=period_start,
+            period_end=period_end,
+            pack=pack,
+            db=db,
+        )
+
         # Step 7 – serialise (includes validity flags for LLM consumption)
         payload = _build_payload(
             metrics,
@@ -492,6 +503,65 @@ class KPIOrchestrator:
         logger.debug("_compute metrics=%s", metrics)
 
         validity = _build_validity(pack, agg_inputs, extra_inputs, metrics)
+        return metrics, validity
+
+    # ------------------------------------------------------------------
+    # Internal: precomputed metric backfill
+    # ------------------------------------------------------------------
+
+    def _backfill_from_precomputed(
+        self,
+        *,
+        metrics: dict[str, float | None],
+        validity: dict[str, dict[str, Any]],
+        entity_name: str,
+        period_start: datetime,
+        period_end: datetime,
+        pack: CategoryPack,
+        db: Session,
+    ) -> tuple[dict[str, float | None], dict[str, dict[str, Any]]]:
+        """
+        For any metric that the formula returned ``None``, attempt to fetch
+        a pre-computed value directly from canonical insight records.
+
+        Some datasets ship with already-derived metrics (e.g. ``churn_rate``,
+        ``growth_rate``, ``ltv``) instead of the raw building blocks the
+        formula needs.  This method fills the gaps so that the persisted
+        KPI payload contains real values instead of blanket ``None``.
+        """
+        if not pack.precomputed_metrics:
+            return metrics, validity
+
+        none_metrics = [name for name, value in metrics.items() if value is None]
+        precomputed_names = set(pack.precomputed_metrics)
+        candidates = [m for m in none_metrics if m in precomputed_names]
+
+        if not candidates:
+            return metrics, validity
+
+        agg = AggregationService(
+            db,
+            categories=category_aliases_for_business_type(pack.name),
+        )
+        precomputed = agg.get_precomputed_metrics(
+            entity_name, period_start, period_end, candidates,
+        )
+
+        backfilled = 0
+        for name, value in precomputed.items():
+            if value is not None:
+                metrics[name] = value
+                # Update validity to reflect that this metric is now available
+                validity.pop(name, None)
+                backfilled += 1
+
+        if backfilled:
+            logger.info(
+                "KPIOrchestrator._backfill_from_precomputed entity=%r: "
+                "backfilled %d/%d metrics from precomputed canonical values",
+                entity_name, backfilled, len(candidates),
+            )
+
         return metrics, validity
 
     # ------------------------------------------------------------------

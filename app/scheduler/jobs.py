@@ -34,6 +34,8 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Iterator
 
+from dateutil.relativedelta import relativedelta
+
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -76,6 +78,24 @@ def _extract_primary_metric_values(
     if not isinstance(value, (int, float)):
         return []
     return [float(value)]
+
+
+def _generate_monthly_windows(
+    period_start: datetime,
+    period_end: datetime,
+) -> list[tuple[datetime, datetime]]:
+    """Split a date range into calendar-month windows."""
+    start = period_start.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    windows: list[tuple[datetime, datetime]] = []
+    while start < period_end:
+        end = start + relativedelta(months=1)
+        if end > period_end:
+            end = period_end
+        windows.append((start, end))
+        start = start + relativedelta(months=1)
+    return windows
 
 
 def _job_success(stage_name: str) -> FinalInsightResponse:
@@ -194,13 +214,15 @@ def _session_scope() -> Iterator[Session]:
 
 def run_daily_kpi() -> FinalInsightResponse:
     """
-    Recompute KPIs for all known entities over the trailing 90-day window.
+    Recompute KPIs for all known entities using per-month windows so that
+    downstream nodes receive a proper time-series instead of a single aggregate.
     KPIOrchestrator commits internally; no explicit commit is needed here.
     """
     try:
         logger.info("Scheduler: daily_kpi starting")
         now = datetime.now(tz=timezone.utc)
         period_start = now - timedelta(days=90)
+        monthly_windows = _generate_monthly_windows(period_start, now)
 
         with _session_scope() as db:
             entities = _resolve_entities(db)
@@ -208,27 +230,28 @@ def run_daily_kpi() -> FinalInsightResponse:
                 logger.warning("Scheduler: daily_kpi — no entities found, skipping")
                 return _job_success("daily_kpi")
 
+            orchestrator = KPIOrchestrator()
             for entity_name, business_type in entities:
-                try:
-                    result: KPIRunResult = KPIOrchestrator().run(
-                        entity_name=entity_name,
-                        business_type=business_type,
-                        period_start=period_start,
-                        period_end=now,
-                        db=db,
-                    )
-                    logger.info(
-                        "Scheduler: daily_kpi entity=%r business_type=%r "
-                        "record_id=%s has_errors=%s",
-                        entity_name,
-                        business_type,
-                        result.record_id,
-                        result.has_errors,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "Scheduler: daily_kpi failed entity=%r: %s", entity_name, exc
-                    )
+                succeeded = 0
+                for win_start, win_end in monthly_windows:
+                    try:
+                        orchestrator.run(
+                            entity_name=entity_name,
+                            business_type=business_type,
+                            period_start=win_start,
+                            period_end=win_end,
+                            db=db,
+                        )
+                        succeeded += 1
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "Scheduler: daily_kpi failed entity=%r window=[%s, %s]: %s",
+                            entity_name, win_start.isoformat(), win_end.isoformat(), exc,
+                        )
+                logger.info(
+                    "Scheduler: daily_kpi entity=%r business_type=%r windows=%d succeeded=%d",
+                    entity_name, business_type, len(monthly_windows), succeeded,
+                )
 
         logger.info("Scheduler: daily_kpi complete")
         return _job_success("daily_kpi")
@@ -244,12 +267,14 @@ def run_daily_kpi() -> FinalInsightResponse:
 def run_daily_forecast() -> FinalInsightResponse:
     """
     Regenerate forecasts for all known entities using the primary KPI metric.
+    Collects per-month KPI values to feed the forecast with a proper time-series.
     Commits per entity on success; rolls back on failure.
     """
     try:
         logger.info("Scheduler: daily_forecast starting")
         now = datetime.now(tz=timezone.utc)
         period_start = now - timedelta(days=90)
+        monthly_windows = _generate_monthly_windows(period_start, now)
 
         with _session_scope() as db:
             entities = _resolve_entities(db)
@@ -257,18 +282,25 @@ def run_daily_forecast() -> FinalInsightResponse:
                 logger.warning("Scheduler: daily_forecast — no entities found, skipping")
                 return _job_success("daily_forecast")
 
+            orchestrator = KPIOrchestrator()
             for entity_name, business_type in entities:
                 try:
-                    # Re-run KPI to get a fresh metric value for the regression seed.
-                    kpi_result: KPIRunResult = KPIOrchestrator().run(
-                        entity_name=entity_name,
-                        business_type=business_type,
-                        period_start=period_start,
-                        period_end=now,
-                        db=db,
-                    )
                     metric_name = primary_metric_for_business_type(business_type)
-                    values = _extract_primary_metric_values(kpi_result, metric_name)
+                    values: list[float] = []
+                    for win_start, win_end in monthly_windows:
+                        try:
+                            kpi_result = orchestrator.run(
+                                entity_name=entity_name,
+                                business_type=business_type,
+                                period_start=win_start,
+                                period_end=win_end,
+                                db=db,
+                            )
+                            for v in _extract_primary_metric_values(kpi_result, metric_name):
+                                values.append(v)
+                        except Exception:  # noqa: BLE001
+                            pass  # window-level failure is non-fatal
+
                     result = ForecastOrchestrator(db).generate_forecast(
                         entity_name=entity_name,
                         metric_name=metric_name,
@@ -283,9 +315,10 @@ def run_daily_forecast() -> FinalInsightResponse:
                     else:
                         db.commit()
                         logger.info(
-                            "Scheduler: daily_forecast entity=%r trend=%s",
+                            "Scheduler: daily_forecast entity=%r trend=%s points=%d",
                             entity_name,
                             result.get("trend"),
+                            len(values),
                         )
                 except Exception as exc:  # noqa: BLE001
                     db.rollback()

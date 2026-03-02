@@ -13,6 +13,7 @@ from typing import Any
 from sqlalchemy import Text, and_, cast, or_, select
 from sqlalchemy.orm import Session
 
+from app.services.category_registry import get_category_pack
 from app.services.kpi_canonical_schema import (
     category_aliases_for_business_type,
     metric_aliases_for_business_type,
@@ -112,11 +113,45 @@ def validate_canonical_inputs_for_kpi(
     for metric_key in required_metric_keys:
         aliases = set(metric_aliases.get(metric_key, (metric_key,)))
         has_non_null_value = bool(aliases & available_metric_names)
-        has_null_value = bool(aliases & null_value_metric_names)
-        if not has_non_null_value or has_null_value:
+        # A metric is only missing if there are NO non-null rows at all.
+        # Having some null rows alongside valid rows is acceptable — the
+        # aggregation layer already handles None gracefully.
+        if not has_non_null_value:
             missing_metrics.append(metric_key)
 
     if missing_metrics:
+        # Before failing, check if precomputed output metrics exist that
+        # cover the gap.  E.g. if active_customer_count is missing but the
+        # dataset ships churn_rate and ltv directly, the formula can be
+        # bypassed for those outputs via the precomputed passthrough.
+        pack = get_category_pack(business_type)
+        precomputed_names: set[str] = set()
+        if pack and pack.precomputed_metrics:
+            precomputed_names = set(pack.precomputed_metrics)
+
+        if precomputed_names:
+            # Check which precomputed metrics actually exist in canonical records
+            available_precomputed = set(
+                db.scalars(
+                    select(CanonicalInsightRecord.metric_name)
+                    .where(
+                        base_predicate,
+                        CanonicalInsightRecord.metric_name.in_(tuple(precomputed_names)),
+                        non_null_metric_value,
+                    )
+                    .group_by(CanonicalInsightRecord.metric_name)
+                ).all()
+            )
+            if available_precomputed:
+                # Precomputed output metrics exist — allow validation to pass.
+                # The orchestrator will use the precomputed passthrough for
+                # metrics whose raw building blocks are missing.
+                return CanonicalValidationResult(
+                    is_valid=True,
+                    missing_metrics=missing_metrics,
+                    error_payload=None,
+                )
+
         return CanonicalValidationResult(
             is_valid=False,
             missing_metrics=missing_metrics,

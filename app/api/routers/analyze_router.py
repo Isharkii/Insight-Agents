@@ -66,6 +66,31 @@ def _has_computed_kpis(db: Session, entity_name: str) -> bool:
     return bool(rows)
 
 
+def _generate_monthly_windows(
+    period_start: datetime,
+    period_end: datetime,
+) -> list[tuple[datetime, datetime]]:
+    """Split a date range into calendar-month windows.
+
+    Each window is [first-of-month 00:00 UTC, first-of-next-month 00:00 UTC).
+    Partial edge months are included so no data is dropped.
+    """
+    from dateutil.relativedelta import relativedelta
+
+    start = period_start.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+
+    windows: list[tuple[datetime, datetime]] = []
+    while start < period_end:
+        end = start + relativedelta(months=1)
+        if end > period_end:
+            end = period_end
+        windows.append((start, end))
+        start = start + relativedelta(months=1)
+    return windows
+
+
 def _ensure_analytics_data(
     *,
     entity_name: str,
@@ -74,46 +99,61 @@ def _ensure_analytics_data(
 ) -> None:
     """Run KPI computation + forecast for *entity_name* if not already present.
 
-    Mirrors the analytics trigger in CSVIngestionService but uses the
-    *correct* entity_name extracted from canonical records.
+    Computes KPIs per calendar month so that downstream graph nodes,
+    dashboards, and derived signals receive a proper time-series of
+    data points instead of a single collapsed aggregate.
     """
     if _has_computed_kpis(db, entity_name):
         return
 
-    period_start, now = _resolve_kpi_period_from_entity_data(
+    data_start, data_end = _resolve_kpi_period_from_entity_data(
         db=db,
         entity_name=entity_name,
         processing_strategy=processing_strategy,
     )
 
-    # --- KPI computation ---
-    kpi_result: KPIRunResult | None = None
-    try:
-        kpi_result = KPIOrchestrator().run(
-            entity_name=entity_name,
-            business_type=processing_strategy,
-            period_start=period_start,
-            period_end=now,
-            db=db,
-        )
-        logger.info(
-            "Analyze: KPI computed entity=%r processing_strategy=%r record_id=%s",
-            entity_name,
-            processing_strategy,
-            kpi_result.record_id,
-        )
-    except Exception:
-        logger.warning(
-            "Analyze: KPI computation failed entity=%r processing_strategy=%r",
-            entity_name,
-            processing_strategy,
-            exc_info=True,
-        )
+    # --- Monthly KPI computation ---
+    monthly_windows = _generate_monthly_windows(data_start, data_end)
+    orchestrator = KPIOrchestrator()
+    all_results: list[KPIRunResult] = []
 
-    # --- Forecast generation ---
+    for win_start, win_end in monthly_windows:
+        try:
+            kpi_result = orchestrator.run(
+                entity_name=entity_name,
+                business_type=processing_strategy,
+                period_start=win_start,
+                period_end=win_end,
+                db=db,
+            )
+            all_results.append(kpi_result)
+        except Exception:
+            logger.warning(
+                "Analyze: KPI computation failed entity=%r window=[%s, %s]",
+                entity_name,
+                win_start.isoformat(),
+                win_end.isoformat(),
+                exc_info=True,
+            )
+
+    logger.info(
+        "Analyze: KPI computed entity=%r processing_strategy=%r windows=%d succeeded=%d",
+        entity_name,
+        processing_strategy,
+        len(monthly_windows),
+        len(all_results),
+    )
+
+    # --- Forecast generation (uses all monthly primary-metric values) ---
     try:
         metric_name = primary_metric_for_business_type(processing_strategy)
-        values = _extract_primary_metric_values(kpi_result, metric_name)
+        values: list[float] = []
+        for result in all_results:
+            entry = result.metrics.get(metric_name, {})
+            value = entry.get("value")
+            if isinstance(value, (int, float)):
+                values.append(float(value))
+
         forecast_result = ForecastOrchestrator(db).generate_forecast(
             entity_name=entity_name,
             metric_name=metric_name,
@@ -129,9 +169,10 @@ def _ensure_analytics_data(
         else:
             db.commit()
             logger.info(
-                "Analyze: forecast generated entity=%r metric=%r",
+                "Analyze: forecast generated entity=%r metric=%r points=%d",
                 entity_name,
                 metric_name,
+                len(values),
             )
     except Exception:
         db.rollback()
@@ -157,18 +198,19 @@ def _derive_kpi_period_bounds(
     """
     Build KPI computation bounds from dataset timestamps.
 
-    Falls back to [now-90d, now] when no timestamps are available.
+    Uses the full data range instead of capping at 90 days so that
+    monthly KPI windows cover the entire dataset.  Falls back to
+    [now-90d, now] when no timestamps are available.
     """
     if latest is None:
         return now - timedelta(days=90), now
 
     latest_utc = _ensure_utc(latest)
-    candidate_start = latest_utc - timedelta(days=90)
     if earliest is None:
-        return candidate_start, latest_utc
+        return latest_utc - timedelta(days=90), latest_utc
 
     earliest_utc = _ensure_utc(earliest)
-    return max(earliest_utc, candidate_start), latest_utc
+    return earliest_utc, latest_utc
 
 
 def _resolve_kpi_period_from_entity_data(

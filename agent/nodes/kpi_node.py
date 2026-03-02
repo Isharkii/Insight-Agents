@@ -18,7 +18,8 @@ from db.repositories.kpi_repository import KPIRepository
 from db.session import SessionLocal
 
 # Default look-back window when no explicit period is in state.
-_DEFAULT_WINDOW_DAYS: int = 30
+# Must cover the full dataset history; monthly KPI rows may span years.
+_DEFAULT_WINDOW_DAYS: int = 3650
 
 
 def _now_utc() -> datetime:

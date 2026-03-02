@@ -35,10 +35,23 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-/**
- * Fetch aggregated dashboard data from the backend.
- * Calls GET /api/dashboard which returns the full DashboardData shape.
- */
+async function requestBlob(url: string): Promise<Blob> {
+  const res = await fetch(`${BASE}${url}`);
+  if (!res.ok) {
+    let message = `HTTP ${res.status}`;
+    try {
+      const body: BackendError = await res.json();
+      message = extractErrorMessage(body);
+    } catch {
+      /* use status code fallback */
+    }
+    throw new Error(message);
+  }
+  return res.blob();
+}
+
+// ─── Dashboard ───────────────────────────────────────────────────────────────
+
 export async function fetchDashboard(
   entityName: string,
   businessType: string,
@@ -50,6 +63,15 @@ export async function fetchDashboard(
   return request<DashboardData>(`/api/dashboard?${params}`);
 }
 
+// ─── Analysis ────────────────────────────────────────────────────────────────
+
+export interface DiagnosticsData {
+  missing_signals?: string[];
+  confidence_adjustments?: string[];
+  warnings?: string[];
+  [key: string]: unknown;
+}
+
 export interface AnalyzeResult {
   insight: string;
   evidence: string;
@@ -58,24 +80,26 @@ export interface AnalyzeResult {
   priority: string;
   confidence_score: number;
   pipeline_status: string;
-  diagnostics: unknown;
+  diagnostics: DiagnosticsData | null;
 }
 
-/**
- * Run the full analysis pipeline.
- * Calls POST /analyze with form-data (prompt, optional CSV, etc.).
- */
 export async function runAnalysis(params: {
   prompt: string;
   file?: File;
   clientId?: string;
   businessType?: string;
+  multiEntityBehavior?: string;
+  model?: string;
 }): Promise<AnalyzeResult> {
   const form = new FormData();
   form.append("prompt", params.prompt);
   if (params.file) form.append("file", params.file);
   if (params.clientId) form.append("client_id", params.clientId);
   if (params.businessType) form.append("business_type", params.businessType);
+  if (params.multiEntityBehavior)
+    form.append("multi_entity_behavior", params.multiEntityBehavior);
+  if (params.model && params.model !== "default")
+    form.append("model", params.model);
 
   return request<AnalyzeResult>("/analyze", {
     method: "POST",
@@ -83,9 +107,83 @@ export async function runAnalysis(params: {
   });
 }
 
-/**
- * Check backend health.
- */
+// ─── Clients ─────────────────────────────────────────────────────────────────
+
+export async function fetchClients(): Promise<string[]> {
+  try {
+    const data = await request<{ clients: string[] } | string[]>("/clients");
+    if (Array.isArray(data)) return data;
+    if (data && Array.isArray(data.clients)) return data.clients;
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+// ─── Exports ─────────────────────────────────────────────────────────────────
+
+export async function fetchExportBlob(
+  dataset: string,
+  format: string,
+  entityName?: string,
+): Promise<Blob> {
+  const params = new URLSearchParams({ dataset, format });
+  if (entityName) params.set("entity_name", entityName);
+  return requestBlob(`/export/powerbi?${params}`);
+}
+
+export async function fetchExportJson(
+  dataset: string,
+  entityName?: string,
+  limit = 2000,
+): Promise<Record<string, unknown> | null> {
+  const params = new URLSearchParams({
+    dataset,
+    format: "json",
+    limit: String(limit),
+  });
+  if (entityName) params.set("entity_name", entityName);
+  try {
+    return await request<Record<string, unknown>>(`/export/powerbi?${params}`);
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchReportPayload(
+  entityName: string,
+  prompt: string,
+  businessType?: string,
+): Promise<Record<string, unknown> | null> {
+  const params = new URLSearchParams({
+    entity_name: entityName,
+    prompt,
+    format: "json",
+  });
+  if (businessType) params.set("business_type", businessType);
+  try {
+    return await request<Record<string, unknown>>(`/export/report?${params}`);
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchReportMarkdownBlob(
+  entityName: string,
+  prompt: string,
+  businessType?: string,
+): Promise<Blob> {
+  const params = new URLSearchParams({
+    entity_name: entityName,
+    prompt,
+    format: "md",
+  });
+  if (businessType) params.set("business_type", businessType);
+  return requestBlob(`/export/report?${params}`);
+}
+
+// ─── Health ──────────────────────────────────────────────────────────────────
+
 export async function checkHealth(): Promise<{ insight: string }> {
   return request<{ insight: string }>("/health");
 }

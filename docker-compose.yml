@@ -129,6 +129,7 @@ services:
       context: .
       dockerfile: Dockerfile.frontend
     container_name: insight_frontend
+    profiles: ["streamlit"]
     environment:
       API_BASE_URL: ${FRONTEND_API_BASE_URL:-http://backend:8000}
     ports:
@@ -143,7 +144,6 @@ services:
       retries: 3
       start_period: 15s
     volumes:
-      # DEV: bind-mount so frontend changes apply without rebuild
       - ./streamlit_app.py:/app/streamlit_app.py
       - ./llm_synthesis:/app/llm_synthesis
       - ./config:/app/config

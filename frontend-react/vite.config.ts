@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react";
 import path from "path";
 
 export default defineConfig({
-  base: "/dashboard/",
+  base: "/",
   plugins: [react()],
   resolve: {
     alias: {
@@ -34,6 +34,10 @@ export default defineConfig({
         changeOrigin: true,
       },
       "/compute-kpis": {
+        target: "http://localhost:8000",
+        changeOrigin: true,
+      },
+      "/clients": {
         target: "http://localhost:8000",
         changeOrigin: true,
       },

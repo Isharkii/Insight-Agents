@@ -431,3 +431,68 @@ class AggregationService:
             entity_name, start_date.isoformat(), end_date.isoformat(), len(revenues),
         )
         return revenues
+
+    # ------------------------------------------------------------------
+    # Pre-computed metric passthrough
+    # ------------------------------------------------------------------
+
+    def get_precomputed_metrics(
+        self,
+        entity_name: str,
+        start_date: datetime,
+        end_date: datetime,
+        metric_names: Sequence[str],
+    ) -> dict[str, float | None]:
+        """
+        Fetch pre-computed metric values directly from canonical records.
+
+        Some datasets ship with already-derived metrics (e.g. ``churn_rate``,
+        ``growth_rate``, ``ltv``) instead of the raw building blocks.  This
+        method retrieves the latest value for each requested metric name within
+        the time window, allowing the orchestrator to use them as fallbacks
+        when the deterministic formula cannot compute a metric.
+
+        Returns
+        -------
+        dict[str, float | None]
+            Metric name → value.  ``None`` for metrics not found.
+        """
+        if not metric_names:
+            return {}
+
+        numeric_value = _to_numeric(CanonicalInsightRecord.metric_value)
+        stmt = (
+            select(
+                CanonicalInsightRecord.metric_name,
+                numeric_value,
+            )
+            .where(
+                CanonicalInsightRecord.entity_name == entity_name,
+                CanonicalInsightRecord.category.in_(self._categories),
+                CanonicalInsightRecord.metric_name.in_(tuple(metric_names)),
+                CanonicalInsightRecord.timestamp >= start_date,
+                CanonicalInsightRecord.timestamp <= end_date,
+                CanonicalInsightRecord.metric_value.is_not(None),
+            )
+            .order_by(
+                CanonicalInsightRecord.metric_name,
+                CanonicalInsightRecord.timestamp.desc(),
+            )
+            .distinct(CanonicalInsightRecord.metric_name)
+        )
+
+        result: dict[str, float | None] = {name: None for name in metric_names}
+        for row in self._session.execute(stmt).all():
+            name, value = row[0], row[1]
+            if value is not None:
+                result[name] = float(value)
+
+        logger.debug(
+            "get_precomputed_metrics entity=%r [%s, %s] metrics=%s → found=%s",
+            entity_name,
+            start_date.isoformat(),
+            end_date.isoformat(),
+            list(metric_names),
+            {k: v for k, v in result.items() if v is not None},
+        )
+        return result

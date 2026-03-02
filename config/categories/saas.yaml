@@ -43,5 +43,6 @@
     }
   },
   "optional_signals": ["ltv", "growth_rate", "arpu"],
-  "rate_metrics": ["churn_rate", "growth_rate"]
+  "rate_metrics": ["churn_rate", "growth_rate"],
+  "precomputed_metrics": ["churn_rate", "growth_rate", "ltv", "arpu"]
 }
