@@ -98,12 +98,28 @@ def _generate_monthly_windows(
 
 def _job_success(stage_name: str) -> FinalInsightResponse:
     return FinalInsightResponse(
-        insight=f"{stage_name} completed",
-        evidence=f"Scheduler job '{stage_name}' finished successfully.",
-        impact="Scheduled analytics state remains current.",
-        recommended_action="No action required.",
-        priority="low",
-        confidence_score=1.0,
+        competitive_analysis={
+            "summary": f"Competitor benchmark scheduler stage '{stage_name}' completed successfully.",
+            "market_position": "Scheduled analytics pipeline remains aligned with benchmark refresh expectations.",
+            "relative_performance": "No scheduler-stage weakness detected versus expected job reliability metrics.",
+            "key_advantages": ["Consistent scheduler execution supports competitor benchmarking continuity."],
+            "key_vulnerabilities": ["No competitor benchmark vulnerabilities detected for this scheduler stage."],
+            "confidence": 1.0,
+        },
+        strategic_recommendations={
+            "immediate_actions": [
+                "Maintain competitor benchmark data freshness to avoid metric-gap drift."
+            ],
+            "mid_term_moves": [
+                "Audit stage-level benchmark latency versus competitor intelligence refresh targets."
+            ],
+            "defensive_strategies": [
+                "Protect against competitor benchmark staleness by preserving scheduler reliability controls."
+            ],
+            "offensive_strategies": [
+                "Use reliable benchmark refresh cadence as a strength in competitor monitoring coverage."
+            ],
+        },
     )
 
 

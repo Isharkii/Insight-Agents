@@ -1,0 +1,829 @@
+You are a strategic business analyst.
+
+STRICT RULES:
+- Do NOT compute, calculate, or derive any new numbers.
+- Use ONLY the data provided below. Do not infer beyond what is given.
+- Return strictly valid JSON matching the schema defined below.
+- Output exactly one JSON object with only the schema fields.
+- Do NOT include any text outside the JSON object.
+- Do NOT wrap the JSON in markdown code fences.
+
+CONFIDENCE-AWARE NARRATIVE RULES:
+- A "Data Quality" section below reports the deterministic confidence score
+  (0.0 to 1.0) and any missing signals.
+- If confidence >= 0.8: use definitive language ("revenue declined 12%").
+- If 0.6 <= confidence < 0.8: use cautious language ("revenue appears to
+  have declined", "available data suggests").
+- If 0.4 <= confidence < 0.6: use hedged language ("limited data indicates",
+  "with significant uncertainty").  Explicitly note data gaps in the insight.
+- Your confidence_score field MUST NOT exceed the deterministic confidence
+  value provided below.
+
+# PROVIDED DATA
+
+## Kpi Data
+```json
+{
+  "records": [
+    {
+      "entity_name": "ATLAS_DYNAMICS_710",
+      "period_start": "2019-01-01T00:00:00+00:00",
+      "period_end": "2019-02-01T00:00:00+00:00",
+      "computed_kpis": {
+        "ltv": {
+          "unit": "currency",
+          "error": null,
+          "value": 5945.53,
+          "source": "precomputed_backfill",
+          "is_valid": true,
+          "missing_dependencies": []
+        },
+        "mrr": {
+          "unit": "currency",
+          "error": null,
+          "value": 187747.75,
+          "source": "formula",
+          "is_valid": true,
+          "missing_dependencies": []
+        },
+        "churn_rate": {
+          "unit": "rate",
+          "error": null,
+          "value": 0.02075,
+          "source": "precomputed_backfill",
+          "is_valid": true,
+          "missing_dependencies": []
+        },
+        "growth_rate": {
+          "unit": "rate",
+          "error": null,
+          "value": -0.04425,
+          "source": "precomputed_backfill",
+          "is_valid": true,
+          "missing_dependencies": []
+        }
+      },
+      "created_at": "2026-03-02T07:52:45.485717+00:00"
+    },
+    {
+      "entity_name": "ATLAS_DYNAMICS_710",
+      "period_start": "2019-02-01T00:00:00+00:00",
+      "period_end": "2019-03-01T00:00:00+00:00",
+      "computed_kpis": {
+        "ltv": {
+          "unit": "currency",
+          "error": null,
+          "value": 6231.38,
+          "source": "precomputed_backfill",
+          "is_valid": true,
+          "missing_dependencies": []
+        },
+        "mrr": {
+          "unit": "currency",
+          "error": null,
+          "value": 223593.24,
+          "source": "formula",
+          "is_valid": true,
+          "missing_dependencies": []
+        },
+        "churn_rate": {
+          "unit": "rate",
+          "error": null,
+          "value": 0.02121,
+          "source": "precomputed_backfill",
+          "is_valid": true,
+          "missing_dependencies": []
+        },
+        "growth_rate": {
+          "unit": "rate",
+          "error": null,
+          "value": 0.15,
+          "source": "precomputed_backfill",
+          "is_valid": true,
+          "missing_dependencies": []
+        }
+      },
+      "created_at": "2026-03-02T07:52:45.555457+00:00"
+    },
+    {
+      "entity_name": "ATLAS_DYNAMICS_710",
+      "period_start": "2019-03-01T00:00:00+00:00",
+      "period_end": "2019-04-01T00:00:00+00:00",
+      "computed_kpis": {
+        "ltv": {
+          "unit": "currency",
+          "error": null,
+          "value": 5452.52,
+          "source": "precomputed_backfill",
+          "is_valid": true,
+          "missing_dependencies": []
+        },
+        "mrr": {
+          "unit": "currency",
+          "error": null,
+          "value": 205927.13,
+          "source": "formula",
+          "is_valid": true,
+          "missing_dependencies": []
+        },
+        "churn_rate": {
+          "unit": "rate",
+          "error": null,
+          "value": 0.02184,
+          "source": "precomputed_backfill",
+          "is_valid": true,
+          "missing_dependencies": []
+        },
+        "growth_rate": {
+          "unit": "rate",
+          "error": null,
+          "value": -0.07901003626048796,
+          "source": "formula",
+          "is_valid": true,
+          "missing_dependencies": []
+        }
+      },
+      "created_at": "2026-03-02T07:52:45.571974+00:00"
+    },
+    {
+      "entity_name": "ATLAS_DYNAMICS_710",
+      "period_start": "2019-04-01T00:00:00+00:00",
+      "period_end": "2019-05-01T00:00:00+00:00",
+      "computed_kpis": {
+        "ltv": {
+          "unit": "currency",
+          "error": null,
+          "value": 5576.87,
+          "source": "precomputed_backfill",
+          "is_valid": true,
+          "missing_dependencies": []
+        },
+        "mrr": {
+          "unit": "currency",
+          "error": null,
+          "value": 201585.55,
+          "source": "formula",
+          "is_valid": true,
+          "missing_dependencies": []
+        },
+        "churn_rate": {
+          "unit": "rate",
+          "error": null,
+          "value": 0.02189,
+          "source": "precomputed_backfill",
+          "is_valid": true,
+          "missing_dependencies": []
+        },
+        "growth_rate": {
+          "unit": "rate",
+          "error": null,
+          "value": 0.03078,
+          "source": "precomputed_backfill",
+          "is_valid": true,
+          "missing_dependencies": []
+        }
+      },
+      "created_at": "2026-03-02T07:52:45.591147+00:00"
+    },
+    {
+      "entity_name": "ATLAS_DYNAMICS_710",
+      "period_start": "2019-05-01T00:00:00+00:00",
+      "period_end": "2019-06-01T00:00:00+00:00",
+      "computed_kpis": {
+        "ltv": {
+          "unit": "currency",
+          "error": null,
+          "value": 4849.17,
+          "source": "precomputed_backfill",
+          "is_valid": true,
+          "missing_dependencies": []
+        },
+        "mrr": {
+          "unit": "currency",
+          "error": null,
+          "value": 205296.69,
+          "source": "formula",
+          "is_valid": true,
+          "missing_dependencies": []
+        },
+        "churn_rate": {
+          "unit": "rate",
+          "error": null,
+          "value": 0.02408,
+          "source": "precomputed_backfill",
+          "is_valid": true,
+          "missing_dependencies": []
+        },
+        "growth_rate": {
+          "unit": "rate",
+          "error": null,
+          "value": 0.01840975208788534,
+          "source": "formula",
+          "is_valid": true,
+          "missing_dependencies": []
+        }
+      },
+      "created_at": "2026-03-02T07:52:45.609264+00:00"
+    },
+    {
+      "entity_name": "ATLAS_DYNAMICS_710",
+      "period_start": "2019-06-01T00:00:00+00:00",
+      "period_end": "2019-07-01T00:00:00+00:00",
+      "computed_kpis": {
+        "ltv": {
+          "unit": "currency",
+          "error": null,
+          "value": 4420.82,
+          "source": "precomputed_backfill",
+          "is_valid": true,
+          "missing_dependencies": []
+   
+... (truncated to stay under token limits)
+```
+
+## Forecast Data
+```json
+{
+  "forecasts": {
+    "mrr": {
+      "entity_name": "ATLAS_DYNAMICS_710",
+      "metric_name": "mrr",
+      "period_end": "2026-03-02T07:52:46.751597+00:00",
+      "forecast_data": {
+        "slope": 1862.779577,
+        "trend": "stable",
+        "status": "ok",
+        "forecast": {
+          "month_1": 367099.389577,
+          "month_2": 368962.169154,
+          "month_3": 370824.94873
+        },
+        "metric_name": "mrr",
+        "churn_acceleration": -1e-06,
+        "forecast_available": true,
+        "deviation_percentage": 0.052934
+      },
+      "created_at": "2026-03-02T07:52:46.753632+00:00"
+    },
+    "churn_rate": null,
+    "ltv": null,
+    "growth_rate": null
+  },
+  "fetched_for": "ATLAS_DYNAMICS_710",
+  "metrics_queried": [
+    "mrr",
+    "churn_rate",
+    "ltv",
+    "growth_rate"
+  ]
+}
+```
+
+## Risk Data
+```json
+{
+  "entity_name": "ATLAS_DYNAMICS_710",
+  "risk_score": 30,
+  "risk_level": "low",
+  "forecast_available": true,
+  "cohort_signals_used": false,
+  "cohort_signal_status": "partial",
+  "cohort_signal_confidence": 0.7,
+  "cohort_risk_hint": "low",
+  "growth_signals_used": true,
+  "growth_signal_status": "success",
+  "growth_signal_confidence": 1.0,
+  "growth_short": -0.117716,
+  "growth_mid": -0.099967,
+  "growth_long": 0.09065,
+  "growth_trend_acceleration": 0.172868,
+  "growth_insufficient_history": {
+    "short": false,
+    "mid": false,
+    "long": false,
+    "cagr": false,
+    "acceleration": false
+  },
+  "scenario_signals_used": true,
+  "scenario_signal_status": "success",
+  "scenario_signal_confidence": 0.966667,
+  "scenario_worst_growth": -0.149967,
+  "scenario_best_growth": -0.059967,
+  "scenario_worst_confidence_impact": -0.08,
+  "scenario_assumptions": {
+    "projection_periods": 1,
+    "base_growth_selected": -0.099967,
+    "anomaly_penalty": 0.0,
+    "correlation_penalty": 0.1,
+    "shocks": {
+      "best": {
+        "growth_delta": 0.04,
+        "level_delta": 0.02,
+        "volatility_multiplier": 0.8,
+        "confidence_impact": 0.05
+      },
+      "base": {
+        "growth_delta": 0.0,
+        "level_delta": 0.0,
+        "volatility_multiplier": 1.0,
+        "confidence_impact": 0.0
+      },
+      "worst": {
+        "growth_delta": -0.05,
+        "level_delta": -0.03,
+        "volatility_multiplier": 1.3,
+        "confidence_impact": -0.08
+      }
+    }
+  },
+  "scenario_insufficient_history": {
+    "short": false,
+    "mid": false,
+    "long": false,
+    "cagr": false,
+    "acceleration": false
+  }
+}
+```
+
+## Segmentation
+```json
+{
+  "dimensions": [
+    "team",
+    "channel",
+    "region",
+    "product_line"
+  ],
+  "top_contributors": [
+    {
+      "dimension": "channel",
+      "name": "csv",
+      "contribution_value": 365236.61,
+      "contribution_share": 1.0,
+      "rows": 1
+    },
+    {
+      "dimension": "team",
+      "name": "organization",
+      "contribution_value": 365236.61,
+      "contribution_share": 1.0,
+      "rows": 1
+    }
+  ],
+  "laggards": [
+    {
+      "dimension": "channel",
+      "name": "csv",
+      "contribution_value": 365236.61,
+      "contribution_share": 1.0,
+      "rows": 1
+    },
+    {
+      "dimension": "team",
+      "name": "organization",
+      "contribution_value": 365236.61,
+      "contribution_share": 1.0,
+      "rows": 1
+    }
+  ],
+  "dependency_concentration": {
+    "by_dimension": {
+      "team": {
+        "hhi": 1.0,
+        "effective_groups": 1.0,
+        "dominant_contributor": {
+          "dimension": "team",
+          "name": "organization",
+          "contribution_value": 365236.61,
+          "contribution_share": 1.0,
+          "rows": 1
+        }
+      },
+      "channel": {
+        "hhi": 1.0,
+        "effective_groups": 1.0,
+        "dominant_contributor": {
+          "dimension": "channel",
+          "name": "csv",
+          "contribution_value": 365236.61,
+          "contribution_share": 1.0,
+          "rows": 1
+        }
+      },
+      "region": {
+        "hhi": 0,
+        "effective_groups": 0.0,
+        "dominant_contributor": null
+      },
+      "product_line": {
+        "hhi": 0,
+        "effective_groups": 0.0,
+        "dominant_contributor": null
+      }
+    },
+    "most_concentrated_dimension": {
+      "dimension": "team",
+      "hhi": 1.0,
+      "effective_groups": 1.0,
+      "dominant_contributor": {
+        "dimension": "team",
+        "name": "organization",
+        "contribution_value": 365236.61,
+        "contribution_share": 1.0,
+        "rows": 1
+      }
+    },
+    "least_concentrated_dimension": {
+      "dimension": "product_line",
+      "hhi": 0.0,
+      "effective_groups": 0.0,
+      "dominant_contributor": null
+    }
+  },
+  "by_dimension": {
+    "team": {
+      "contributors": [
+        {
+          "dimension": "team",
+          "name": "organization",
+          "contribution_value": 365236.61,
+          "contribution_share": 1.0,
+          "rows": 1
+        }
+      ],
+      "top_contributors": [
+        {
+          "dimension": "team",
+          "name": "organization",
+          "contribution_value": 365236.61,
+          "contribution_share": 1.0,
+          "rows": 1
+        }
+      ],
+      "laggards": [
+        {
+          "dimension": "team",
+          "name": "organization",
+          "contribution_value": 365236.61,
+          "contribution_share": 1.0,
+          "rows": 1
+        }
+      ],
+      "dependency_concentration": {
+        "hhi": 1.0,
+        "effective_groups": 1.0,
+        "dominant_contributor": {
+          "dimension": "team",
+          "name": "organization",
+          "contribution_value": 365236.61,
+          "contribution_share": 1.0,
+          "rows": 1
+        }
+      },
+      "total_contribution": 365236.61,
+      "group_count": 1
+    },
+    "channel": {
+      "contributors": [
+        {
+          "dimension": "channel",
+          "name": "csv",
+          "contribution_value": 365236.61,
+          "contribution_share": 1.0,
+          "rows": 1
+        }
+      ],
+      "top_contributors": [
+        {
+          "dimension": "channel",
+          "name": "csv",
+          "contribution_value": 365236.61,
+          "contribution_share": 1.0,
+          "rows": 1
+        }
+      ],
+      "laggards": [
+        {
+          "dimension": "channel",
+          "name": "csv",
+          "contribution_value": 365236.61,
+          "contribution_share": 1.0,
+          "rows": 1
+        }
+      ],
+      "dependency_concentration": {
+        "hhi": 1.0,
+        "effective_groups": 1.0,
+        "dominant_contributor": {
+          "dimension": "channel",
+          "name": "csv",
+          "contribution_value": 365236.61,
+          "contribution_share": 1.0,
+          "rows": 1
+        }
+      },
+      "total_contribution": 365236.61,
+      "group_count": 1
+    },
+    "region": {
+      "contributors": [],
+      "top_contributors": [],
+      "laggards": [],
+      "dependency_concentration": {
+        "hhi": 0,
+        "effective_groups": 0.0,
+        "dominant_contributor": null
+      },
+      "total_contribution": 0,
+      "group_count": 0
+    },
+    "product_line": {
+      "contributors": [],
+      "top_contributors": [],
+      "laggards": [],
+      "dependency_concentration": {
+        "hhi": 0,
+        "effective_groups": 0.0,
+        "dominant_contributor": null
+      },
+      "total_contribution": 0,
+      "group_count": 0
+    }
+  },
+  "records_scanned": 1,
+  "records_used": 1,
+  "role_scoring": {
+    "team:organization": {
+      "performance_score": 50.0,
+      "classification": "at_risk"
+    },
+    "channel:csv": {
+      "performance_score": 50.0,
+      "classification": "at_risk"
+    }
+  },
+  "macro_context": {
+    "status": "partial",
+    "signals": {
+      "seasonality": {
+        "status": "available",
+        "is_seasonal": false,
+        "seasonality_strength": 0.044482,
+        "points_used": 72,
+        "coverage_months": 12,
+        "peak_month": 12,
+        "trough_month": 2,
+        "method": "month_of_year_variance_ratio"
+      },
+      "inflation": {
+        "status": "missing_optional",
+        "signal": "inflation",
+        "points_used": 0,
+        "latest_value": null,
+        "latest_timestamp": null,
+        "derived_rate": null,
+        "source_observations": []
+      },
+      "industry_benchmark": {
+        "status": "missing_optional",
+        "signal": "industry_benchmark",
+        "points_used": 0,
+        "latest_value": null,
+        "latest_timestamp": null,
+        "derived_rate": null,
+        "source_observations": []
+      }
+    },
+    "real_growth_adjustment": {
+      "status": "missing_optional",
+   
+... (truncated to stay under token limits)
+```
+
+## Prioritization
+```json
+{
+  "priority_level": "high",
+  "recommended_focus": "mitigate worst-case downside scenario assumptions",
+  "cohort_signal_used": true,
+  "cohort_signal_confidence": 0.7,
+  "cohort_risk_hint": "low",
+  "growth_signal_used": true,
+  "growth_signal_confidence": 1.0,
+  "growth_short": -0.117716,
+  "growth_mid": -0.099967,
+  "growth_long": 0.09065,
+  "growth_trend_acceleration": 0.172868,
+  "growth_insufficient_history": {
+    "short": false,
+    "mid": false,
+    "long": false,
+    "cagr": false,
+    "acceleration": false
+  },
+  "scenario_signal_used": true,
+  "scenario_base_confidence": 0.966667,
+  "scenario_worst_growth": -0.149967,
+  "scenario_best_growth": -0.059967,
+  "scenario_worst_confidence_impact": -0.08,
+  "scenario_assumptions": {
+    "projection_periods": 1,
+    "base_growth_selected": -0.099967,
+    "anomaly_penalty": 0.0,
+    "correlation_penalty": 0.1,
+    "shocks": {
+      "best": {
+        "growth_delta": 0.04,
+        "level_delta": 0.02,
+        "volatility_multiplier": 0.8,
+        "confidence_impact": 0.05
+      },
+      "base": {
+        "growth_delta": 0.0,
+        "level_delta": 0.0,
+        "volatility_multiplier": 1.0,
+        "confidence_impact": 0.0
+      },
+      "worst": {
+        "growth_delta": -0.05,
+        "level_delta": -0.03,
+        "volatility_multiplier": 1.3,
+        "confidence_impact": -0.08
+      }
+    }
+  }
+}
+```
+
+## Data Quality
+```json
+{
+  "deterministic_confidence": 0.0,
+  "missing_signals": [],
+  "tone_directive": "hedged"
+}
+```
+
+# OUTPUT SCHEMA
+
+Your response MUST conform to this JSON schema:
+
+```json
+{
+  "$defs": {
+    "ConfidenceAdjustment": {
+      "description": "Machine-readable confidence penalty entry.",
+      "properties": {
+        "signal": {
+          "minLength": 1,
+          "title": "Signal",
+          "type": "string"
+        },
+        "delta": {
+          "maximum": 0.0,
+          "minimum": -1.0,
+          "title": "Delta",
+          "type": "number"
+        },
+        "reason": {
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "signal",
+        "delta",
+        "reason"
+      ],
+      "title": "ConfidenceAdjustment",
+      "type": "object"
+    },
+    "EnvelopeDiagnostics": {
+      "description": "Partial-state diagnostics surfaced from upstream envelopes.",
+      "properties": {
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        },
+        "confidence_score": {
+          "default": 1.0,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Confidence Score",
+          "type": "number"
+        },
+        "missing_signal": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Missing Signal",
+          "type": "array"
+        },
+        "confidence_adjustments": {
+          "items": {
+            "$ref": "#/$defs/ConfidenceAdjustment"
+          },
+          "title": "Confidence Adjustments",
+          "type": "array"
+        }
+      },
+      "title": "EnvelopeDiagnostics",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Only allowed output contract for the reasoning layer.",
+  "properties": {
+    "insight": {
+      "minLength": 1,
+      "title": "Insight",
+      "type": "string"
+    },
+    "evidence": {
+      "minLength": 1,
+      "title": "Evidence",
+      "type": "string"
+    },
+    "impact": {
+      "minLength": 1,
+      "title": "Impact",
+      "type": "string"
+    },
+    "recommended_action": {
+      "minLength": 1,
+      "title": "Recommended Action",
+      "type": "string"
+    },
+    "priority": {
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ],
+      "title": "Priority",
+      "type": "string"
+    },
+    "confidence_score": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Confidence Score",
+      "type": "number"
+    },
+    "pipeline_status": {
+      "default": "partial",
+      "enum": [
+        "success",
+        "partial",
+        "failed"
+      ],
+      "title": "Pipeline Status",
+      "type": "string"
+    },
+    "diagnostics": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EnvelopeDiagnostics"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "insight",
+    "evidence",
+    "impact",
+    "recommended_action",
+    "priority",
+    "confidence_score"
+  ],
+  "title": "InsightOutput",
+  "type": "object"
+}
+```
+
+# EXAMPLE OUTPUT
+
+```json
+{
+  "insight": "Revenue declined 12% QoQ driven by churn in the mid-market segment.",
+  "evidence": "Mid-market churn rose from 4% to 9%; CAC increased 18% with no corresponding LTV gain.",
+  "impact": "If unaddressed, ARR pressure is likely to continue over upcoming quarters.",
+  "recommended_action": "Launch a targeted retention plan for at-risk mid-market accounts.",
+  "priority": "critical",
+  "confidence_score": 0.85,
+  "pipeline_status": "partial"
+}
+```
+
+# TASK
+
+Synthesize the provided data into a single JSON object matching the schema above. Do not compute. Use only provided data.

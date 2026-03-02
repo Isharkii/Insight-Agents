@@ -51,14 +51,20 @@ def test_export_report_returns_insight_and_derived_signals(monkeypatch) -> None:
             return {
                 "final_response": json.dumps(
                     {
-                        "insight": "Synthetic insight",
-                        "evidence": "Synthetic evidence",
-                        "impact": "Synthetic impact",
-                        "recommended_action": "Synthetic action",
-                        "priority": "medium",
-                        "confidence_score": 0.8,
-                        "pipeline_status": "partial",
-                        "diagnostics": None,
+                        "competitive_analysis": {
+                            "summary": "Synthetic competitor summary.",
+                            "market_position": "Synthetic challenger market position.",
+                            "relative_performance": "Synthetic growth metric trails competitor benchmark.",
+                            "key_advantages": ["Synthetic ARPU advantage versus competitor median."],
+                            "key_vulnerabilities": ["Synthetic churn weakness versus competitor benchmark."],
+                            "confidence": 0.8,
+                        },
+                        "strategic_recommendations": {
+                            "immediate_actions": ["Address synthetic competitor churn gap immediately."],
+                            "mid_term_moves": ["Close synthetic growth gap versus competitor benchmark."],
+                            "defensive_strategies": ["Defend against synthetic competitor retention strength."],
+                            "offensive_strategies": ["Exploit synthetic competitor weakness in ARPU benchmark."],
+                        },
                     }
                 ),
                 "growth_data": {"status": "success", "payload": {"primary_metric": "revenue"}},
@@ -83,6 +89,6 @@ def test_export_report_returns_insight_and_derived_signals(monkeypatch) -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["entity_name"] == "acme"
-    assert payload["insight_payload"]["insight"] == "Synthetic insight"
+    assert payload["insight_payload"]["competitive_analysis"]["summary"] == "Synthetic competitor summary."
     assert "derived_signals" in payload
     assert "risk" in payload["derived_signals"]

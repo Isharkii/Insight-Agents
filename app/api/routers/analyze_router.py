@@ -699,44 +699,6 @@ def analyze(
         payload = json.loads(response)
         output_model = InsightOutput.model_validate(payload)
 
-        # Keep strict response schema unchanged while surfacing ingestion
-        # pipeline state as diagnostics warnings.
-        diagnostics = output_model.diagnostics
-        if ingestion_pipeline_status and diagnostics is not None:
-            if ingestion_pipeline_status not in (
-                IngestionStatus.SUCCESS.value,
-                "success",
-            ):
-                warnings = list(diagnostics.warnings)
-                # Differentiate messaging by ingestion status severity.
-                if ingestion_pipeline_status in (
-                    IngestionStatus.FAILED.value,
-                    IngestionStatus.SCHEMA_MISMATCH.value,
-                ):
-                    warnings.append(
-                        f"Ingestion pipeline status was {ingestion_pipeline_status}; "
-                        f"data could not be loaded from the uploaded file."
-                    )
-                elif ingestion_pipeline_status == IngestionStatus.EMPTY_DATASET.value:
-                    warnings.append(
-                        f"Ingestion pipeline status was {ingestion_pipeline_status}; "
-                        f"the uploaded file contained no usable data rows."
-                    )
-                elif ingestion_pipeline_status == IngestionStatus.INSUFFICIENT_DATA.value:
-                    warnings.append(
-                        f"Ingestion pipeline status was {ingestion_pipeline_status}; "
-                        f"partial data path applied — some rows failed validation."
-                    )
-                else:
-                    warnings.append(
-                        f"Ingestion pipeline status was {ingestion_pipeline_status}; "
-                        f"partial data path applied."
-                    )
-                output_model = output_model.model_copy(
-                    update={
-                        "diagnostics": diagnostics.model_copy(update={"warnings": warnings})
-                    }
-                )
         return output_model
 
     except HTTPException:
@@ -753,3 +715,6 @@ def analyze(
                 message=f"Pipeline error: {exc}",
             ),
         ) from exc
+
+
+

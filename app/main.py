@@ -200,6 +200,7 @@ def create_app() -> FastAPI:
     from app.api.routers import (
         analyze_router,
         bi_export_router,
+        business_intelligence_router,
         client_router,
         competitor_scraping_router,
         csv_ingestion_router,
@@ -210,6 +211,7 @@ def create_app() -> FastAPI:
     )
 
     application.include_router(analyze_router)
+    application.include_router(business_intelligence_router)
     application.include_router(client_router)
     application.include_router(competitor_scraping_router)
     application.include_router(csv_ingestion_router)
@@ -222,12 +224,28 @@ def create_app() -> FastAPI:
     @application.get("/health")
     def healthcheck() -> FinalInsightResponse:
         return FinalInsightResponse(
-            insight="Service healthy",
-            evidence="API and scheduler lifecycle initialized successfully.",
-            impact="System is ready to process insight requests.",
-            recommended_action="Continue normal operations.",
-            priority="low",
-            confidence_score=1.0,
+            competitive_analysis={
+                "summary": "Competitor service health benchmark is stable.",
+                "market_position": "Service is operational relative to baseline system checks.",
+                "relative_performance": "Health-check metrics indicate no competitor benchmark gaps in API readiness.",
+                "key_advantages": ["High availability across core API endpoints versus expected benchmark."],
+                "key_vulnerabilities": ["No competitor-facing vulnerabilities detected in current health snapshot."],
+                "confidence": 1.0,
+            },
+            strategic_recommendations={
+                "immediate_actions": [
+                    "Maintain competitor benchmark monitoring to detect any sudden reliability gap."
+                ],
+                "mid_term_moves": [
+                    "Track benchmark resilience metrics against competitor-level availability targets."
+                ],
+                "defensive_strategies": [
+                    "Preserve incident response guardrails where competitor reliability strength could emerge."
+                ],
+                "offensive_strategies": [
+                    "Leverage current reliability strength versus competitor benchmark in operational messaging."
+                ],
+            },
         )
 
     # --- Serve React frontend from /dashboard/* ----------------------

@@ -11,17 +11,12 @@ This enforces the architectural contract:
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from agent.graph_config import graph_node_config_for_business_type, signal_name_for_state_key
 from agent.nodes.node_result import confidence_of, status_of
 from agent.state import AgentState
-from llm_synthesis.schema import (
-    ConfidenceAdjustment,
-    EnvelopeDiagnostics,
-    InsightOutput,
-)
+from llm_synthesis.schema import InsightOutput
 
 # Minimum deterministic confidence to allow LLM synthesis.
 # Below this threshold the pipeline returns a structured failure.
@@ -102,26 +97,10 @@ def build_blocked_response(state: AgentState) -> str:
         f"above the confidence threshold before LLM synthesis can execute."
     )
 
-    diagnostics = EnvelopeDiagnostics(
-        warnings=[
-            f"Required signal '{s}' did not succeed." for s in failed_signals
-        ],
-        confidence_score=pre_confidence,
-        missing_signal=failed_signals,
-        confidence_adjustments=[
-            ConfidenceAdjustment(
-                signal=s,
-                delta=-0.35,
-                reason="required_signal_unavailable",
-            )
-            for s in failed_signals
-        ],
-    )
-
     failure = InsightOutput.failure(
         reason=reason,
         pipeline_status=pipeline_status if pipeline_status in ("success", "partial", "failed") else "failed",
-    ).model_copy(update={"diagnostics": diagnostics})
+    )
 
     return failure.model_dump_json()
 

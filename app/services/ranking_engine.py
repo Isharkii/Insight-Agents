@@ -31,7 +31,7 @@ Tier classification
 from __future__ import annotations
 
 import math
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
@@ -68,6 +68,31 @@ class MetricRank(BaseModel):
     field_median: float = Field(..., description="Median value across all participants.")
 
 
+class MetricComparisonSpec(BaseModel):
+    """Validation and normalization contract for one metric."""
+
+    model_config = ConfigDict(frozen=True)
+
+    metric: str = Field(min_length=1)
+    direction: Literal["higher_is_better", "lower_is_better"] = "higher_is_better"
+    unit: str = Field(min_length=1)
+    scale: Literal["raw", "ratio", "percentage"] = "raw"
+    aggregation: str = Field(min_length=1)
+    window_alignment: str = Field(min_length=1)
+
+
+class MetricObservation(BaseModel):
+    """Per-entity metric observation with metadata needed for validation."""
+
+    model_config = ConfigDict(frozen=True)
+
+    value: float
+    unit: str = Field(min_length=1)
+    scale: Literal["raw", "ratio", "percentage"] = "raw"
+    aggregation: str = Field(min_length=1)
+    window_alignment: str = Field(min_length=1)
+
+
 class CompetitiveRanking(BaseModel):
     """Overall competitive ranking of a client among peers."""
 
@@ -87,6 +112,13 @@ class CompetitiveRanking(BaseModel):
     peer_scores: dict[str, float] = Field(
         default_factory=dict,
         description="Mean percentile per participant (for transparency).",
+    )
+    skipped_metrics: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Metrics excluded from ranking with reasons "
+            "(e.g. missing spec, unit mismatch, window mismatch)."
+        ),
     )
 
 
@@ -135,6 +167,72 @@ def _competitive_percentile(rank: int, n: int) -> float:
     if n <= 1:
         return 100.0
     return round((n - rank) / (n - 1) * 100.0, 4)
+
+
+def _normalize_scale(value: float, source_scale: str, target_scale: str) -> float | None:
+    if source_scale == target_scale:
+        return value
+    if source_scale == "percentage" and target_scale == "ratio":
+        return value / 100.0
+    if source_scale == "ratio" and target_scale == "percentage":
+        return value * 100.0
+    return None
+
+
+def _metric_spec_map(
+    metric_specs: Mapping[str, MetricComparisonSpec | Mapping[str, Any]],
+) -> dict[str, MetricComparisonSpec]:
+    out: dict[str, MetricComparisonSpec] = {}
+    for metric_name, raw in metric_specs.items():
+        spec = raw if isinstance(raw, MetricComparisonSpec) else MetricComparisonSpec.model_validate(raw)
+        out[str(metric_name)] = spec
+    return out
+
+
+def _coerce_observation(raw: Any) -> MetricObservation | None:
+    if isinstance(raw, MetricObservation):
+        return raw
+    if isinstance(raw, Mapping):
+        try:
+            return MetricObservation.model_validate(raw)
+        except Exception:
+            return None
+    return None
+
+
+def _validated_metric_value(
+    raw_observation: Any,
+    spec: MetricComparisonSpec,
+) -> tuple[float | None, str | None]:
+    observation = _coerce_observation(raw_observation)
+    if observation is None:
+        return None, "invalid_observation"
+
+    if observation.unit != spec.unit:
+        return None, f"unit_mismatch(expected={spec.unit}, got={observation.unit})"
+    if observation.aggregation != spec.aggregation:
+        return None, (
+            f"aggregation_mismatch(expected={spec.aggregation}, "
+            f"got={observation.aggregation})"
+        )
+    if observation.window_alignment != spec.window_alignment:
+        return None, (
+            f"window_mismatch(expected={spec.window_alignment}, "
+            f"got={observation.window_alignment})"
+        )
+
+    normalized = _normalize_scale(observation.value, observation.scale, spec.scale)
+    if normalized is None:
+        return None, f"scale_mismatch(expected={spec.scale}, got={observation.scale})"
+    if not math.isfinite(normalized):
+        return None, "non_finite_value"
+    return float(normalized), None
+
+
+def _directional_value(value: float, direction: str) -> float:
+    if direction == "lower_is_better":
+        return -value
+    return value
 
 
 def competition_rank(values: np.ndarray) -> np.ndarray:
@@ -224,8 +322,9 @@ def rank_metric(
 
 def rank_competitive(
     client_name: str,
-    client_metrics: dict[str, float],
-    competitor_metrics: dict[str, dict[str, float]],
+    client_metrics: Mapping[str, Any],
+    competitor_metrics: Mapping[str, Mapping[str, Any]],
+    metric_specs: Mapping[str, MetricComparisonSpec | Mapping[str, Any]] | None = None,
 ) -> CompetitiveRanking:
     """Rank the client relative to competitors across all shared metrics.
 
@@ -254,46 +353,72 @@ def rank_competitive(
     4. Rank participants by mean percentile to determine overall rank.
     5. Classify the client into a tier based on overall percentile.
     """
+    # Legacy mode: no validation metadata, preserves previous behavior.
+    if metric_specs is None:
+        return _rank_competitive_legacy(
+            client_name=client_name,
+            client_metrics=client_metrics,
+            competitor_metrics=competitor_metrics,
+        )
+
+    specs = _metric_spec_map(metric_specs)
+
     # 1. Build participant pool
     all_names: list[str] = [client_name] + list(competitor_metrics.keys())
     n_total = len(all_names)
 
     # 2. Per-metric ranking (only metrics the client has)
     metric_ranks: dict[str, MetricRank] = {}
+    skipped_metrics: dict[str, str] = {}
     # Track per-participant percentiles across metrics
     participant_percentiles: dict[str, list[float]] = {name: [] for name in all_names}
 
-    for metric_name, client_val in client_metrics.items():
-        try:
-            cv = float(client_val)
-        except (TypeError, ValueError):
+    for metric_name, client_raw_observation in client_metrics.items():
+        metric_key = str(metric_name)
+        spec = specs.get(metric_key)
+        if spec is None:
+            skipped_metrics[metric_key] = "missing_metric_spec"
             continue
-        if not math.isfinite(cv):
+
+        cv, client_error = _validated_metric_value(client_raw_observation, spec)
+        if client_error is not None or cv is None:
+            skipped_metrics[metric_key] = client_error or "invalid_observation"
             continue
 
         # Collect participants who have this metric
         metric_participants: dict[str, float] = {client_name: cv}
         for comp_name, comp_metrics in competitor_metrics.items():
-            if metric_name in comp_metrics:
-                try:
-                    comp_val = float(comp_metrics[metric_name])
-                except (TypeError, ValueError):
-                    continue
-                if math.isfinite(comp_val):
+            if metric_key in comp_metrics:
+                comp_val, _ = _validated_metric_value(comp_metrics[metric_key], spec)
+                if comp_val is not None:
                     metric_participants[comp_name] = comp_val
 
         if len(metric_participants) < 1:
             continue
 
-        # Rank this metric
-        mr = rank_metric(metric_name, metric_participants, client_name)
-        metric_ranks[metric_name] = mr
+        # Rank this metric with direction-aware values.
+        p_names = list(metric_participants.keys())
+        original_values = np.array([metric_participants[n] for n in p_names], dtype=float)
+        ranking_values = np.array(
+            [_directional_value(metric_participants[n], spec.direction) for n in p_names],
+            dtype=float,
+        )
+        p_ranks = competition_rank(ranking_values)
+        client_idx = p_names.index(client_name)
+        client_rank = int(p_ranks[client_idx])
+        n_p = len(p_names)
+
+        metric_ranks[metric_key] = MetricRank(
+            metric_name=metric_key,
+            client_value=round(float(original_values[client_idx]), 6),
+            rank=client_rank,
+            total_participants=n_p,
+            percentile=_competitive_percentile(client_rank, n_p),
+            field_mean=round(float(np.mean(original_values)), 6),
+            field_median=round(float(np.median(original_values)), 6),
+        )
 
         # Compute percentiles for all participants in this metric
-        p_names = list(metric_participants.keys())
-        p_values = np.array([metric_participants[n] for n in p_names], dtype=float)
-        p_ranks = competition_rank(p_values)
-        n_p = len(p_names)
         for idx, name in enumerate(p_names):
             pct = _competitive_percentile(int(p_ranks[idx]), n_p)
             participant_percentiles[name].append(pct)
@@ -315,6 +440,79 @@ def rank_competitive(
     client_overall_rank = int(overall_ranks[client_overall_idx])
 
     # 5. Percentile and tier
+    overall_pct = _competitive_percentile(client_overall_rank, n_total)
+    tier = _classify_tier(overall_pct)
+
+    return CompetitiveRanking(
+        overall_rank=client_overall_rank,
+        total_participants=n_total,
+        overall_percentile=overall_pct,
+        tier=tier,
+        metric_ranks=metric_ranks,
+        peer_scores=peer_scores,
+        skipped_metrics=skipped_metrics,
+    )
+
+
+def _rank_competitive_legacy(
+    *,
+    client_name: str,
+    client_metrics: Mapping[str, Any],
+    competitor_metrics: Mapping[str, Mapping[str, Any]],
+) -> CompetitiveRanking:
+    """Backward-compatible ranking path without spec validation."""
+    all_names: list[str] = [client_name] + list(competitor_metrics.keys())
+    n_total = len(all_names)
+
+    metric_ranks: dict[str, MetricRank] = {}
+    participant_percentiles: dict[str, list[float]] = {name: [] for name in all_names}
+
+    for metric_name, client_val in client_metrics.items():
+        try:
+            cv = float(client_val)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(cv):
+            continue
+
+        metric_participants: dict[str, float] = {client_name: cv}
+        for comp_name, comp_metrics in competitor_metrics.items():
+            if metric_name in comp_metrics:
+                try:
+                    comp_val = float(comp_metrics[metric_name])
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(comp_val):
+                    metric_participants[comp_name] = comp_val
+
+        if len(metric_participants) < 1:
+            continue
+
+        mr = rank_metric(str(metric_name), metric_participants, client_name)
+        metric_ranks[str(metric_name)] = mr
+
+        p_names = list(metric_participants.keys())
+        p_values = np.array([metric_participants[n] for n in p_names], dtype=float)
+        p_ranks = competition_rank(p_values)
+        n_p = len(p_names)
+        for idx, name in enumerate(p_names):
+            pct = _competitive_percentile(int(p_ranks[idx]), n_p)
+            participant_percentiles[name].append(pct)
+
+    peer_scores: dict[str, float] = {}
+    for name in all_names:
+        pcts = participant_percentiles[name]
+        if pcts:
+            peer_scores[name] = round(float(np.mean(pcts)), 2)
+        else:
+            peer_scores[name] = 0.0
+
+    score_names = list(peer_scores.keys())
+    score_values = np.array([peer_scores[n] for n in score_names], dtype=float)
+    overall_ranks = competition_rank(score_values)
+    client_overall_idx = score_names.index(client_name)
+    client_overall_rank = int(overall_ranks[client_overall_idx])
+
     overall_pct = _competitive_percentile(client_overall_rank, n_total)
     tier = _classify_tier(overall_pct)
 

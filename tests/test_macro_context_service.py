@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from agent.graph import role_analytics_node
+from agent.graph import (
+    _filter_peers_by_size_band,
+    _infer_size_band_from_metadata_rows,
+    role_analytics_node,
+)
 from agent.nodes.node_result import status_of
 from app.services.macro_context_service import build_macro_context
 
@@ -207,3 +211,36 @@ def test_role_analytics_payload_includes_macro_context(monkeypatch) -> None:
     assert macro_context["reproducibility"]["benchmark_sources"][0]["timestamp"] == (
         "2026-01-01T00:00:00+00:00"
     )
+
+
+def test_infer_size_band_from_metadata_rows() -> None:
+    rows = [
+        ({"random_key": "x"},),
+        ({"company_size_band": " Mid_Market "},),
+    ]
+    assert _infer_size_band_from_metadata_rows(rows) == "mid_market"
+
+
+def test_filter_peers_by_size_band_prefers_matches() -> None:
+    benchmark_rows = [
+        {"entity_name": "PeerA", "metadata_json": {"size_band": "mid_market"}},
+        {"entity_name": "PeerB", "metadata_json": {"size_band": "enterprise"}},
+    ]
+    filtered = _filter_peers_by_size_band(
+        benchmark_rows=benchmark_rows,
+        client_size_band="mid_market",
+    )
+    assert len(filtered) == 1
+    assert filtered[0]["entity_name"] == "PeerA"
+
+
+def test_filter_peers_by_size_band_falls_back_when_no_matches() -> None:
+    benchmark_rows = [
+        {"entity_name": "PeerA", "metadata_json": {"size_band": "enterprise"}},
+        {"entity_name": "PeerB", "metadata_json": {"size_band": "enterprise"}},
+    ]
+    filtered = _filter_peers_by_size_band(
+        benchmark_rows=benchmark_rows,
+        client_size_band="mid_market",
+    )
+    assert filtered == benchmark_rows

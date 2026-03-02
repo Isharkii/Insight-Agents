@@ -540,6 +540,20 @@ def _fetch_macro_context_rows(
         )
         inflation_query_rows = session.execute(inflation_stmt).all()
 
+        client_band_stmt = (
+            select(CanonicalInsightRecord.metadata_json)
+            .where(
+                CanonicalInsightRecord.entity_name == entity_name,
+                CanonicalInsightRecord.category.in_(categories),
+                CanonicalInsightRecord.timestamp >= period_start,
+                CanonicalInsightRecord.timestamp <= period_end,
+            )
+            .order_by(CanonicalInsightRecord.timestamp.desc())
+            .limit(500)
+        )
+        client_band_rows = session.execute(client_band_stmt).all()
+        client_size_band = _infer_size_band_from_metadata_rows(client_band_rows)
+
         benchmark_stmt = (
             select(
                 CanonicalInsightRecord.entity_name,
@@ -551,9 +565,9 @@ def _fetch_macro_context_rows(
                 CanonicalInsightRecord.metadata_json,
             )
             .where(
-                CanonicalInsightRecord.entity_name == entity_name,
+                CanonicalInsightRecord.entity_name != entity_name,
                 CanonicalInsightRecord.category.in_(categories),
-                CanonicalInsightRecord.timestamp >= lookback_start,
+                CanonicalInsightRecord.timestamp >= period_start,
                 CanonicalInsightRecord.timestamp <= period_end,
             )
             .order_by(CanonicalInsightRecord.timestamp.asc(), CanonicalInsightRecord.metric_name.asc())
@@ -579,7 +593,81 @@ def _fetch_macro_context_rows(
 
     inflation_rows = _serialize(inflation_query_rows)
     benchmark_rows = _serialize(benchmark_query_rows)
+    benchmark_rows = _filter_peers_by_size_band(
+        benchmark_rows=benchmark_rows,
+        client_size_band=client_size_band,
+    )
     return inflation_rows, benchmark_rows
+
+
+def _infer_size_band_from_metadata_rows(rows: list[Any]) -> str | None:
+    """
+    Resolve a client size band from metadata rows using common key variants.
+
+    Returns a normalized lowercase value, or None when unavailable.
+    """
+    candidate_keys = (
+        "size_band",
+        "company_size_band",
+        "employee_size_band",
+        "org_size_band",
+        "firm_size_band",
+    )
+    for row in rows:
+        metadata = None
+        try:
+            metadata = row[0]
+        except Exception:
+            metadata = getattr(row, "metadata_json", None)
+        if not isinstance(metadata, Mapping):
+            continue
+        for key in candidate_keys:
+            value = metadata.get(key)
+            if value is None:
+                continue
+            normalized = str(value).strip().lower()
+            if normalized:
+                return normalized
+    return None
+
+
+def _filter_peers_by_size_band(
+    *,
+    benchmark_rows: list[dict[str, Any]],
+    client_size_band: str | None,
+) -> list[dict[str, Any]]:
+    """
+    Best-effort size-band alignment for peer benchmarks.
+
+    If the client has a size band and peers expose the same metadata, keep only
+    matching peers. If no peer rows expose that band, preserve the original set.
+    """
+    if not client_size_band:
+        return benchmark_rows
+
+    candidate_keys = (
+        "size_band",
+        "company_size_band",
+        "employee_size_band",
+        "org_size_band",
+        "firm_size_band",
+    )
+    matched: list[dict[str, Any]] = []
+    for row in benchmark_rows:
+        metadata = row.get("metadata_json")
+        if not isinstance(metadata, Mapping):
+            continue
+        for key in candidate_keys:
+            value = metadata.get(key)
+            if value is None:
+                continue
+            normalized = str(value).strip().lower()
+            if normalized == client_size_band:
+                matched.append(row)
+                break
+    if matched:
+        return matched
+    return benchmark_rows
 
 
 def growth_engine_node(state: AgentState) -> AgentState:

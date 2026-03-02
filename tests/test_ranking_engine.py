@@ -20,6 +20,7 @@ import pytest
 
 from app.services.ranking_engine import (
     CompetitiveRanking,
+    MetricComparisonSpec,
     MetricRank,
     competition_rank,
     rank_competitive,
@@ -237,6 +238,157 @@ class TestTieHandling:
         # comp_b should be rank 3, not 2
         result_b = rank_metric("mrr", participants, "comp_b")
         assert result_b.rank == 3
+
+
+# ---------------------------------------------------------------------------
+# Test: Spec-validated ranking
+# ---------------------------------------------------------------------------
+
+
+class TestSpecValidatedRanking:
+    def test_missing_spec_skips_metric(self) -> None:
+        client = {
+            "mrr": {
+                "value": 100.0,
+                "unit": "currency",
+                "scale": "raw",
+                "aggregation": "monthly_sum",
+                "window_alignment": "trailing_6m",
+            },
+        }
+        comps = {
+            "comp_a": {
+                "mrr": {
+                    "value": 120.0,
+                    "unit": "currency",
+                    "scale": "raw",
+                    "aggregation": "monthly_sum",
+                    "window_alignment": "trailing_6m",
+                },
+            },
+        }
+        result = rank_competitive("client", client, comps, metric_specs={})
+        assert "mrr" not in result.metric_ranks
+        assert result.skipped_metrics["mrr"] == "missing_metric_spec"
+
+    def test_unit_mismatch_skips_metric(self) -> None:
+        client = {
+            "mrr": {
+                "value": 100.0,
+                "unit": "usd",
+                "scale": "raw",
+                "aggregation": "monthly_sum",
+                "window_alignment": "trailing_6m",
+            },
+        }
+        comps = {}
+        specs = {
+            "mrr": MetricComparisonSpec(
+                metric="mrr",
+                direction="higher_is_better",
+                unit="inr",
+                scale="raw",
+                aggregation="monthly_sum",
+                window_alignment="trailing_6m",
+            ),
+        }
+        result = rank_competitive("client", client, comps, metric_specs=specs)
+        assert "mrr" not in result.metric_ranks
+        assert "unit_mismatch" in result.skipped_metrics["mrr"]
+
+    def test_window_mismatch_skips_metric(self) -> None:
+        client = {
+            "growth_rate": {
+                "value": 12.0,
+                "unit": "rate",
+                "scale": "percentage",
+                "aggregation": "monthly_avg",
+                "window_alignment": "trailing_3m",
+            },
+        }
+        comps = {}
+        specs = {
+            "growth_rate": {
+                "metric": "growth_rate",
+                "direction": "higher_is_better",
+                "unit": "rate",
+                "scale": "percentage",
+                "aggregation": "monthly_avg",
+                "window_alignment": "trailing_6m",
+            },
+        }
+        result = rank_competitive("client", client, comps, metric_specs=specs)
+        assert "growth_rate" not in result.metric_ranks
+        assert "window_mismatch" in result.skipped_metrics["growth_rate"]
+
+    def test_scale_normalization_percentage_vs_ratio(self) -> None:
+        client = {
+            "growth_rate": {
+                "value": 18.0,
+                "unit": "rate",
+                "scale": "percentage",
+                "aggregation": "monthly_avg",
+                "window_alignment": "trailing_6m",
+            },
+        }
+        comps = {
+            "comp_a": {
+                "growth_rate": {
+                    "value": 0.14,
+                    "unit": "rate",
+                    "scale": "ratio",
+                    "aggregation": "monthly_avg",
+                    "window_alignment": "trailing_6m",
+                },
+            },
+        }
+        specs = {
+            "growth_rate": {
+                "metric": "growth_rate",
+                "direction": "higher_is_better",
+                "unit": "rate",
+                "scale": "percentage",
+                "aggregation": "monthly_avg",
+                "window_alignment": "trailing_6m",
+            },
+        }
+        result = rank_competitive("client", client, comps, metric_specs=specs)
+        assert "growth_rate" in result.metric_ranks
+        assert result.metric_ranks["growth_rate"].rank == 1
+
+    def test_lower_is_better_inverts_for_ranking(self) -> None:
+        client = {
+            "churn_rate": {
+                "value": 4.0,
+                "unit": "rate",
+                "scale": "percentage",
+                "aggregation": "monthly_avg",
+                "window_alignment": "trailing_6m",
+            },
+        }
+        comps = {
+            "comp_a": {
+                "churn_rate": {
+                    "value": 6.0,
+                    "unit": "rate",
+                    "scale": "percentage",
+                    "aggregation": "monthly_avg",
+                    "window_alignment": "trailing_6m",
+                },
+            },
+        }
+        specs = {
+            "churn_rate": {
+                "metric": "churn_rate",
+                "direction": "lower_is_better",
+                "unit": "rate",
+                "scale": "percentage",
+                "aggregation": "monthly_avg",
+                "window_alignment": "trailing_6m",
+            },
+        }
+        result = rank_competitive("client", client, comps, metric_specs=specs)
+        assert result.metric_ranks["churn_rate"].rank == 1
 
 
 # ---------------------------------------------------------------------------

@@ -94,6 +94,92 @@ export interface AnalyzeRunResponse {
   resolvedBusinessType?: string;
 }
 
+// —— Business Intelligence ———————————————————————————————————————————————————————
+
+export interface BIPipelineStageResult {
+  stage: string;
+  status: "success" | "failed" | "skipped";
+  duration_ms: number;
+  error?: string | null;
+}
+
+export interface BusinessContextData {
+  industry: string;
+  business_model: string;
+  target_market: string;
+  macro_dependencies: string[];
+  search_intents: string[];
+  risk_factors: string[];
+}
+
+export interface BISignalReference {
+  signal_id: string;
+  metric_name: string;
+  value: number;
+  unit: string;
+}
+
+export interface BIEmergingSignal {
+  title: string;
+  description: string;
+  supporting_signals: BISignalReference[];
+  relevance: "high" | "medium" | "low";
+}
+
+export interface BIZone {
+  title: string;
+  description: string;
+  supporting_signals: BISignalReference[];
+}
+
+export interface BIInsightBlock {
+  emerging_signals: BIEmergingSignal[];
+  macro_summary: string;
+  opportunity_zones: BIZone[];
+  risk_zones: BIZone[];
+  momentum_score: number;
+  confidence: number;
+}
+
+export interface BIStrategyAction {
+  action: string;
+  rationale: string;
+  supporting_signals: BISignalReference[];
+  priority: "critical" | "high" | "medium";
+}
+
+export interface BICompetitiveAngle {
+  positioning: string;
+  differentiation: string;
+  supporting_signals: BISignalReference[];
+}
+
+export interface BIRiskMitigation {
+  risk_title: string;
+  mitigation: string;
+  supporting_signals: BISignalReference[];
+}
+
+export interface BIStrategyBlock {
+  short_term_actions: BIStrategyAction[];
+  mid_term_actions: BIStrategyAction[];
+  long_term_positioning: string;
+  competitive_angle: BICompetitiveAngle;
+  risk_mitigation: BIRiskMitigation[];
+  confidence: number;
+}
+
+export interface BusinessIntelligenceResponse {
+  status: "success" | "partial" | "failed";
+  context: BusinessContextData | null;
+  insights: BIInsightBlock | null;
+  strategy: BIStrategyBlock | null;
+  confidence: number;
+  pipeline: BIPipelineStageResult[];
+  warnings: string[];
+  generated_at: string;
+}
+
 export async function runAnalysis(params: {
   prompt: string;
   file?: File;
@@ -138,6 +224,18 @@ export async function runAnalysis(params: {
     resolvedEntityName,
     resolvedBusinessType,
   };
+}
+
+export async function runBusinessIntelligence(params: {
+  businessPrompt: string;
+}): Promise<BusinessIntelligenceResponse> {
+  return request<BusinessIntelligenceResponse>("/api/business-intelligence", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      business_prompt: params.businessPrompt,
+    }),
+  });
 }
 
 // ─── Clients ─────────────────────────────────────────────────────────────────

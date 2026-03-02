@@ -1,6 +1,7 @@
 """Structured prompt builder for LLM synthesis."""
 
 import json
+import os
 from typing import Dict
 
 from llm_synthesis.schema import InsightOutput
@@ -9,19 +10,38 @@ _SCHEMA_JSON = json.dumps(InsightOutput.model_json_schema(), indent=2)
 
 _EXAMPLE_OUTPUT = json.dumps(
     {
-        "insight": "Revenue declined 12% QoQ driven by churn in the mid-market segment.",
-        "evidence": "Mid-market churn rose from 4% to 9%; CAC increased 18% with no corresponding LTV gain.",
-        "impact": "If unaddressed, ARR pressure is likely to continue over upcoming quarters.",
-        "recommended_action": "Launch a targeted retention plan for at-risk mid-market accounts.",
-        "priority": "critical",
-        "confidence_score": 0.85,
-        "pipeline_status": "partial",
+        "competitive_analysis": {
+            "summary": "Peer benchmark metrics indicate competitor-led pressure on growth and retention.",
+            "market_position": "The company is positioned as a challenger versus higher-share benchmark peers.",
+            "relative_performance": "MRR growth trails benchmark growth while churn is above peer median.",
+            "key_advantages": [
+                "Stronger ARPU versus benchmark median improves monetization efficiency."
+            ],
+            "key_vulnerabilities": [
+                "Higher churn versus competitor benchmark weakens retention durability."
+            ],
+            "confidence": 0.72,
+        },
+        "strategic_recommendations": {
+            "immediate_actions": [
+                "Address competitor churn gap by targeting at-risk segments where peer retention is stronger."
+            ],
+            "mid_term_moves": [
+                "Build a roadmap to close growth-rate weakness versus benchmark peers over the next two quarters."
+            ],
+            "defensive_strategies": [
+                "Protect accounts where competitor strength in retention metrics is highest."
+            ],
+            "offensive_strategies": [
+                "Exploit competitor weakness in ARPU efficiency with differentiated packaging and upsell motions."
+            ],
+        },
     },
     indent=2,
 )
 
 _SYSTEM_INSTRUCTIONS = """\
-You are a strategic business analyst.
+You are a competitor benchmarking analyst.
 
 STRICT RULES:
 - Do NOT compute, calculate, or derive any new numbers.
@@ -30,6 +50,19 @@ STRICT RULES:
 - Output exactly one JSON object with only the schema fields.
 - Do NOT include any text outside the JSON object.
 - Do NOT wrap the JSON in markdown code fences.
+- JSON MUST follow this exact top-level shape:
+  {
+    "competitive_analysis": {...},
+    "strategic_recommendations": {...}
+  }
+
+CONTENT RULES:
+- competitive_analysis must ONLY reference competitor data and metrics.
+- strategic_recommendations must explicitly reference competitor gaps, strengths, and weaknesses.
+- No generic advice.
+- No repetition across recommendation sections.
+- Tone must match deterministic confidence.
+- If confidence < 0.5, every recommendation must be labeled as "Conditional:".
 
 CONFIDENCE-AWARE NARRATIVE RULES:
 - A "Data Quality" section below reports the deterministic confidence score
@@ -39,7 +72,7 @@ CONFIDENCE-AWARE NARRATIVE RULES:
   have declined", "available data suggests").
 - If 0.4 <= confidence < 0.6: use hedged language ("limited data indicates",
   "with significant uncertainty").  Explicitly note data gaps in the insight.
-- Your confidence_score field MUST NOT exceed the deterministic confidence
+- Your competitive_analysis.confidence field MUST NOT exceed the deterministic confidence
   value provided below.
 """
 
@@ -49,6 +82,8 @@ _SECTION_TEMPLATE = """\
 {data}
 ```
 """
+
+_MAX_SECTION_CHARS = int(os.getenv("PROMPT_SECTION_CHAR_LIMIT", "6000"))
 
 
 class SynthesisPromptBuilder:
@@ -109,7 +144,8 @@ class SynthesisPromptBuilder:
             f"```json\n{_EXAMPLE_OUTPUT}\n```\n\n"
             f"# TASK\n\n"
             f"Synthesize the provided data into a single JSON object "
-            f"matching the schema above. Do not compute. Use only provided data."
+            f"matching the schema above. Focus strictly on competitor benchmarking "
+            f"content and avoid non-competitive generic recommendations."
         )
 
     @staticmethod
@@ -146,6 +182,12 @@ class SynthesisPromptBuilder:
                 continue
             title = key.replace("_", " ").title()
             body = json.dumps(value, indent=2, default=str)
+            if len(body) > _MAX_SECTION_CHARS:
+                # Truncate overly large sections to keep token usage within limits.
+                body = (
+                    body[: _MAX_SECTION_CHARS]
+                    + "\n... (truncated to stay under token limits)"
+                )
             parts.append(_SECTION_TEMPLATE.format(title=title, data=body))
         if not parts:
             return _SECTION_TEMPLATE.format(

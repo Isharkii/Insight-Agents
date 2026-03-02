@@ -89,12 +89,28 @@ class OpenAILLMAdapter(BaseLLMAdapter):
 # Fixed mock response used for local testing.
 # ---------------------------------------------------------------------------
 _MOCK_RESPONSE = {
-    "insight": "Mock insight for testing purposes.",
-    "evidence": "Finding A identified in test data; Finding B identified in test data.",
-    "impact": "No real risk - this is a test fixture.",
-    "recommended_action": "Verify integration with upstream nodes.",
-    "priority": "low",
-    "confidence_score": 0.95,
+    "competitive_analysis": {
+        "summary": "Mock competitor benchmark summary based on provided peer metrics.",
+        "market_position": "Mock market position indicates balanced peer standing.",
+        "relative_performance": "Mock relative performance shows minor benchmark gaps in growth and churn metrics.",
+        "key_advantages": ["Mock advantage: stronger peer-comparative ARPU metric."],
+        "key_vulnerabilities": ["Mock vulnerability: weaker peer-comparative churn metric."],
+        "confidence": 0.95,
+    },
+    "strategic_recommendations": {
+        "immediate_actions": [
+            "Address competitor gap in churn metric by targeting accounts where peer strength is highest."
+        ],
+        "mid_term_moves": [
+            "Close growth weakness versus competitor benchmark through segment-specific pricing tests."
+        ],
+        "defensive_strategies": [
+            "Defend segments where competitor strength in retention metrics is increasing."
+        ],
+        "offensive_strategies": [
+            "Exploit competitor weakness in ARPU efficiency with focused upsell motions."
+        ],
+    },
 }
 
 _MOCK_RESPONSE_JSON = json.dumps(_MOCK_RESPONSE, indent=2)

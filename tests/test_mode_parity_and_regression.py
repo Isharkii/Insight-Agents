@@ -53,18 +53,19 @@ def _kpi_payload_snapshot() -> dict[str, Any]:
 
 def _strict_synthesis_snapshot() -> dict[str, Any]:
     payload = {
-        "insight": "Stable insight",
-        "evidence": "Stable evidence",
-        "impact": "Stable impact",
-        "recommended_action": "Stable action",
-        "priority": "medium",
-        "confidence_score": 0.9,
-        "pipeline_status": "success",
-        "diagnostics": {
-            "warnings": [],
-            "confidence_score": 1.0,
-            "missing_signal": [],
-            "confidence_adjustments": [],
+        "competitive_analysis": {
+            "summary": "Stable competitor summary from benchmark metrics.",
+            "market_position": "Stable peer benchmark position.",
+            "relative_performance": "Stable growth metric versus competitor benchmark.",
+            "key_advantages": ["Stable ARPU strength versus competitor baseline."],
+            "key_vulnerabilities": ["Stable churn weakness versus competitor benchmark."],
+            "confidence": 0.9,
+        },
+        "strategic_recommendations": {
+            "immediate_actions": ["Address competitor churn gap in priority segment."],
+            "mid_term_moves": ["Improve growth benchmark standing versus competitors."],
+            "defensive_strategies": ["Defend against competitor strength in retention metric."],
+            "offensive_strategies": ["Exploit competitor weakness in monetization metric."],
         },
     }
     validated = InsightOutput.model_validate(payload)

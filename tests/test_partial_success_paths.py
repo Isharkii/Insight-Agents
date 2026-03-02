@@ -9,13 +9,20 @@ from llm_synthesis.schema import InsightOutput
 
 def _synthetic_llm_output() -> InsightOutput:
     return InsightOutput(
-        insight="Synthetic insight",
-        evidence="Synthetic evidence",
-        impact="Synthetic impact",
-        recommended_action="Synthetic action",
-        priority="medium",
-        confidence_score=0.9,
-        pipeline_status="success",
+        competitive_analysis={
+            "summary": "Synthetic competitor summary from benchmark metrics.",
+            "market_position": "Synthetic challenger position versus peers.",
+            "relative_performance": "Synthetic growth metric trails competitor benchmark.",
+            "key_advantages": ["Synthetic ARPU advantage versus competitor median."],
+            "key_vulnerabilities": ["Synthetic churn weakness versus competitor benchmark."],
+            "confidence": 0.9,
+        },
+        strategic_recommendations={
+            "immediate_actions": ["Address synthetic competitor churn gap immediately."],
+            "mid_term_moves": ["Reduce synthetic growth gap versus competitor benchmark."],
+            "defensive_strategies": ["Defend synthetic segments where competitor strength is rising."],
+            "offensive_strategies": ["Exploit synthetic competitor weakness in ARPU benchmark."],
+        },
     )
 
 
@@ -45,11 +52,11 @@ def test_llm_node_optional_signal_outage_yields_partial_success(monkeypatch) -> 
     payload = json.loads(result["final_response"])
 
     assert result["pipeline_status"] == "partial"
-    assert payload["pipeline_status"] == "partial"
-    assert payload["insight"] == "Synthetic insight"
-    assert payload["diagnostics"] is not None
-    assert set(payload["diagnostics"]["missing_signal"]) == {"forecast", "root_cause"}
-    assert payload["diagnostics"]["confidence_adjustments"]
+    assert payload["competitive_analysis"]["summary"].startswith("Synthetic competitor summary")
+    assert payload["competitive_analysis"]["confidence"] < 0.9
+    diagnostics = result.get("envelope_diagnostics") or {}
+    assert set(diagnostics.get("missing_signal", [])) == {"forecast", "root_cause"}
+    assert diagnostics.get("confidence_adjustments")
 
 
 def test_llm_node_required_signal_failure_is_structured_and_machine_readable(monkeypatch) -> None:
@@ -73,6 +80,6 @@ def test_llm_node_required_signal_failure_is_structured_and_machine_readable(mon
     payload = json.loads(result["final_response"])
 
     assert result["pipeline_status"] == "failed"
-    assert payload["pipeline_status"] == "failed"
-    assert "saas_kpi" in payload["diagnostics"]["missing_signal"]
-    assert payload["diagnostics"]["confidence_adjustments"]
+    assert payload["competitive_analysis"]["confidence"] <= 0.4
+    assert "saas_kpi" in result["envelope_diagnostics"]["missing_signal"]
+    assert result["envelope_diagnostics"]["confidence_adjustments"]

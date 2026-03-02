@@ -10,11 +10,13 @@ from app.api.routers.external_ingestion import router as external_ingestion_rout
 from app.api.routers.ingestion_orchestrator import router as ingestion_orchestrator_router
 from app.api.routers.kpi_router import router as kpi_router
 from app.api.routers.bi_export_router import router as bi_export_router
+from app.api.routers.business_intelligence_router import router as business_intelligence_router
 from app.api.routers.dashboard_router import router as dashboard_router
 
 __all__ = [
     "analyze_router",
     "bi_export_router",
+    "business_intelligence_router",
     "client_router",
     "competitor_scraping_router",
     "csv_ingestion_router",

@@ -1,220 +1,375 @@
-# Project: Lightweight Insight Agent (Local-First, Cloud-Scalable)
+Project: Deterministic Insight & Competitive Intelligence Agent
 
-## Core Philosophy
+(Lightweight, Local-First, Confidence-Governed)
 
-This project is designed to be:
+Core Philosophy
 
-- Lightweight
-- Modular
-- Locally runnable
-- Resource-efficient
-- Capable of handling complex reasoning
-- Deployable to cloud when needed
+This system is a deterministic-first intelligence engine.
 
-This is NOT a heavy enterprise monolith.
-This is a portable intelligence core.
+LLMs do not decide facts.
+LLMs explain validated signals.
 
-It must run locally on modest hardware,
-but scale when deployed to cloud infrastructure.
+The architecture must:
 
----
+Be lightweight
 
-# Primary Goal
+Run locally
 
-Build a minimal, modular AI Insight Agent that:
+Scale to cloud
 
-1. Processes structured data
-2. Generates meaningful insights
-3. Handles complex prompts
-4. Produces strategic recommendations
-5. Outputs structured responses
-6. Can run locally
-7. Can scale via cloud deployment
+Enforce data integrity
 
----
+Prevent misleading narratives
 
-# Architectural Constraints
+Preserve auditability
 
-## Default Mode: Local Execution
+Remain vendor-agnostic
 
-- Minimal dependencies
-- No unnecessary vector DB
-- No heavy orchestration frameworks unless needed
-- Prefer simple pipelines over distributed systems
-- Avoid microservice over-engineering
+This is not an orchestration tool.
 
-## Scalable Mode: Cloud Deployment
+This is a portable intelligence substrate.
 
-When deployed to cloud, system should:
+Primary Objective
 
-- Support API wrapping (FastAPI)
-- Handle larger datasets
-- Enable remote LLM calls
-- Support multi-client configuration
-- Add vector search if required
+Build a modular AI Insight & Benchmarking Agent that:
 
-Architecture must allow switching between:
+Processes structured business data
 
-LOCAL MODE
-CLOUD MODE
+Computes KPIs deterministically
 
-Without rewriting core logic.
+Enforces temporal integrity (no double counting)
 
----
+Propagates confidence mathematically
 
-# System Layers
+Performs direction-aware competitive benchmarking
 
-## 1. Data Layer
-- CSV / Excel ingestion
-- API ingestion
-- Optional web scraping
-- Clean + normalize data
-- Memory efficient
+Generates confidence-aware narratives
 
-## 2. Insight Layer
-- Statistical metrics
-- Trend detection
-- Anomaly detection
-- Pattern analysis
-- KPI computation
+Outputs strictly structured JSON
 
-Keep this lightweight.
-Use Pandas, NumPy.
-Avoid unnecessary ML unless needed.
+Runs locally
 
-## 3. Reasoning Layer
+Scales via API in cloud mode
 
-Must handle complex prompts.
+Non-Negotiable Design Principles
+1. Deterministic Before Generative
 
-- Structured prompt templates
-- Chain-of-thought internally
-- JSON structured output
-- Model-agnostic API wrapper
-- Local LLM compatible (optional)
-- Cloud LLM compatible
+All calculations must occur before LLM synthesis:
 
-Never hardcode vendor-specific logic.
+KPI computation
 
-## 4. Strategy Layer
+Growth rates
 
-Convert insights into:
-- Actionable recommendations
-- Risk evaluation
-- Opportunity scoring
-- Executive summaries
+Volatility
 
----
+Trend detection
 
-# Key Requirement: Lightweight but Capable
+Benchmark ranking
 
-The system must:
+Confidence scoring
 
-- Run on local laptop
-- Handle complex reasoning prompts
-- Avoid large memory footprint
-- Avoid heavy GPU requirements (unless optional)
-- Allow cloud offloading if prompt complexity increases
+Risk categorization
 
----
+The LLM may:
 
-# Model Strategy
+Explain
 
-Support:
+Reframe
 
-- Local small models (if configured)
-- API-based LLMs
-- Switchable model backend
+Strategize
 
-Create a model abstraction layer:
+The LLM must not:
 
-class BaseModelInterface:
-    def generate(prompt: str) -> dict:
-        pass
+Compute metrics
 
-All model implementations must follow this interface.
+Infer missing numbers
 
----
+Decide rankings
 
-# Output Format (Always Structured)
+Override deterministic confidence
+
+2. Confidence-Governed Synthesis
+
+Synthesis is allowed only if:
+
+deterministic_confidence >= MIN_CONFIDENCE_FOR_SYNTHESIS
+
+Tone must align with confidence:
+
+≥ 0.8 → definitive
+
+0.6–0.8 → cautious
+
+0.4–0.6 → hedged
+
+< 0.4 → synthesis blocked
+
+Confidence must propagate from:
+
+KPI → Risk → Diagnostic → Enforcement → Output
+
+No narrative without statistical substrate.
+
+3. Temporal Integrity Contract
+
+All time-series windows must use:
+
+[start, end) half-open intervals
+
+Rules:
+
+No double counting
+
+No boundary overlap
+
+Final month must not be dropped
+
+Same window alignment across entities
+
+Temporal correctness is foundational.
+
+4. Metric Provenance Required
+
+Each KPI must carry:
 
 {
-  "insight": "",
-  "evidence": "",
-  "impact": "",
-  "recommended_action": "",
-  "priority": "",
-  "confidence_score": ""
+"value": float,
+"unit": string,
+"source": "formula" | "precomputed_backfill",
+"window": { "start": "", "end": "" }
 }
 
-Never return unstructured paragraphs unless explicitly requested.
+No silent fallback.
+No hidden degradation.
 
----
+Provenance must propagate to:
 
-# Coding Rules
+LLM
 
-- Keep modules small
-- Use typing
-- Add docstrings
-- Keep logic separated:
-    - data
-    - insights
-    - reasoning
-    - strategy
-- No heavy frameworks unless justified
-- No unnecessary abstractions
-- No hardcoded business rules
+Dashboard
 
----
+Exports
 
-# Performance Principles
+5. Competitive Benchmarking Rules
 
-- Optimize for low memory usage
-- Avoid loading full datasets if streaming is possible
-- Lazy load components when needed
-- Avoid long blocking calls
+Benchmarking must:
 
----
+Compare across peer entities (never self-only)
 
-# Prompt Handling Rules
+Align time windows
 
-When processing complex prompts:
+Align aggregation level
 
-- Break down internally
-- Reason step-by-step
-- Summarize efficiently
-- Avoid hallucinated assumptions
-- Provide explainable output
+Align units and currency
 
----
+Normalize scale (% vs fraction)
 
-# What This Is NOT
+Respect metric direction (lower_is_better supported)
 
-- Not a chatbot
-- Not a dashboard-only tool
-- Not a heavy AI research system
-- Not tied to one LLM provider
+Incorporate volatility/stability
 
----
+Optionally weight by confidence
 
-# Long-Term Direction
+Ranking must be deterministic and reproducible.
+
+Lower-is-better metrics (e.g., churn) must invert scoring.
+
+No float-only comparison without metadata validation.
+
+System Layers (Updated)
+1. Data Layer
+
+CSV / Excel ingestion
+
+Clean + normalize
+
+Enforce timestamp alignment
+
+Enforce entity isolation
+
+Memory-efficient processing
+
+2. Insight Layer
+
+KPI formulas (deterministic)
+
+Growth %
+
+Trend slope
+
+Volatility score
+
+Stability index
+
+Confidence penalties
+
+Window validation
+
+No ML unless justified.
+
+3. Benchmark Layer
+
+Peer retrieval
+
+MetricComparisonSpec validation
+
+Direction-aware scoring
+
+Composite scoring
+
+Market positioning classification:
+
+Leader
+
+Challenger
+
+Stable
+
+Declining
+
+4. Reasoning Layer
+
+Structured prompt builder
+
+Confidence-aware tone control
+
+Missing signal injection
+
+Model-agnostic interface
+
+LLM must receive:
+
+Deterministic diagnostics
+
+Confidence score
+
+Missing signals
+
+Competitive deltas
+
+5. Strategy Layer
+
+Convert diagnostics into:
+
+Immediate actions
+
+Defensive strategies
+
+Offensive strategies
+
+Risk framing
+
+Opportunity classification
+
+Strategy must reference metrics explicitly.
+
+Model Abstraction (Required)
+
+All models must implement:
+
+class BaseModelInterface:
+    def generate(self, prompt: str) -> dict:
+        pass
+
+No vendor lock-in.
+No provider-specific logic in business code.
+
+Output Contract (Strict)
+
+All responses must follow structured schema.
+
+Example (Insight Mode):
+
+{
+"insight_summary": "",
+"risk_assessment": "",
+"market_position": "",
+"evidence": [],
+"recommended_actions": {
+"immediate": [],
+"mid_term": [],
+"defensive": [],
+"offensive": []
+},
+"confidence_score": float,
+"confidence_drivers": {
+"missing_signals": [],
+"degraded_signals": []
+}
+}
+
+No unstructured text.
+
+Performance Constraints
+
+Must run on local laptop
+
+Avoid large memory spikes
+
+Avoid unnecessary vector DB
+
+Avoid heavy orchestration
+
+Lazy load when possible
+
+Cloud mode optional via FastAPI
+
+What This System Is NOT
+
+Not a chatbot
+
+Not n8n-style workflow automation
+
+Not narrative-first AI
+
+Not metric computation inside LLM
+
+Not dependent on a single vendor
+
+Not a UI-only analytics tool
+
+Long-Term Direction
 
 Evolve into:
 
-- Lightweight AI engine
-- Cloud-deployable insight core
-- Embedded intelligence for dashboards
-- PPT insight generator (PitchWorx use case)
-- Configurable per client domain
+Confidence-aware business intelligence core
 
----
+Competitive strategy engine
 
-# Decision Priority Order
+Embedded dashboard intelligence
 
-If unsure, prioritize:
+Pitch-ready insight generator (PitchWorx use case)
 
-1. Lightweight architecture
-2. Modularity
-3. Structured output
-4. Cloud compatibility
-5. Clear reasoning
-6. Sellable product design
+Multi-tenant cloud deployable API
+
+Audit-safe analytics substrate
+
+Decision Priority Order (Updated)
+
+When making architectural decisions, prioritize:
+
+Deterministic correctness
+
+Temporal integrity
+
+Confidence governance
+
+Benchmark validity
+
+Structured outputs
+
+Lightweight execution
+
+Cloud compatibility
+
+Sellable product design
+
+Engineering Rule
+
+If a feature increases narrative sophistication
+but weakens mathematical integrity,
+reject it.
+
+If a feature increases correctness
+but slightly increases complexity,
+accept it.

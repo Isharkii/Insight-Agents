@@ -264,12 +264,22 @@ def export_report(
             raise ValueError("Graph did not return final_response.")
 
         insight_payload = InsightOutput.model_validate(json.loads(response_raw))
+        competitive = insight_payload.competitive_analysis
+        strategic = insight_payload.strategic_recommendations
+        immediate = strategic.immediate_actions[0] if strategic.immediate_actions else ""
+        pipeline_status = str(state.get("pipeline_status") or insight_payload.pipeline_status)
         report_payload: dict[str, Any] = {
             "entity_name": entity_name,
             "business_type": resolved,
-            "pipeline_status": insight_payload.pipeline_status,
-            "confidence_score": insight_payload.confidence_score,
+            "pipeline_status": pipeline_status,
+            "confidence_score": competitive.confidence,
             "insight_payload": insight_payload.model_dump(),
+            "summary_snapshot": {
+                "summary": competitive.summary,
+                "market_position": competitive.market_position,
+                "relative_performance": competitive.relative_performance,
+                "recommended_focus": immediate,
+            },
             "derived_signals": {
                 "growth": payload_of(state.get("growth_data")) or {},
                 "timeseries_factors": payload_of(state.get("timeseries_factors_data")) or {},
@@ -302,7 +312,13 @@ def export_report(
 
 def _report_markdown(payload: dict[str, Any]) -> str:
     insight = payload.get("insight_payload") or {}
+    competitive = insight.get("competitive_analysis") if isinstance(insight, dict) else {}
+    strategic = insight.get("strategic_recommendations") if isinstance(insight, dict) else {}
     derived = payload.get("derived_signals") or {}
+    immediate = strategic.get("immediate_actions") if isinstance(strategic, dict) else []
+    mid_term = strategic.get("mid_term_moves") if isinstance(strategic, dict) else []
+    defensive = strategic.get("defensive_strategies") if isinstance(strategic, dict) else []
+    offensive = strategic.get("offensive_strategies") if isinstance(strategic, dict) else []
     lines = [
         f"# Insight Report: {payload.get('entity_name')}",
         "",
@@ -310,12 +326,18 @@ def _report_markdown(payload: dict[str, Any]) -> str:
         f"- Pipeline Status: {payload.get('pipeline_status')}",
         f"- Confidence Score: {payload.get('confidence_score')}",
         "",
-        "## Insight",
-        f"- Insight: {insight.get('insight')}",
-        f"- Evidence: {insight.get('evidence')}",
-        f"- Impact: {insight.get('impact')}",
-        f"- Recommended Action: {insight.get('recommended_action')}",
-        f"- Priority: {insight.get('priority')}",
+        "## Competitive Analysis",
+        f"- Summary: {competitive.get('summary') if isinstance(competitive, dict) else ''}",
+        f"- Market Position: {competitive.get('market_position') if isinstance(competitive, dict) else ''}",
+        f"- Relative Performance: {competitive.get('relative_performance') if isinstance(competitive, dict) else ''}",
+        f"- Key Advantages: {competitive.get('key_advantages') if isinstance(competitive, dict) else []}",
+        f"- Key Vulnerabilities: {competitive.get('key_vulnerabilities') if isinstance(competitive, dict) else []}",
+        "",
+        "## Strategic Recommendations",
+        f"- Immediate Actions: {immediate}",
+        f"- Mid-Term Moves: {mid_term}",
+        f"- Defensive Strategies: {defensive}",
+        f"- Offensive Strategies: {offensive}",
         "",
         "## Derived Signals",
         "```json",

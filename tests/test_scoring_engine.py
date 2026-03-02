@@ -234,6 +234,56 @@ class TestScoreMetric:
         assert result.benchmark_median > 0
         assert result.benchmark_std >= 0
 
+    def test_direction_lower_is_better_changes_outcome(self) -> None:
+        # Lower churn should score better only when direction is explicit.
+        benchmark = [2.0, 4.0, 6.0, 8.0]
+        higher_default = score_metric("churn_rate", 2.0, benchmark)
+        lower_better = score_metric(
+            "churn_rate",
+            2.0,
+            benchmark,
+            direction="lower_is_better",
+        )
+        assert higher_default.normalised_score < lower_better.normalised_score
+        assert lower_better.percentile_rank > higher_default.percentile_rank
+
+    def test_confidence_weighting_downweights_low_confidence_client(self) -> None:
+        baseline = score_metric(
+            "mrr",
+            95.0,
+            _BENCHMARK,
+            use_confidence_weighting=False,
+            client_confidence=0.2,
+        )
+        weighted = score_metric(
+            "mrr",
+            95.0,
+            _BENCHMARK,
+            use_confidence_weighting=True,
+            client_confidence=0.2,
+        )
+        assert baseline.confidence_adjusted_score == baseline.normalised_score
+        assert weighted.confidence_adjusted_score < weighted.normalised_score
+        assert weighted.confidence_weighting_applied is True
+
+    def test_benchmark_confidence_weights_distribution(self) -> None:
+        # Weighted benchmark should shift percentile toward high-confidence peers.
+        benchmark = [10.0, 100.0]
+        unweighted = score_metric(
+            "mrr",
+            55.0,
+            benchmark,
+            use_confidence_weighting=False,
+        )
+        weighted = score_metric(
+            "mrr",
+            55.0,
+            benchmark,
+            use_confidence_weighting=False,
+            benchmark_confidences=[0.9, 0.1],
+        )
+        assert weighted.percentile_rank > unweighted.percentile_rank
+
 
 # ---------------------------------------------------------------------------
 # Test: score_metrics_batch
@@ -269,6 +319,17 @@ class TestScoreMetricsBatch:
         results = score_metrics_batch(client, benchmarks)
         assert "mrr" not in results
         assert "arr" in results
+
+    def test_batch_applies_metric_directions(self) -> None:
+        client = {"churn_rate": 2.0}
+        benchmarks = {"churn_rate": [2.0, 4.0, 6.0, 8.0]}
+        no_direction = score_metrics_batch(client, benchmarks)
+        with_direction = score_metrics_batch(
+            client,
+            benchmarks,
+            metric_directions={"churn_rate": "lower_is_better"},
+        )
+        assert with_direction["churn_rate"].normalised_score > no_direction["churn_rate"].normalised_score
 
 
 # ---------------------------------------------------------------------------
@@ -374,17 +435,24 @@ class TestCompositeScore:
 
     def test_custom_weights_shift_overall(self) -> None:
         client = {"growth_rate": 30.0, "churn_rate": 14.0, "mrr": 35_000.0, "conversion_rate": 6.0}
+        directions = {"churn_rate": "lower_is_better"}
         # Default weights
-        r_default = score_composite(client, _COMPOSITE_BENCHMARKS)
+        r_default = score_composite(
+            client,
+            _COMPOSITE_BENCHMARKS,
+            metric_directions=directions,
+        )
         # Heavily weight growth (where client is strong)
         r_growth = score_composite(
             client, _COMPOSITE_BENCHMARKS,
             category_weights={"growth": 0.90, "retention": 0.03, "revenue": 0.04, "efficiency": 0.03},
+            metric_directions=directions,
         )
         # Heavily weight retention (where client is weak — high churn)
         r_retention = score_composite(
             client, _COMPOSITE_BENCHMARKS,
             category_weights={"growth": 0.03, "retention": 0.90, "revenue": 0.04, "efficiency": 0.03},
+            metric_directions=directions,
         )
         # Growth-weighted score should be higher than retention-weighted
         assert r_growth.overall_score > r_retention.overall_score
@@ -405,8 +473,27 @@ class TestCompositeScore:
         result = score_composite(client, _COMPOSITE_BENCHMARKS)
         assert "revenue" in result.category_scores
         assert len(result.category_scores) == 1
-        # Overall should equal that single category score
-        assert result.overall_score == result.category_scores["revenue"]
+        expected = round(
+            (result.growth_score * 0.4)
+            + (result.level_score * 0.3)
+            + (result.stability_score * 0.2)
+            + (result.confidence_score * 0.1),
+            2,
+        )
+        assert result.overall_score == expected
+
+    def test_executive_formula_weights_components(self) -> None:
+        client = {"growth_rate": 18.0, "churn_rate": 4.0, "mrr": 35_000.0, "conversion_rate": 6.0}
+        result = score_composite(client, _COMPOSITE_BENCHMARKS)
+        expected = round(
+            (result.growth_score * 0.4)
+            + (result.level_score * 0.3)
+            + (result.stability_score * 0.2)
+            + (result.confidence_score * 0.1),
+            2,
+        )
+        assert result.executive_formula_applied is True
+        assert result.overall_score == expected
 
     def test_empty_input_returns_neutral(self) -> None:
         result = score_composite({}, {})
@@ -436,6 +523,82 @@ class TestCompositeScore:
         r1 = score_composite(client, _COMPOSITE_BENCHMARKS)
         r2 = score_composite(client, _COMPOSITE_BENCHMARKS)
         assert r1.model_dump() == r2.model_dump()
+
+    def test_composite_respects_metric_direction(self) -> None:
+        client = {"growth_rate": 18.0, "churn_rate": 2.0, "mrr": 35_000.0}
+        default = score_composite(client, _COMPOSITE_BENCHMARKS)
+        directed = score_composite(
+            client,
+            _COMPOSITE_BENCHMARKS,
+            metric_directions={"churn_rate": "lower_is_better"},
+        )
+        assert directed.overall_score >= default.overall_score
+
+    def test_composite_confidence_weighting_uses_adjusted_scores(self) -> None:
+        client = {"growth_rate": 18.0, "churn_rate": 2.0, "mrr": 35_000.0}
+        baseline = score_composite(
+            client,
+            _COMPOSITE_BENCHMARKS,
+            use_confidence_weighting=False,
+        )
+        weighted = score_composite(
+            client,
+            _COMPOSITE_BENCHMARKS,
+            use_confidence_weighting=True,
+            client_confidences={"growth_rate": 1.0, "churn_rate": 0.2, "mrr": 1.0},
+        )
+        assert weighted.confidence_weighting_applied is True
+        assert weighted.base_overall_score is not None
+        assert weighted.overall_score < baseline.overall_score
+
+    def test_competitive_metrics_payload_present(self) -> None:
+        client = {"growth_rate": 18.0, "mrr": 35_000.0, "conversion_rate": 6.0}
+        result = score_composite(client, _COMPOSITE_BENCHMARKS)
+        comp = result.competitive_metrics
+        assert comp.relative_growth_index is not None
+        assert comp.market_share_proxy is not None
+        assert 0.0 <= comp.market_share_proxy <= 1.0
+        assert 0.0 <= comp.stability_score <= 100.0
+        assert comp.momentum_classification in {"Leader", "Challenger", "Stable", "Declining"}
+        assert "formulas" in comp.explainability
+        assert "inputs" in comp.explainability
+
+    def test_market_share_proxy_formula(self) -> None:
+        client = {"growth_rate": 12.0, "mrr": 40_000.0}
+        result = score_composite(client, _COMPOSITE_BENCHMARKS)
+        expected = 40_000.0 / (40_000.0 + sum(_COMPOSITE_BENCHMARKS["mrr"]))
+        assert result.competitive_metrics.market_share_proxy == pytest.approx(expected, abs=1e-6)
+
+    def test_momentum_declining_when_growth_lags_market(self) -> None:
+        client = {"growth_rate": 1.0, "mrr": 35_000.0}
+        result = score_composite(client, _COMPOSITE_BENCHMARKS)
+        assert result.competitive_metrics.relative_growth_index is not None
+        assert result.competitive_metrics.relative_growth_index < 0.95
+        assert result.competitive_metrics.momentum_classification == "Declining"
+
+    def test_risk_divergence_score_rewards_lower_risk(self) -> None:
+        client = {"growth_rate": 18.0, "mrr": 35_000.0, "risk_score": 20.0}
+        benchmarks = {**_COMPOSITE_BENCHMARKS, "risk_score": [40.0, 50.0, 60.0]}
+        result = score_composite(client, benchmarks)
+        risk_score = result.competitive_metrics.risk_divergence_score
+        assert risk_score is not None
+        assert risk_score > 50.0
+        assert risk_score == pytest.approx(80.0, abs=1e-6)
+
+    def test_stability_score_uses_inverse_volatility(self) -> None:
+        client = {"growth_rate": 18.0, "mrr": 35_000.0}
+        stable = score_composite(
+            client,
+            _COMPOSITE_BENCHMARKS,
+            metric_series={"mrr": [100.0, 100.0, 100.0, 100.0]},
+        )
+        volatile = score_composite(
+            client,
+            _COMPOSITE_BENCHMARKS,
+            metric_series={"mrr": [100.0, 300.0, 50.0, 400.0]},
+        )
+        assert stable.competitive_metrics.stability_score > volatile.competitive_metrics.stability_score
+        assert stable.competitive_metrics.explainability["inputs"]["stability_source"] == "metric_series:mrr"
 
 
 class TestMacroAdjustedScoring:

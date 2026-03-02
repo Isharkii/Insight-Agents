@@ -25,8 +25,6 @@ from llm_synthesis.adapter import BaseLLMAdapter, MockLLMAdapter, OpenAILLMAdapt
 from llm_synthesis.prompt_builder import SynthesisPromptBuilder
 from llm_synthesis.retry import generate_with_retry
 from llm_synthesis.schema import (
-    ConfidenceAdjustment,
-    EnvelopeDiagnostics,
     InsightOutput as FinalInsightResponse,
 )
 
@@ -209,6 +207,71 @@ def _validate_final_response_contract(final_response: str) -> None:
     FinalInsightResponse.model_validate(payload)
 
 
+def _ensure_conditional_recommendations(
+    payload: FinalInsightResponse,
+    *,
+    conditional_required: bool,
+) -> FinalInsightResponse:
+    if not conditional_required:
+        return payload
+
+    recommendations = payload.strategic_recommendations
+
+    def _tag(items: list[str]) -> list[str]:
+        out: list[str] = []
+        for item in items:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            if text.lower().startswith("conditional:"):
+                out.append(text)
+            else:
+                out.append(f"Conditional: {text}")
+        return out
+
+    return payload.model_copy(
+        update={
+            "strategic_recommendations": recommendations.model_copy(
+                update={
+                    "immediate_actions": _tag(recommendations.immediate_actions),
+                    "mid_term_moves": _tag(recommendations.mid_term_moves),
+                    "defensive_strategies": _tag(recommendations.defensive_strategies),
+                    "offensive_strategies": _tag(recommendations.offensive_strategies),
+                }
+            )
+        }
+    )
+
+
+def _ensure_low_confidence_tone(
+    payload: FinalInsightResponse,
+    *,
+    conditional_required: bool,
+) -> FinalInsightResponse:
+    if not conditional_required:
+        return payload
+
+    analysis = payload.competitive_analysis
+
+    def _tag(text: str) -> str:
+        value = str(text or "").strip()
+        if not value:
+            return "Conditional: competitor benchmark context remains uncertain."
+        return value if value.lower().startswith("conditional:") else f"Conditional: {value}"
+
+    return payload.model_copy(
+        update={
+            "competitive_analysis": analysis.model_copy(
+                update={
+                    "summary": _tag(analysis.summary),
+                    "market_position": _tag(analysis.market_position),
+                    "relative_performance": _tag(analysis.relative_performance),
+                }
+            )
+        }
+    )
+
+
 def llm_node(state: AgentState) -> AgentState:
     """LangGraph node: synthesize available outputs into a structured insight."""
     load_env_files()
@@ -242,35 +305,35 @@ def llm_node(state: AgentState) -> AgentState:
             pipeline_status=pipeline_status,
         )
 
-    diagnostics_model = EnvelopeDiagnostics(
-        warnings=[str(item) for item in diagnostics.get("warnings", [])],
-        confidence_score=float(diagnostics.get("confidence_score", 1.0)),
-        missing_signal=[str(item) for item in diagnostics.get("missing_signal", [])],
-        confidence_adjustments=[
-            ConfidenceAdjustment(
-                signal=str(item.get("signal") or "unknown"),
-                delta=float(item.get("delta") or 0.0),
-                reason=str(item.get("reason") or "unspecified"),
-            )
-            for item in diagnostics.get("confidence_adjustments", [])
-            if isinstance(item, dict)
-        ],
-    )
-
     # Enforce: deterministic confidence always overrides LLM self-assessment.
     # The LLM must not inflate confidence beyond what the signals support.
     deterministic_confidence = float(diagnostics.get("confidence_score", 1.0))
     enforced_confidence = min(
-        final_payload.confidence_score,
+        final_payload.competitive_analysis.confidence,
         deterministic_confidence,
     )
 
     try:
         final_payload = final_payload.model_copy(
             update={
-                "confidence_score": enforced_confidence,
-                "pipeline_status": pipeline_status,
-                "diagnostics": diagnostics_model,
+                "competitive_analysis": final_payload.competitive_analysis.model_copy(
+                    update={"confidence": enforced_confidence}
+                )
+            }
+        )
+        final_payload = _ensure_conditional_recommendations(
+            final_payload,
+            conditional_required=(enforced_confidence < 0.5),
+        )
+        final_payload = _ensure_low_confidence_tone(
+            final_payload,
+            conditional_required=(enforced_confidence < 0.5),
+        )
+        final_payload = final_payload.model_copy(
+            update={
+                "competitive_analysis": final_payload.competitive_analysis.model_copy(
+                    update={"confidence": enforced_confidence}
+                ),
             }
         )
         final_response = final_payload.model_dump_json()
@@ -279,7 +342,7 @@ def llm_node(state: AgentState) -> AgentState:
         fallback = FinalInsightResponse.failure(
             reason=str(exc),
             pipeline_status=pipeline_status,
-        ).model_copy(update={"diagnostics": diagnostics_model})
+        )
         final_response = fallback.model_dump_json()
 
     return {

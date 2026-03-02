@@ -18,7 +18,7 @@ import {
   Tooltip,
   Legend,
 } from "recharts";
-import type { AnalyzeResult } from "../api/client";
+import type { AnalyzeResult, BusinessIntelligenceResponse } from "../api/client";
 import type { DashboardData } from "./IntelligenceDashboard/types";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -51,6 +51,8 @@ interface InsightsDashboardProps {
   derivedSignals: ReportDerivedSignals;
   executionTime?: number;
   entityName?: string;
+  reportInsight?: AnalyzeResult;
+  biData?: BusinessIntelligenceResponse | null;
 }
 
 // ─── Colors ──────────────────────────────────────────────────────────────────
@@ -97,6 +99,51 @@ function riskLevelLabel(score: number): string {
   if (score <= 60) return "Moderate";
   if (score <= 80) return "High Risk";
   return "Critical";
+}
+
+function biStatusClass(status: string): string {
+  if (status === "success") {
+    return "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300";
+  }
+  if (status === "partial") {
+    return "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300";
+  }
+  return "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300";
+}
+
+function stageStatusClass(status: string): string {
+  if (status === "success") return "bg-emerald-500";
+  if (status === "skipped") return "bg-gray-400";
+  return "bg-red-500";
+}
+
+function signalIdList(ids: string[]): string {
+  if (ids.length === 0) return "No signals";
+  return ids.join(", ");
+}
+
+type StrategyStep = { title: string; detail: string };
+
+function buildStrategies(insight: AnalyzeResult | null): StrategyStep[] {
+  if (!insight) return [];
+  return [
+    {
+      title: "Execute the recommended action",
+      detail: `Implement: ${insight.recommended_action}`,
+    },
+    {
+      title: "Validate the drivers cited in evidence",
+      detail: `Confirm the drivers described: ${insight.evidence}`,
+    },
+    {
+      title: "Monitor the stated impact",
+      detail: `Track the outcome area: ${insight.impact}`,
+    },
+    {
+      title: "Review priority and confidence",
+      detail: `Align owners/SLAs to ${insight.priority} priority and re-score monthly (confidence ${(insight.confidence_score ?? 0).toFixed(2)})`,
+    },
+  ];
 }
 
 // ─── Sub-components ──────────────────────────────────────────────────────────
@@ -242,6 +289,8 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
   derivedSignals,
   executionTime,
   entityName,
+  reportInsight,
+  biData,
 }) => {
   const ref = useRef<HTMLDivElement>(null);
 
@@ -250,6 +299,11 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
   }, [analyzeResult]);
 
   const pct = Math.round(analyzeResult.confidence_score * 100);
+  const insightSource = reportInsight ?? analyzeResult;
+  const strategies = useMemo(
+    () => buildStrategies(insightSource ?? null),
+    [insightSource],
+  );
 
   // KPI metrics from dashboard
   const kpiEntries = useMemo(() => {
@@ -284,22 +338,51 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
   // Revenue trend from dashboard
   const revenueTrend = dashboardData?.revenue_trend ?? [];
 
-  // Market share / forecast from dashboard
-  const marketShare = useMemo(() => {
-    const raw = dashboardData?.market_share ?? [];
-    if (raw.length === 0) return { data: [], hasProjection: false };
-    const firstProj = raw.findIndex((p) => p.projected);
-    const data = raw.map((p) => ({
-      period: p.period,
-      actual: p.projected ? undefined : p.value,
-      projected: p.projected ? p.value : undefined,
-    }));
-    // bridge gap
-    if (firstProj > 0) {
-      data[firstProj] = { ...data[firstProj], projected: raw[firstProj - 1].value };
-      data[firstProj - 1] = { ...data[firstProj - 1], projected: raw[firstProj - 1].value };
+  const chartEntityName = entityName || dashboardData?.entity_name || "selected entity";
+
+  // Forecast chart data uses both historical revenue and projected points.
+  const forecastSeries = useMemo(() => {
+    const history = dashboardData?.revenue_trend ?? [];
+    const projections = dashboardData?.market_share ?? [];
+
+    if (history.length === 0 && projections.length === 0) {
+      return { data: [], hasActual: false, hasProjection: false };
     }
-    return { data, hasProjection: firstProj >= 0 };
+
+    const byPeriod = new Map<string, { period: string; actual?: number; projected?: number }>();
+
+    for (const point of history) {
+      byPeriod.set(point.period, { period: point.period, actual: point.value });
+    }
+
+    for (const point of projections) {
+      const existing = byPeriod.get(point.period) ?? { period: point.period };
+      if (point.projected) {
+        existing.projected = point.value;
+      } else {
+        existing.actual = point.value;
+      }
+      byPeriod.set(point.period, existing);
+    }
+
+    const data = Array.from(byPeriod.values()).sort((a, b) => a.period.localeCompare(b.period));
+    const firstProjectedIdx = data.findIndex((point) => typeof point.projected === "number");
+    if (
+      firstProjectedIdx > 0 &&
+      typeof data[firstProjectedIdx].actual !== "number" &&
+      typeof data[firstProjectedIdx - 1].actual === "number"
+    ) {
+      data[firstProjectedIdx] = {
+        ...data[firstProjectedIdx],
+        actual: data[firstProjectedIdx - 1].actual,
+      };
+    }
+
+    return {
+      data,
+      hasActual: data.some((point) => typeof point.actual === "number"),
+      hasProjection: data.some((point) => typeof point.projected === "number"),
+    };
   }, [dashboardData]);
 
   // KPI distribution for pie chart
@@ -328,6 +411,11 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
 
   // Insights from dashboard
   const structuredInsights = dashboardData?.insights ?? [];
+  const biContext = biData?.context ?? null;
+  const biInsights = biData?.insights ?? null;
+  const biStrategy = biData?.strategy ?? null;
+  const biPipeline = biData?.pipeline ?? [];
+  const biWarnings = biData?.warnings ?? [];
 
   return (
     <div ref={ref} className="space-y-6">
@@ -452,6 +540,227 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
         </div>
       </div>
 
+      {/* ── Strategies ── */}
+      {biData && (
+        <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6 space-y-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                Business Intelligence Pipeline
+              </h3>
+              <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                Generated {new Date(biData.generated_at).toLocaleString()}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className={`px-3 py-1 rounded-full text-xs font-semibold capitalize ${biStatusClass(biData.status)}`}>
+                {biData.status}
+              </span>
+              <span className="text-xs text-gray-400">
+                Confidence {Math.round(biData.confidence * 100)}%
+              </span>
+            </div>
+          </div>
+
+          {biPipeline.length > 0 && (
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+              {biPipeline.map((stage) => (
+                <div key={stage.stage} className="rounded-xl border border-gray-200 dark:border-gray-700 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                      {stage.stage.replace(/_/g, " ")}
+                    </p>
+                    <span className={`w-2 h-2 rounded-full ${stageStatusClass(stage.status)}`} />
+                  </div>
+                  <p className="text-sm text-gray-700 dark:text-gray-200 capitalize mt-1">
+                    {stage.status}
+                  </p>
+                  <p className="text-xs text-gray-400 mt-1">
+                    {stage.duration_ms.toFixed(1)} ms
+                  </p>
+                  {stage.error && (
+                    <p className="text-xs text-red-500 mt-1 line-clamp-2">
+                      {stage.error}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {biWarnings.length > 0 && (
+            <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/10 p-3">
+              <p className="text-xs font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-300 mb-2">
+                BI Warnings
+              </p>
+              <ul className="space-y-1 text-xs text-amber-800 dark:text-amber-200">
+                {biWarnings.slice(0, 5).map((item, idx) => (
+                  <li key={idx}>• {item}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+
+      {(biContext || biInsights || biStrategy) && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          {biContext && (
+            <div className="lg:col-span-4 bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6 space-y-4">
+              <h3 className="text-sm font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                BI Context
+              </h3>
+              <div className="space-y-2 text-sm">
+                <p className="text-gray-700 dark:text-gray-200"><span className="text-gray-500">Industry:</span> {biContext.industry}</p>
+                <p className="text-gray-700 dark:text-gray-200"><span className="text-gray-500">Business Model:</span> {biContext.business_model}</p>
+                <p className="text-gray-700 dark:text-gray-200"><span className="text-gray-500">Target Market:</span> {biContext.target_market}</p>
+              </div>
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Macro Dependencies</p>
+                <ul className="space-y-1 text-sm text-gray-700 dark:text-gray-200">
+                  {biContext.macro_dependencies.slice(0, 5).map((item, idx) => (
+                    <li key={idx}>• {item}</li>
+                  ))}
+                </ul>
+              </div>
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Risk Factors</p>
+                <ul className="space-y-1 text-sm text-gray-700 dark:text-gray-200">
+                  {biContext.risk_factors.slice(0, 5).map((item, idx) => (
+                    <li key={idx}>• {item}</li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          )}
+
+          {biInsights && (
+            <div className="lg:col-span-4 bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                  BI Insights
+                </h3>
+                <span className="text-xs text-gray-400">
+                  Momentum {(biInsights.momentum_score * 100).toFixed(0)}%
+                </span>
+              </div>
+              <p className="text-sm text-gray-700 dark:text-gray-200">
+                {biInsights.macro_summary}
+              </p>
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Emerging Signals</p>
+                <div className="space-y-2">
+                  {biInsights.emerging_signals.slice(0, 3).map((signal, idx) => (
+                    <div key={idx} className="rounded-xl border border-gray-200 dark:border-gray-700 p-3">
+                      <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">{signal.title}</p>
+                      <p className="text-xs text-gray-600 dark:text-gray-300 mt-1">{signal.description}</p>
+                      <p className="text-[11px] text-gray-400 mt-1">
+                        Signals: {signalIdList(signal.supporting_signals.map((s) => s.signal_id))}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {biStrategy && (
+            <div className="lg:col-span-4 bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6 space-y-4">
+              <h3 className="text-sm font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                BI Strategy
+              </h3>
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Short-Term Actions</p>
+                <ol className="space-y-2 text-sm text-gray-700 dark:text-gray-200 list-decimal list-inside">
+                  {biStrategy.short_term_actions.slice(0, 3).map((action, idx) => (
+                    <li key={idx}>{action.action}</li>
+                  ))}
+                </ol>
+              </div>
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Mid-Term Actions</p>
+                <ol className="space-y-2 text-sm text-gray-700 dark:text-gray-200 list-decimal list-inside">
+                  {biStrategy.mid_term_actions.slice(0, 3).map((action, idx) => (
+                    <li key={idx}>{action.action}</li>
+                  ))}
+                </ol>
+              </div>
+              <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-3">
+                <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-1">Long-Term Positioning</p>
+                <p className="text-sm text-gray-700 dark:text-gray-200">{biStrategy.long_term_positioning}</p>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {insightSource && (
+        <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+              Insights Dashboard
+            </h3>
+            <div className="flex items-center gap-2">
+              <span
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold capitalize ${
+                  insightSource.priority === "critical"
+                    ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300"
+                    : insightSource.priority === "high"
+                      ? "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300"
+                      : insightSource.priority === "medium"
+                        ? "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+                        : "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+                }`}
+              >
+                {insightSource.priority} priority
+              </span>
+              <span className="text-xs text-gray-400">
+                Confidence {Math.round((insightSource.confidence_score ?? 0) * 100)}%
+              </span>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Insight</p>
+              <p className="text-gray-700 dark:text-gray-200">{insightSource.insight}</p>
+            </div>
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Evidence</p>
+              <p className="text-gray-700 dark:text-gray-200">{insightSource.evidence}</p>
+            </div>
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Impact</p>
+              <p className="text-gray-700 dark:text-gray-200">{insightSource.impact}</p>
+            </div>
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Recommended Action</p>
+              <p className="text-gray-700 dark:text-gray-200">{insightSource.recommended_action}</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Strategies ── */}
+      {strategies.length > 0 && (
+        <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6">
+          <div className="bg-blue-50 dark:bg-blue-900/10 border border-blue-200 dark:border-blue-800 rounded-xl p-4">
+            <h3 className="text-sm font-semibold uppercase tracking-wider text-blue-600 dark:text-blue-300 mb-1">
+              Strategies
+            </h3>
+            <p className="text-xs text-blue-900 dark:text-blue-100 mb-3">
+              Detailed step-by-step plan for {chartEntityName}.
+            </p>
+            <ol className="space-y-2 list-decimal list-inside text-sm text-blue-900 dark:text-blue-100">
+              {strategies.map((step, idx) => (
+                <li key={idx}>
+                  <span className="font-semibold">{step.title}:</span> {step.detail}
+                </li>
+              ))}
+            </ol>
+          </div>
+        </div>
+      )}
+
       {/* ── Row 2: KPI metric cards ── */}
       {kpiEntries.length > 0 && (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-4">
@@ -472,9 +781,12 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {revenueTrend.length > 0 && (
           <div className={`bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6 ${kpiPieData.length > 0 ? "lg:col-span-8" : "lg:col-span-12"}`}>
-            <h3 className="text-sm font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-4">
+            <h3 className="text-sm font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">
               Revenue Trend
             </h3>
+            <p className="text-xs text-gray-400 dark:text-gray-500 mb-4">
+              Entity: {chartEntityName}. X-axis: period (month). Y-axis: revenue (USD).
+            </p>
             <div className="h-72">
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={revenueTrend} margin={{ top: 8, right: 16, left: 8, bottom: 0 }}>
@@ -506,9 +818,12 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
 
         {kpiPieData.length > 0 && (
           <div className={`bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6 ${revenueTrend.length > 0 ? "lg:col-span-4" : "lg:col-span-12"}`}>
-            <h3 className="text-sm font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-4">
+            <h3 className="text-sm font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">
               KPI Distribution
             </h3>
+            <p className="text-xs text-gray-400 dark:text-gray-500 mb-4">
+              Entity: {chartEntityName}. Slice size: KPI contribution magnitude.
+            </p>
             <div className="h-72">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
@@ -537,9 +852,12 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
       {/* ── Row 4: KPI Time Series (multi-line) ── */}
       {timeSeriesData.length > 0 && (
         <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6">
-          <h3 className="text-sm font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-4">
+          <h3 className="text-sm font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">
             KPI Trends Over Time
           </h3>
+          <p className="text-xs text-gray-400 dark:text-gray-500 mb-4">
+            Entity: {chartEntityName}. X-axis: period (month). Y-axis: KPI metric values.
+          </p>
           <div className="h-80">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={timeSeriesData} margin={{ top: 8, right: 16, left: 8, bottom: 0 }}>
@@ -566,30 +884,52 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
       )}
 
       {/* ── Row 5: Forecast Projection + Scenario Comparison ── */}
-      {(marketShare.data.length > 0 || scenarioData.length > 0) && (
+      {(forecastSeries.data.length > 0 || scenarioData.length > 0) && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {marketShare.data.length > 0 && (
+          {forecastSeries.data.length > 0 && (
             <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6">
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-sm font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                  Forecast Projection
-                </h3>
-                {marketShare.hasProjection && (
+                <div>
+                  <h3 className="text-sm font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">
+                    Forecast Projection
+                  </h3>
+                  <p className="text-xs text-gray-400 dark:text-gray-500">
+                    Entity: {chartEntityName}. X-axis: period (month). Y-axis: revenue (USD).
+                  </p>
+                </div>
+                {(forecastSeries.hasActual || forecastSeries.hasProjection) && (
                   <div className="flex items-center gap-3 text-xs text-gray-400">
-                    <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-blue-500 inline-block" /> Actual</span>
-                    <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-violet-500 inline-block" /> Projected</span>
+                    {forecastSeries.hasActual && (
+                      <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-blue-500 inline-block" /> Actual</span>
+                    )}
+                    {forecastSeries.hasProjection && (
+                      <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-violet-500 inline-block" /> Projected</span>
+                    )}
                   </div>
                 )}
               </div>
               <div className="h-64">
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={marketShare.data} margin={{ top: 8, right: 16, left: 8, bottom: 0 }}>
+                  <LineChart data={forecastSeries.data} margin={{ top: 8, right: 16, left: 8, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" className="stroke-gray-200 dark:stroke-gray-700" />
                     <XAxis dataKey="period" tick={{ fontSize: 11 }} />
-                    <YAxis tick={{ fontSize: 11 }} width={50} />
-                    <Tooltip contentStyle={{ borderRadius: "0.5rem", fontSize: "0.75rem" }} />
-                    <Line type="monotone" dataKey="actual" stroke="#3b82f6" strokeWidth={2} dot={{ r: 3 }} connectNulls={false} />
-                    <Line type="monotone" dataKey="projected" stroke="#8b5cf6" strokeWidth={2} strokeDasharray="6 3" dot={{ r: 3 }} connectNulls={false} />
+                    <YAxis
+                      tick={{ fontSize: 11 }}
+                      width={60}
+                      tickFormatter={(v: number) =>
+                        v >= 1_000_000 ? `$${(v / 1_000_000).toFixed(1)}M` : v >= 1_000 ? `$${(v / 1_000).toFixed(0)}K` : `$${v}`
+                      }
+                    />
+                    <Tooltip
+                      contentStyle={{ borderRadius: "0.5rem", fontSize: "0.75rem" }}
+                      formatter={(v: number) => [`$${v.toLocaleString()}`, ""]}
+                    />
+                    {forecastSeries.hasActual && (
+                      <Line type="monotone" dataKey="actual" stroke="#3b82f6" strokeWidth={2} dot={{ r: 3 }} connectNulls={false} />
+                    )}
+                    {forecastSeries.hasProjection && (
+                      <Line type="monotone" dataKey="projected" stroke="#8b5cf6" strokeWidth={2} strokeDasharray="6 3" dot={{ r: 3 }} connectNulls={false} />
+                    )}
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -598,9 +938,12 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
 
           {scenarioData.length > 0 && (
             <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6">
-              <h3 className="text-sm font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-4">
+              <h3 className="text-sm font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">
                 Scenario Comparison
               </h3>
+              <p className="text-xs text-gray-400 dark:text-gray-500 mb-4">
+                Entity: {chartEntityName}. X-axis: scenario name. Y-axis: projected value and projected growth.
+              </p>
               <div className="h-64">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={scenarioData} margin={{ top: 8, right: 16, left: 8, bottom: 0 }}>
@@ -622,9 +965,12 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
       {/* ── Row 6: Role Contribution ── */}
       {roleContributors.length > 0 && (
         <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6">
-          <h3 className="text-sm font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-4">
+          <h3 className="text-sm font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">
             Role Contribution
           </h3>
+          <p className="text-xs text-gray-400 dark:text-gray-500 mb-4">
+            Entity: {chartEntityName}. X-axis: contribution value. Y-axis: contributor name.
+          </p>
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={roleContributors} layout="vertical" margin={{ top: 4, right: 16, left: 8, bottom: 4 }}>

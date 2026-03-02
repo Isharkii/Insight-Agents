@@ -10,9 +10,11 @@ import type { DashboardData } from "./components/IntelligenceDashboard/types";
 import {
   fetchDashboard,
   runAnalysis,
+  runBusinessIntelligence,
   fetchReportPayload,
   fetchExportJson,
   type AnalyzeResult,
+  type BusinessIntelligenceResponse,
 } from "./api/client";
 
 // ─── Embed mode hook ─────────────────────────────────────────────────────────
@@ -102,6 +104,9 @@ export default function App() {
   const [dashboardData, setDashboardData] = useState<DashboardData | null>(
     null,
   );
+  const [biResult, setBiResult] = useState<BusinessIntelligenceResponse | null>(
+    null,
+  );
   const [reportPayload, setReportPayload] = useState<Record<
     string,
     unknown
@@ -138,6 +143,14 @@ export default function App() {
   const effectiveBusinessType =
     resolvedContext.businessType?.trim() || requestedBusinessType;
 
+  const reportInsight = useMemo(() => {
+    const payload = reportPayload?.insight_payload;
+    if (payload && typeof payload === "object") {
+      return payload as AnalyzeResult;
+    }
+    return null;
+  }, [reportPayload]);
+
   const derivedSignals = useMemo(
     () => extractDerivedSignals(reportPayload),
     [reportPayload],
@@ -163,12 +176,25 @@ export default function App() {
     setError(null);
     setAnalyzeResult(null);
     setDashboardData(null);
+    setBiResult(null);
     setReportPayload(null);
     setKpiExportJson(null);
     setResolvedContext({});
 
     const started = performance.now();
     try {
+      const biPromise = runBusinessIntelligence({
+        businessPrompt: prompt.trim(),
+      })
+        .then((payload) => {
+          setBiResult(payload);
+          return payload;
+        })
+        .catch(() => {
+          setBiResult(null);
+          return null;
+        });
+
       const run = await runAnalysis({
         prompt: prompt.trim(),
         file: file ?? undefined,
@@ -193,8 +219,9 @@ export default function App() {
         businessType: btype || undefined,
       });
 
+      const enrichmentTasks: Promise<unknown>[] = [biPromise];
       if (entity) {
-        await Promise.all([
+        enrichmentTasks.push(
           fetchDashboard(entity, btype)
             .then(setDashboardData)
             .catch(() => {}),
@@ -204,8 +231,9 @@ export default function App() {
           fetchExportJson("kpis", entity)
             .then(setKpiExportJson)
             .catch(() => {}),
-        ]);
+        );
       }
+      await Promise.all(enrichmentTasks);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -223,6 +251,7 @@ export default function App() {
   const handleClear = useCallback(() => {
     setAnalyzeResult(null);
     setDashboardData(null);
+    setBiResult(null);
     setReportPayload(null);
     setKpiExportJson(null);
     setError(null);
@@ -399,6 +428,8 @@ export default function App() {
               derivedSignals={derivedSignals}
               executionTime={executionTime}
               entityName={effectiveEntity || undefined}
+              reportInsight={reportInsight || undefined}
+              biData={biResult}
             />
           )}
 

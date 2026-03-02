@@ -181,32 +181,28 @@ def _transform_insight(raw: dict[str, Any]) -> dict[str, Any]:
 
     Returns ``{title, description, impact_score (0–100), dimension}``.
     """
-    title = raw.get("insight", "")
-    evidence = raw.get("evidence", "")
-    action = raw.get("recommended_action", "")
-    description = f"{evidence} {action}".strip() if evidence or action else raw.get("impact", "")
+    competitive = raw.get("competitive_analysis", {})
+    strategic = raw.get("strategic_recommendations", {})
 
-    confidence = raw.get("confidence_score", 0.0)
+    title = str(competitive.get("summary", "")).strip()
+    market_position = str(competitive.get("market_position", "")).strip()
+    relative = str(competitive.get("relative_performance", "")).strip()
+    immediate = strategic.get("immediate_actions")
+    first_action = (
+        str(immediate[0]).strip()
+        if isinstance(immediate, list) and immediate
+        else ""
+    )
+    description = " ".join(item for item in (market_position, relative, first_action) if item)
+
+    confidence = competitive.get("confidence", 0.0)
     impact_score = round(confidence * 100, 1)
-
-    # Infer dimension from content heuristics
-    title_lower = title.lower()
-    desc_lower = description.lower()
-    combined = f"{title_lower} {desc_lower}"
-    if any(kw in combined for kw in ("forecast", "projection", "simulation", "scenario")):
-        dimension = "simulation"
-    elif any(kw in combined for kw in ("risk", "macro", "inflation", "economic")):
-        dimension = "macro"
-    elif any(kw in combined for kw in ("market share", "competitor", "competitive")):
-        dimension = "competitive"
-    else:
-        dimension = "kpi"
 
     return {
         "title": title,
         "description": description,
         "impact_score": impact_score,
-        "dimension": dimension,
+        "dimension": "competitive",
     }
 
 
@@ -306,9 +302,16 @@ def get_dashboard(
 
     # --- Classification (single object, confidence 0–100) ---
     raw_confidence = (
-        raw_insights[0]["confidence_score"] if raw_insights else 0.85
+        raw_insights[0].get("competitive_analysis", {}).get("confidence", 0.85)
+        if raw_insights
+        else 0.85
     )
-    classification = _build_classification(processing_strategy, raw_confidence)
+    try:
+        confidence_value = float(raw_confidence)
+    except (TypeError, ValueError):
+        confidence_value = 0.85
+    confidence_value = max(0.0, min(1.0, confidence_value))
+    classification = _build_classification(processing_strategy, confidence_value)
 
     return {
         "entity_name": entity_name,

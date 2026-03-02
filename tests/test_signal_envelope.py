@@ -421,56 +421,44 @@ class TestDerrivePipelineStatus(unittest.TestCase):
 
 
 class TestInsightOutputDiagnostics(unittest.TestCase):
-    """InsightOutput supports optional diagnostics field."""
+    """InsightOutput enforces the competitor-structured contract."""
 
-    def test_no_diagnostics_by_default(self) -> None:
+    def test_structured_contract_serialises(self) -> None:
         from llm_synthesis.schema import InsightOutput
 
         output = InsightOutput(
-            insight="test", evidence="test", impact="test",
-            recommended_action="test", priority="low",
-            confidence_score=1.0, pipeline_status="success",
+            competitive_analysis={
+                "summary": "Competitor benchmark summary.",
+                "market_position": "Peer market position description.",
+                "relative_performance": "Growth metric versus competitor benchmark.",
+                "key_advantages": ["ARPU strength versus competitor median."],
+                "key_vulnerabilities": ["Churn weakness versus competitor benchmark."],
+                "confidence": 0.8,
+            },
+            strategic_recommendations={
+                "immediate_actions": ["Address competitor churn gap immediately."],
+                "mid_term_moves": ["Close growth gap versus competitor benchmark."],
+                "defensive_strategies": ["Defend against competitor strength in retention metric."],
+                "offensive_strategies": ["Exploit competitor weakness in ARPU benchmark."],
+            },
         )
-        self.assertIsNone(output.diagnostics)
-
-    def test_diagnostics_with_warnings(self) -> None:
-        from llm_synthesis.schema import EnvelopeDiagnostics, InsightOutput
-
-        diag = EnvelopeDiagnostics(
-            warnings=["ltv not computed"], confidence_score=0.7,
-        )
-        output = InsightOutput(
-            insight="test", evidence="test", impact="test",
-            recommended_action="test", priority="low",
-            confidence_score=0.7, pipeline_status="partial",
-            diagnostics=diag,
-        )
-        self.assertIsNotNone(output.diagnostics)
-        self.assertEqual(output.diagnostics.warnings, ["ltv not computed"])
-        self.assertAlmostEqual(output.diagnostics.confidence_score, 0.7)
-
-    def test_diagnostics_serialises_to_json(self) -> None:
         import json
-        from llm_synthesis.schema import EnvelopeDiagnostics, InsightOutput
-
-        diag = EnvelopeDiagnostics(
-            warnings=["arpu missing"], confidence_score=0.8,
-        )
-        output = InsightOutput(
-            insight="test", evidence="test", impact="test",
-            recommended_action="test", priority="medium",
-            confidence_score=0.8, pipeline_status="partial",
-            diagnostics=diag,
-        )
         data = json.loads(output.model_dump_json())
-        self.assertIn("diagnostics", data)
-        self.assertEqual(data["diagnostics"]["warnings"], ["arpu missing"])
+        self.assertIn("competitive_analysis", data)
+        self.assertIn("strategic_recommendations", data)
+        self.assertEqual(data["competitive_analysis"]["confidence"], 0.8)
 
-    def test_failure_has_no_diagnostics(self) -> None:
+    def test_failure_returns_structured_payload(self) -> None:
         from llm_synthesis.schema import InsightOutput
 
         output = InsightOutput.failure("something broke")
-        self.assertIsNone(output.diagnostics)
+        self.assertEqual(output.competitive_analysis.confidence, 0.0)
+        self.assertTrue(
+            all(
+                item.lower().startswith("conditional:")
+                for item in output.strategic_recommendations.immediate_actions
+            )
+        )
 
 
 # ===================================================================

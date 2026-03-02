@@ -165,26 +165,27 @@ def test_new_categories_are_registered() -> None:
 
 def test_strict_json_output_contract_unchanged() -> None:
     expected_fields = {
-        "insight",
-        "evidence",
-        "impact",
-        "recommended_action",
-        "priority",
-        "confidence_score",
-        "pipeline_status",
-        "diagnostics",
+        "competitive_analysis",
+        "strategic_recommendations",
     }
     assert set(InsightOutput.model_fields.keys()) == expected_fields
 
     sample = InsightOutput(
-        insight="Synthetic insight",
-        evidence="Synthetic evidence",
-        impact="Synthetic impact",
-        recommended_action="Synthetic action",
-        priority="medium",
-        confidence_score=0.9,
-        pipeline_status="success",
+        competitive_analysis={
+            "summary": "Competitor summary based on benchmark metrics.",
+            "market_position": "Peer-relative market position remains stable.",
+            "relative_performance": "Growth metric tracks near competitor benchmark median.",
+            "key_advantages": ["Stronger ARPU metric versus competitor baseline."],
+            "key_vulnerabilities": ["Churn metric trails competitor benchmark."],
+            "confidence": 0.9,
+        },
+        strategic_recommendations={
+            "immediate_actions": ["Close competitor churn gap in priority segment."],
+            "mid_term_moves": ["Improve growth metric position against competitor benchmark."],
+            "defensive_strategies": ["Defend segments where competitor retention strength is highest."],
+            "offensive_strategies": ["Exploit competitor weakness in monetization benchmark metrics."],
+        },
     )
     payload = sample.model_dump()
     assert set(payload.keys()) == expected_fields
-    assert math.isclose(payload["confidence_score"], 0.9)
+    assert math.isclose(payload["competitive_analysis"]["confidence"], 0.9)
