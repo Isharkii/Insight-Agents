@@ -168,7 +168,7 @@ class AggregationService:
             CanonicalInsightRecord.category.in_(self._categories),
             CanonicalInsightRecord.metric_name.in_(self._metric_revenue),
             CanonicalInsightRecord.timestamp >= start_date,
-            CanonicalInsightRecord.timestamp <= end_date,
+            CanonicalInsightRecord.timestamp < end_date,
         )
         row_count = self._session.scalar(count_stmt) or 0
 
@@ -184,7 +184,7 @@ class AggregationService:
             CanonicalInsightRecord.category.in_(self._categories),
             CanonicalInsightRecord.metric_name.in_(self._metric_revenue),
             CanonicalInsightRecord.timestamp >= start_date,
-            CanonicalInsightRecord.timestamp <= end_date,
+            CanonicalInsightRecord.timestamp < end_date,
         )
 
         result = self._session.scalar(stmt)
@@ -290,7 +290,7 @@ class AggregationService:
             CanonicalInsightRecord.category.in_(self._categories),
             CanonicalInsightRecord.metric_name.in_(self._metric_churned),
             CanonicalInsightRecord.timestamp >= start_date,
-            CanonicalInsightRecord.timestamp <= end_date,
+            CanonicalInsightRecord.timestamp < end_date,
         )
         row_count = self._session.scalar(count_stmt) or 0
 
@@ -306,7 +306,7 @@ class AggregationService:
             CanonicalInsightRecord.category.in_(self._categories),
             CanonicalInsightRecord.metric_name.in_(self._metric_churned),
             CanonicalInsightRecord.timestamp >= start_date,
-            CanonicalInsightRecord.timestamp <= end_date,
+            CanonicalInsightRecord.timestamp < end_date,
         )
 
         result = self._session.scalar(stmt)
@@ -419,7 +419,7 @@ class AggregationService:
                 CanonicalInsightRecord.category.in_(self._categories),
                 CanonicalInsightRecord.metric_name.in_(self._metric_revenue),
                 CanonicalInsightRecord.timestamp >= start_date,
-                CanonicalInsightRecord.timestamp <= end_date,
+                CanonicalInsightRecord.timestamp < end_date,
             )
             .order_by(CanonicalInsightRecord.timestamp.asc())
         )
@@ -471,7 +471,7 @@ class AggregationService:
                 CanonicalInsightRecord.category.in_(self._categories),
                 CanonicalInsightRecord.metric_name.in_(tuple(metric_names)),
                 CanonicalInsightRecord.timestamp >= start_date,
-                CanonicalInsightRecord.timestamp <= end_date,
+                CanonicalInsightRecord.timestamp < end_date,
                 CanonicalInsightRecord.metric_value.is_not(None),
             )
             .order_by(

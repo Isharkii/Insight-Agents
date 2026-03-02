@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Index, String, UniqueConstraint, func
+from sqlalchemy import DateTime, Index, Integer, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -70,6 +70,16 @@ class ComputedKPI(Base):
         DateTime(timezone=True),
         nullable=False,
         server_default=func.now(),
+    )
+    analytics_version: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        comment="Pipeline version that produced this row; NULL = pre-versioning",
+    )
+    dataset_hash: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        comment="SHA-256 hex digest of canonical input rows at computation time",
     )
 
     __table_args__ = (

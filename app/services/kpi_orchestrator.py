@@ -74,6 +74,11 @@ from db.repositories.kpi_repository import KPIRepository
 
 logger = logging.getLogger(__name__)
 
+# Bump this constant whenever formula logic, aggregation queries, or the
+# pipeline structure change.  Existing rows with a different (or NULL)
+# version will be recomputed on the next analysis run.
+ANALYTICS_VERSION: int = 2
+
 _DEFAULT_RATE_METRICS: frozenset[str] = frozenset(
     {"churn_rate", "client_churn", "conversion_rate", "utilization_rate", "growth_rate"}
 )
@@ -188,6 +193,7 @@ class KPIOrchestrator:
         period_end: datetime,
         db: Session,
         extra_inputs: dict[str, Any] | None = None,
+        dataset_hash: str | None = None,
     ) -> KPIRunResult:
         """
         Execute the full KPI pipeline for *entity_name* over the given period.
@@ -341,6 +347,8 @@ class KPIOrchestrator:
             period_end=period_end,
             payload=payload,
             db=db,
+            analytics_version=ANALYTICS_VERSION,
+            dataset_hash=dataset_hash,
         )
 
         elapsed = time.monotonic() - run_start
@@ -551,8 +559,12 @@ class KPIOrchestrator:
         for name, value in precomputed.items():
             if value is not None:
                 metrics[name] = value
-                # Update validity to reflect that this metric is now available
-                validity.pop(name, None)
+                # Replace validity error with provenance marker
+                validity[name] = {
+                    "is_valid": True,
+                    "missing_dependencies": [],
+                    "source": "precomputed_backfill",
+                }
                 backfilled += 1
 
         if backfilled:
@@ -576,6 +588,8 @@ class KPIOrchestrator:
         period_end: datetime,
         payload: dict[str, Any],
         db: Session,
+        analytics_version: int | None = None,
+        dataset_hash: str | None = None,
     ) -> ComputedKPI:
         """
         Upsert the payload and commit the session.
@@ -593,6 +607,8 @@ class KPIOrchestrator:
                 period_start=period_start,
                 period_end=period_end,
                 computed_kpis=payload,
+                analytics_version=analytics_version,
+                dataset_hash=dataset_hash,
             )
             db.commit()
             logger.debug(
@@ -814,11 +830,13 @@ def _build_payload(
         else:
             error = None
 
+        source = meta.get("source", "formula")
         result[name] = {
             "value": value,
             "unit": "rate" if name in rates else "currency",
             "error": error,
             "is_valid": is_valid,
             "missing_dependencies": missing_deps,
+            "source": source,
         }
     return result

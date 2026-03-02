@@ -30,6 +30,17 @@ STRICT RULES:
 - Output exactly one JSON object with only the schema fields.
 - Do NOT include any text outside the JSON object.
 - Do NOT wrap the JSON in markdown code fences.
+
+CONFIDENCE-AWARE NARRATIVE RULES:
+- A "Data Quality" section below reports the deterministic confidence score
+  (0.0 to 1.0) and any missing signals.
+- If confidence >= 0.8: use definitive language ("revenue declined 12%").
+- If 0.6 <= confidence < 0.8: use cautious language ("revenue appears to
+  have declined", "available data suggests").
+- If 0.4 <= confidence < 0.6: use hedged language ("limited data indicates",
+  "with significant uncertainty").  Explicitly note data gaps in the insight.
+- Your confidence_score field MUST NOT exceed the deterministic confidence
+  value provided below.
 """
 
 _SECTION_TEMPLATE = """\
@@ -56,6 +67,8 @@ class SynthesisPromptBuilder:
         root_cause: Dict,
         segmentation: Dict,
         prioritization: Dict,
+        confidence_score: float = 1.0,
+        missing_signals: list | None = None,
     ) -> str:
         """Build the full synthesis prompt from upstream data.
 
@@ -66,6 +79,8 @@ class SynthesisPromptBuilder:
             root_cause: Root cause analysis output.
             segmentation: Segmentation / cohort analysis output.
             prioritization: Prioritized action items.
+            confidence_score: Deterministic confidence from signal quality.
+            missing_signals: Names of signals that are unavailable.
 
         Returns:
             A fully formatted prompt string ready for LLM consumption.
@@ -79,9 +94,14 @@ class SynthesisPromptBuilder:
             prioritization=prioritization,
         )
 
+        quality_context = self._format_quality_context(
+            confidence_score, missing_signals or [],
+        )
+
         return (
             f"{_SYSTEM_INSTRUCTIONS}\n"
             f"# PROVIDED DATA\n\n{sections}\n"
+            f"{quality_context}"
             f"# OUTPUT SCHEMA\n\n"
             f"Your response MUST conform to this JSON schema:\n\n"
             f"```json\n{_SCHEMA_JSON}\n```\n\n"
@@ -91,6 +111,25 @@ class SynthesisPromptBuilder:
             f"Synthesize the provided data into a single JSON object "
             f"matching the schema above. Do not compute. Use only provided data."
         )
+
+    @staticmethod
+    def _format_quality_context(
+        confidence_score: float,
+        missing_signals: list[str],
+    ) -> str:
+        """Build a data-quality section for the LLM prompt."""
+        quality: Dict = {
+            "deterministic_confidence": round(confidence_score, 4),
+            "missing_signals": missing_signals or [],
+        }
+        if confidence_score >= 0.8:
+            quality["tone_directive"] = "definitive"
+        elif confidence_score >= 0.6:
+            quality["tone_directive"] = "cautious"
+        else:
+            quality["tone_directive"] = "hedged"
+        body = json.dumps(quality, indent=2)
+        return f"## Data Quality\n```json\n{body}\n```\n\n"
 
     def _format_data_sections(self, **data: Dict) -> str:
         """Format each data dict as a labeled JSON section.

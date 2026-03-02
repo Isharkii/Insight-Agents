@@ -65,7 +65,7 @@ DEFAULT_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     ),
     "category": (
         "insight_category", "metric_category", "domain", "topic",
-        "business_area", "department", "segment", "vertical",
+        "business_area", "department", "vertical",
     ),
     "role": (
         "org_role", "organization_role", "job_role", "function",

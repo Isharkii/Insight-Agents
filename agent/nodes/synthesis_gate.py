@@ -15,7 +15,7 @@ import json
 from typing import Any
 
 from agent.graph_config import graph_node_config_for_business_type, signal_name_for_state_key
-from agent.nodes.node_result import status_of
+from agent.nodes.node_result import confidence_of, status_of
 from agent.state import AgentState
 from llm_synthesis.schema import (
     ConfidenceAdjustment,
@@ -41,6 +41,23 @@ def _collect_required_failures(state: AgentState) -> list[str]:
     return failures
 
 
+def _compute_pre_synthesis_confidence(state: AgentState) -> float:
+    """Compute deterministic confidence from signal envelopes before LLM runs."""
+    config = graph_node_config_for_business_type(
+        str(state.get("business_type") or ""),
+    )
+    total_delta = 0.0
+    for key in config.required:
+        value = state.get(key)
+        if value is None or status_of(value) in {"skipped", "failed"}:
+            total_delta += -0.35
+            continue
+        conf = confidence_of(value)
+        if 0.0 < conf < 1.0:
+            total_delta += conf - 1.0
+    return max(0.0, min(1.0, round(1.0 + total_delta, 6)))
+
+
 def should_block_synthesis(state: AgentState) -> bool:
     """Return True if the pipeline must NOT proceed to LLM synthesis."""
     # Gate 1: pipeline_status explicitly failed
@@ -50,6 +67,10 @@ def should_block_synthesis(state: AgentState) -> bool:
 
     # Gate 2: any required signal missing or failed
     if _collect_required_failures(state):
+        return True
+
+    # Gate 3: deterministic confidence below threshold
+    if _compute_pre_synthesis_confidence(state) < MIN_CONFIDENCE_FOR_SYNTHESIS:
         return True
 
     return False
@@ -62,20 +83,30 @@ def build_blocked_response(state: AgentState) -> str:
     """
     failed_signals = _collect_required_failures(state)
     pipeline_status = str(state.get("pipeline_status") or "failed").strip().lower()
+    pre_confidence = _compute_pre_synthesis_confidence(state)
 
+    parts: list[str] = []
+    if failed_signals:
+        parts.append(
+            f"required signal(s) unavailable: {', '.join(failed_signals)}"
+        )
+    if pre_confidence < MIN_CONFIDENCE_FOR_SYNTHESIS:
+        parts.append(
+            f"deterministic confidence too low ({pre_confidence:.2f} < "
+            f"{MIN_CONFIDENCE_FOR_SYNTHESIS})"
+        )
     reason = (
-        f"Insight generation blocked: required signal(s) unavailable: "
-        f"{', '.join(failed_signals)}. "
+        f"Insight generation blocked: {'; '.join(parts)}. "
         f"Pipeline status: {pipeline_status}. "
-        f"The system requires all deterministic signals to succeed before "
-        f"LLM synthesis can execute."
+        f"The system requires validated deterministic signals "
+        f"above the confidence threshold before LLM synthesis can execute."
     )
 
     diagnostics = EnvelopeDiagnostics(
         warnings=[
             f"Required signal '{s}' did not succeed." for s in failed_signals
         ],
-        confidence_score=0.0,
+        confidence_score=pre_confidence,
         missing_signal=failed_signals,
         confidence_adjustments=[
             ConfidenceAdjustment(

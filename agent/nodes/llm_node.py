@@ -192,8 +192,11 @@ def _build_adapter() -> BaseLLMAdapter:
     if adapter_name == "mock":
         return MockLLMAdapter()
 
+    model_env = os.getenv("LLM_MODEL", "").strip()
+    model_name = model_env or "gpt-4o-mini"
+
     return OpenAILLMAdapter(
-        model=os.getenv("LLM_MODEL", "gpt-4o-mini").strip(),
+        model=model_name,
         max_tokens=int(os.getenv("LLM_MAX_TOKENS", "2048")),
         api_key=os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY"),
         base_url=os.getenv("LLM_BASE_URL") or None,
@@ -224,6 +227,8 @@ def llm_node(state: AgentState) -> AgentState:
         root_cause=root_cause,
         segmentation=_usable_payload(state.get("segmentation")),
         prioritization=state.get("prioritization") or {},
+        confidence_score=float(diagnostics.get("confidence_score", 1.0)),
+        missing_signals=diagnostics.get("missing_signal", []),
     )
 
     adapter = _build_adapter()

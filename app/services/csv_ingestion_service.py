@@ -555,9 +555,11 @@ class CSVIngestionService:
                 pipeline_status = IngestionStatus.INSUFFICIENT_DATA.value
             else:
                 # rows_processed == 0 AND rows_failed == 0:
-                # likely all rows deduped on insert — data already
-                # exists in the DB, so this is NOT a failure.
-                pipeline_status = IngestionStatus.INSUFFICIENT_DATA.value
+                # All rows deduped on insert — data already exists in
+                # the DB and is usable.  Treat as success so downstream
+                # consumers (analyze endpoint) don't surface a spurious
+                # "insufficient_data" warning.
+                pipeline_status = IngestionStatus.SUCCESS.value
 
             summary = IngestionSummary(
                 rows_processed=rows_processed,

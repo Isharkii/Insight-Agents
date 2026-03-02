@@ -11,7 +11,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
 from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -39,7 +39,8 @@ from app.services.kpi_canonical_schema import (
     category_aliases_for_business_type,
     infer_analytics_strategy_from_categories,
 )
-from app.services.kpi_orchestrator import KPIOrchestrator, KPIRunResult
+from app.services.dataset_hash import compute_dataset_hash
+from app.services.kpi_orchestrator import ANALYTICS_VERSION, KPIOrchestrator, KPIRunResult
 from db.models.canonical_insight_record import CanonicalInsightRecord
 from db.repositories.kpi_repository import KPIRepository
 from db.session import get_db
@@ -55,8 +56,38 @@ router = APIRouter(tags=["analysis"])
 # ---------------------------------------------------------------------------
 
 
-def _has_computed_kpis(db: Session, entity_name: str) -> bool:
-    """Check whether ComputedKPI rows exist for *entity_name*."""
+def _should_skip_computation(
+    db: Session,
+    entity_name: str,
+    current_hash: str,
+) -> bool:
+    """Skip KPI computation only when ALL stored rows match the current
+    analytics version AND dataset hash.
+
+    Returns ``False`` (= must recompute) when:
+    - no rows exist at all (first run)
+    - any row has a different ``analytics_version`` (code changed)
+    - any row has a different ``dataset_hash`` (data changed)
+    - any row has NULL version/hash (pre-versioning legacy row)
+    """
+    repo = KPIRepository(db)
+    rows = repo.get_kpis_by_period(
+        period_start=datetime(1970, 1, 1, tzinfo=timezone.utc),
+        period_end=datetime.now(tz=timezone.utc),
+        entity_name=entity_name,
+    )
+    if not rows:
+        return False
+
+    return all(
+        r.analytics_version == ANALYTICS_VERSION
+        and r.dataset_hash == current_hash
+        for r in rows
+    )
+
+
+def _has_any_computed_kpis(db: Session, entity_name: str) -> bool:
+    """Simple existence check — used as a safety net before graph invocation."""
     repo = KPIRepository(db)
     rows = repo.get_kpis_by_period(
         period_start=datetime(1970, 1, 1, tzinfo=timezone.utc),
@@ -72,8 +103,12 @@ def _generate_monthly_windows(
 ) -> list[tuple[datetime, datetime]]:
     """Split a date range into calendar-month windows.
 
-    Each window is [first-of-month 00:00 UTC, first-of-next-month 00:00 UTC).
-    Partial edge months are included so no data is dropped.
+    Each window is half-open: [first-of-month 00:00 UTC, first-of-next-month 00:00 UTC).
+    The aggregation layer uses ``timestamp >= start AND timestamp < end`` so
+    boundary rows are never double-counted across adjacent windows.
+
+    The loop uses ``<=`` so that when ``period_end`` falls exactly on a month
+    boundary (e.g. June 1st), a dedicated window is still created for that month.
     """
     from dateutil.relativedelta import relativedelta
 
@@ -82,12 +117,10 @@ def _generate_monthly_windows(
         start = start.replace(tzinfo=timezone.utc)
 
     windows: list[tuple[datetime, datetime]] = []
-    while start < period_end:
+    while start <= period_end:
         end = start + relativedelta(months=1)
-        if end > period_end:
-            end = period_end
         windows.append((start, end))
-        start = start + relativedelta(months=1)
+        start = end
     return windows
 
 
@@ -103,14 +136,24 @@ def _ensure_analytics_data(
     dashboards, and derived signals receive a proper time-series of
     data points instead of a single collapsed aggregate.
     """
-    if _has_computed_kpis(db, entity_name):
-        return
-
     data_start, data_end = _resolve_kpi_period_from_entity_data(
         db=db,
         entity_name=entity_name,
         processing_strategy=processing_strategy,
     )
+
+    # Compute dataset hash once for the full period
+    cat_aliases = category_aliases_for_business_type(processing_strategy)
+    current_hash = compute_dataset_hash(
+        db, entity_name, cat_aliases, data_start, data_end,
+    )
+
+    if _should_skip_computation(db, entity_name, current_hash):
+        logger.info(
+            "Analyze: skipping KPI computation entity=%r — version=%d hash=%s matches",
+            entity_name, ANALYTICS_VERSION, current_hash[:12],
+        )
+        return
 
     # --- Monthly KPI computation ---
     monthly_windows = _generate_monthly_windows(data_start, data_end)
@@ -125,6 +168,7 @@ def _ensure_analytics_data(
                 period_start=win_start,
                 period_end=win_end,
                 db=db,
+                dataset_hash=current_hash,
             )
             all_results.append(kpi_result)
         except Exception:
@@ -355,6 +399,7 @@ def _is_benign_no_valid_records(ingest_summary: Any) -> bool:
 
 @router.post("/analyze", response_model=InsightOutput)
 def analyze(
+    response: Response,
     prompt: str = Form(..., description="Business prompt / user query"),
     file: Optional[UploadFile] = File(default=None, description="Optional CSV file"),
     client_id: Optional[str] = Form(default=None),
@@ -545,6 +590,9 @@ def analyze(
                 ),
             )
 
+        if response is not None:
+            response.headers["X-Resolved-Entity-Name"] = resolved_entity_name
+
         if dataset_uploaded and not analytics_strategy and not business_type:
             # Prefer category inference from ingestion (confidence-scored)
             if (
@@ -583,11 +631,16 @@ def analyze(
         # On first upload the computed_kpis table is empty for this entity;
         # the graph's KPI-fetch nodes only *query* — they don't compute.
         if resolved_entity_name and analytics_strategy:
+            if response is not None:
+                response.headers["X-Resolved-Business-Type"] = analytics_strategy
             _ensure_analytics_data(
                 entity_name=resolved_entity_name,
                 processing_strategy=analytics_strategy,
                 db=db,
             )
+
+        if response is not None and processing_strategy:
+            response.headers["X-Resolved-Business-Type"] = processing_strategy
 
         # Early guard: if we still have no business type, fail gracefully.
         if not processing_strategy:
@@ -601,7 +654,7 @@ def analyze(
         # The graph's risk_node calls normalize_signals() which raises
         # ValueError on empty KPI records — catching it here gives a
         # clearer message than the signal-normalizer stack trace.
-        if not _has_computed_kpis(db, resolved_entity_name):
+        if not _has_any_computed_kpis(db, resolved_entity_name):
             return InsightOutput.failure(
                 f"No KPI records found for entity '{resolved_entity_name}'. "
                 "Ensure the uploaded CSV contains valid metric data "

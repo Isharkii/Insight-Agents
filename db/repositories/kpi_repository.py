@@ -47,6 +47,8 @@ class KPIRepository:
         period_start: datetime,
         period_end: datetime,
         computed_kpis: dict[str, Any],
+        analytics_version: int | None = None,
+        dataset_hash: str | None = None,
     ) -> ComputedKPI:
         """
         Upsert a single KPI result row.
@@ -65,6 +67,10 @@ class KPIRepository:
         computed_kpis:
             Structured KPI payload, e.g.
             ``{"mrr": {"value": 1200.0, "unit": "currency"}, ...}``.
+        analytics_version:
+            Pipeline version that produced this result.
+        dataset_hash:
+            SHA-256 digest of the canonical input rows.
 
         Returns
         -------
@@ -79,12 +85,16 @@ class KPIRepository:
                 period_start=period_start,
                 period_end=period_end,
                 computed_kpis=computed_kpis,
+                analytics_version=analytics_version,
+                dataset_hash=dataset_hash,
             )
             .on_conflict_do_update(
                 constraint=_UPSERT_CONSTRAINT,
                 set_={
                     "computed_kpis": computed_kpis,
                     "created_at": _now_utc(),
+                    "analytics_version": analytics_version,
+                    "dataset_hash": dataset_hash,
                 },
             )
             .returning(ComputedKPI)
@@ -136,6 +146,8 @@ class KPIRepository:
                     "period_start": r["period_start"],
                     "period_end": r["period_end"],
                     "computed_kpis": r["computed_kpis"],
+                    "analytics_version": r.get("analytics_version"),
+                    "dataset_hash": r.get("dataset_hash"),
                 }
                 for r in chunk
             ]
@@ -147,6 +159,8 @@ class KPIRepository:
                     set_={
                         "computed_kpis": insert(ComputedKPI).excluded.computed_kpis,
                         "created_at": _now_utc(),
+                        "analytics_version": insert(ComputedKPI).excluded.analytics_version,
+                        "dataset_hash": insert(ComputedKPI).excluded.dataset_hash,
                     },
                 )
                 .returning(ComputedKPI.id)

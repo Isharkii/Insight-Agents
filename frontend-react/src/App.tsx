@@ -111,22 +111,32 @@ export default function App() {
     unknown
   > | null>(null);
   const [executionTime, setExecutionTime] = useState<number | undefined>();
+  const [resolvedContext, setResolvedContext] = useState<{
+    entityName?: string;
+    businessType?: string;
+  }>({});
 
   // UI state
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Derived
-  const resolvedEntity = useMemo(() => {
+  const requestedEntity = useMemo(() => {
     const override = sidebar.entityOverride.trim();
     if (override) return override;
     return sidebar.clientId !== "default" ? sidebar.clientId : "";
   }, [sidebar.entityOverride, sidebar.clientId]);
 
-  const resolvedBusinessType = useMemo(
+  const requestedBusinessType = useMemo(
     () => (sidebar.businessType === "auto" ? undefined : sidebar.businessType),
     [sidebar.businessType],
   );
+
+  const effectiveEntity =
+    resolvedContext.entityName?.trim() || requestedEntity || "";
+
+  const effectiveBusinessType =
+    resolvedContext.businessType?.trim() || requestedBusinessType;
 
   const derivedSignals = useMemo(
     () => extractDerivedSignals(reportPayload),
@@ -144,7 +154,7 @@ export default function App() {
       setError("Please enter a strategic business prompt.");
       return;
     }
-    if (!file && !resolvedEntity) {
+    if (!file && !requestedEntity) {
       setError("Entity / Client ID is required when no CSV is uploaded.");
       return;
     }
@@ -155,33 +165,40 @@ export default function App() {
     setDashboardData(null);
     setReportPayload(null);
     setKpiExportJson(null);
+    setResolvedContext({});
 
     const started = performance.now();
     try {
-      const result = await runAnalysis({
+      const run = await runAnalysis({
         prompt: prompt.trim(),
         file: file ?? undefined,
-        clientId: resolvedEntity || undefined,
-        businessType: resolvedBusinessType,
+        clientId: requestedEntity || undefined,
+        businessType: requestedBusinessType,
         multiEntityBehavior:
           sidebar.multiEntityBehavior === "auto"
             ? undefined
             : sidebar.multiEntityBehavior,
         model: sidebar.model,
       });
+      const result = run.result;
       setAnalyzeResult(result);
       setExecutionTime((performance.now() - started) / 1000);
 
       // Fetch dashboard + report + KPI export in parallel
-      const entity = resolvedEntity;
-      const btype = resolvedBusinessType || "saas";
+      const entity = (run.resolvedEntityName || requestedEntity || "").trim();
+      const btype = (run.resolvedBusinessType || requestedBusinessType || "saas").trim();
+
+      setResolvedContext({
+        entityName: entity || undefined,
+        businessType: btype || undefined,
+      });
 
       if (entity) {
         await Promise.all([
           fetchDashboard(entity, btype)
             .then(setDashboardData)
             .catch(() => {}),
-          fetchReportPayload(entity, prompt.trim(), resolvedBusinessType)
+          fetchReportPayload(entity, prompt.trim(), btype)
             .then(setReportPayload)
             .catch(() => {}),
           fetchExportJson("kpis", entity)
@@ -194,7 +211,14 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, [prompt, file, resolvedEntity, resolvedBusinessType, sidebar]);
+  }, [
+    prompt,
+    file,
+    requestedEntity,
+    requestedBusinessType,
+    sidebar.multiEntityBehavior,
+    sidebar.model,
+  ]);
 
   const handleClear = useCallback(() => {
     setAnalyzeResult(null);
@@ -203,6 +227,7 @@ export default function App() {
     setKpiExportJson(null);
     setError(null);
     setExecutionTime(undefined);
+    setResolvedContext({});
     setPrompt("");
     setFile(null);
   }, []);
@@ -373,7 +398,7 @@ export default function App() {
               kpiRows={kpiRows}
               derivedSignals={derivedSignals}
               executionTime={executionTime}
-              entityName={resolvedEntity || undefined}
+              entityName={effectiveEntity || undefined}
             />
           )}
 
@@ -381,9 +406,9 @@ export default function App() {
           {analyzeResult && !loading && (
             <ExportPanel
               result={analyzeResult}
-              entityName={resolvedEntity || undefined}
+              entityName={effectiveEntity || undefined}
               prompt={prompt.trim() || undefined}
-              businessType={resolvedBusinessType}
+              businessType={effectiveBusinessType}
             />
           )}
 

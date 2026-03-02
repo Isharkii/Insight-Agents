@@ -183,5 +183,5 @@ def _base_predicate(
         CanonicalInsightRecord.entity_name == entity_name,
         CanonicalInsightRecord.category.in_(categories),
         CanonicalInsightRecord.timestamp >= period_start,
-        CanonicalInsightRecord.timestamp <= period_end,
+        CanonicalInsightRecord.timestamp < period_end,
     )

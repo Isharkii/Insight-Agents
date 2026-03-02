@@ -89,12 +89,10 @@ def _generate_monthly_windows(
     if start.tzinfo is None:
         start = start.replace(tzinfo=timezone.utc)
     windows: list[tuple[datetime, datetime]] = []
-    while start < period_end:
+    while start <= period_end:
         end = start + relativedelta(months=1)
-        if end > period_end:
-            end = period_end
         windows.append((start, end))
-        start = start + relativedelta(months=1)
+        start = end
     return windows
 
 

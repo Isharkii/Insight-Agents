@@ -66,9 +66,14 @@ export async function fetchDashboard(
 // ─── Analysis ────────────────────────────────────────────────────────────────
 
 export interface DiagnosticsData {
-  missing_signals?: string[];
-  confidence_adjustments?: string[];
   warnings?: string[];
+  confidence_score?: number;
+  missing_signal?: string[];
+  confidence_adjustments?: {
+    signal: string;
+    delta: number;
+    reason: string;
+  }[];
   [key: string]: unknown;
 }
 
@@ -83,6 +88,12 @@ export interface AnalyzeResult {
   diagnostics: DiagnosticsData | null;
 }
 
+export interface AnalyzeRunResponse {
+  result: AnalyzeResult;
+  resolvedEntityName?: string;
+  resolvedBusinessType?: string;
+}
+
 export async function runAnalysis(params: {
   prompt: string;
   file?: File;
@@ -90,7 +101,7 @@ export async function runAnalysis(params: {
   businessType?: string;
   multiEntityBehavior?: string;
   model?: string;
-}): Promise<AnalyzeResult> {
+}): Promise<AnalyzeRunResponse> {
   const form = new FormData();
   form.append("prompt", params.prompt);
   if (params.file) form.append("file", params.file);
@@ -101,10 +112,32 @@ export async function runAnalysis(params: {
   if (params.model && params.model !== "default")
     form.append("model", params.model);
 
-  return request<AnalyzeResult>("/analyze", {
+  const res = await fetch(`${BASE}/analyze`, {
     method: "POST",
     body: form,
   });
+  if (!res.ok) {
+    let message = `HTTP ${res.status}`;
+    try {
+      const body: BackendError = await res.json();
+      message = extractErrorMessage(body);
+    } catch {
+      /* use status code fallback */
+    }
+    throw new Error(message);
+  }
+
+  const result = (await res.json()) as AnalyzeResult;
+  const resolvedEntityName =
+    res.headers.get("X-Resolved-Entity-Name")?.trim() || undefined;
+  const resolvedBusinessType =
+    res.headers.get("X-Resolved-Business-Type")?.trim() || undefined;
+
+  return {
+    result,
+    resolvedEntityName,
+    resolvedBusinessType,
+  };
 }
 
 // ─── Clients ─────────────────────────────────────────────────────────────────
