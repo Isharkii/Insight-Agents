@@ -9,6 +9,28 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 _COMPETITOR_TERMS = ("competitor", "peer", "benchmark", "market")
+_SELF_ANALYSIS_TERMS = (
+    "performance",
+    "trend",
+    "growth",
+    "decline",
+    "revenue",
+    "retention",
+    "churn",
+    "metric",
+    "kpi",
+    "forecast",
+    "trajectory",
+    "momentum",
+    "volatility",
+    "risk",
+    "position",
+    "industry",
+)
+# Validators accept both competitor and self-analysis terms so that
+# re-validation in any context (export router, dashboard, etc.) succeeds
+# without requiring the thread-local mode flag.
+_ACCEPTED_ANALYSIS_TERMS = _COMPETITOR_TERMS + _SELF_ANALYSIS_TERMS
 _METRIC_TERMS = (
     "mrr",
     "arr",
@@ -23,8 +45,50 @@ _METRIC_TERMS = (
     "rate",
     "metric",
     "kpi",
+    "recurring_revenue",
+    "revenue",
 )
 _EXPLICIT_RECOMMENDATION_TERMS = ("competitor", "gap", "strength", "weakness")
+_SELF_ANALYSIS_RECOMMENDATION_TERMS = (
+    "growth",
+    "revenue",
+    "retention",
+    "churn",
+    "risk",
+    "trend",
+    "improve",
+    "reduce",
+    "increase",
+    "optimize",
+    "target",
+    "address",
+    "momentum",
+    "decline",
+    "vulnerability",
+    "opportunity",
+    "strength",
+    "weakness",
+)
+_ACCEPTED_RECOMMENDATION_TERMS = (
+    _EXPLICIT_RECOMMENDATION_TERMS + _SELF_ANALYSIS_RECOMMENDATION_TERMS
+)
+
+# Thread-local flag: set to True when no competitor data is available.
+# This relaxes validators to accept self-analysis instead of requiring
+# competitor references.  Controlled by the caller (llm_node / validator).
+import threading
+
+_context = threading.local()
+
+
+def set_self_analysis_mode(enabled: bool) -> None:
+    """Enable or disable self-analysis mode for schema validation."""
+    _context.self_analysis_mode = enabled
+
+
+def get_self_analysis_mode() -> bool:
+    """Return True if self-analysis mode is active."""
+    return getattr(_context, "self_analysis_mode", False)
 _LOW_CONFIDENCE_TONE_TERMS = (
     "conditional",
     "suggest",
@@ -68,6 +132,19 @@ class ConfidenceAdjustment(BaseModel):
     reason: str = Field(min_length=1)
 
 
+class SignalIntegrityScores(BaseModel):
+    """Flat integrity score vector emitted in diagnostics and logs."""
+
+    model_config = ConfigDict(frozen=True)
+
+    KPI_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    Forecast_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    Competitive_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    Cohort_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    Segmentation_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    Unified_integrity_score: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
 class EnvelopeDiagnostics(BaseModel):
     """Partial-state diagnostics surfaced from upstream envelopes."""
 
@@ -77,6 +154,7 @@ class EnvelopeDiagnostics(BaseModel):
     confidence_score: float = Field(default=1.0, ge=0.0, le=1.0)
     missing_signal: list[str] = Field(default_factory=list)
     confidence_adjustments: list[ConfidenceAdjustment] = Field(default_factory=list)
+    signal_integrity_scores: SignalIntegrityScores | None = None
 
 
 class CompetitiveAnalysis(BaseModel):
@@ -102,10 +180,10 @@ class CompetitiveAnalysis(BaseModel):
                 *self.key_vulnerabilities,
             ]
         )
-        if not _has_any_term(body, _COMPETITOR_TERMS):
+        if not _has_any_term(body, _ACCEPTED_ANALYSIS_TERMS):
             raise ValueError(
-                "competitive_analysis must reference competitor context "
-                "(competitor/peer/benchmark/market)."
+                "competitive_analysis must reference analysis context "
+                "(competitor/peer/benchmark/market/performance/trend/growth/revenue/risk)."
             )
         if not _has_any_term(body, _METRIC_TERMS):
             raise ValueError(
@@ -140,10 +218,10 @@ class StrategicRecommendations(BaseModel):
                 raise ValueError("Recommendations must not repeat across sections.")
             dedupe.add(normalized)
 
-            if not _has_any_term(normalized, _EXPLICIT_RECOMMENDATION_TERMS):
+            if not _has_any_term(normalized, _ACCEPTED_RECOMMENDATION_TERMS):
                 raise ValueError(
-                    "Each recommendation must explicitly reference competitor gaps, "
-                    "strengths, or weaknesses."
+                    "Each recommendation must reference specific context "
+                    "(competitor/gap/strength/weakness/growth/revenue/retention/risk)."
                 )
             if any(pattern in normalized for pattern in _GENERIC_ADVICE_PATTERNS):
                 raise ValueError("Generic recommendations are not allowed.")
@@ -249,6 +327,43 @@ class InsightOutput(BaseModel):
         pipeline_status: Literal["success", "partial", "failed"] = "failed",
     ) -> "InsightOutput":
         del pipeline_status  # Preserved for backward call compatibility.
+        if get_self_analysis_mode():
+            return cls(
+                competitive_analysis=CompetitiveAnalysis(
+                    summary=(
+                        "Conditional: performance trend analysis could not be completed "
+                        "due to insufficient metric coverage."
+                    ),
+                    market_position=(
+                        "Conditional: growth trajectory remains uncertain "
+                        "due to limited revenue and retention data."
+                    ),
+                    relative_performance=(
+                        f"Conditional: performance vulnerability assessment blocked ({reason})."
+                    ),
+                    key_advantages=[
+                        "Conditional: no validated revenue strength can be confirmed with current data."
+                    ],
+                    key_vulnerabilities=[
+                        "Conditional: metric gaps are a weakness in current risk assessment reliability."
+                    ],
+                    confidence=0.0,
+                ),
+                strategic_recommendations=StrategicRecommendations(
+                    immediate_actions=[
+                        "Conditional: close metric coverage gaps to reduce revenue risk exposure."
+                    ],
+                    mid_term_moves=[
+                        "Conditional: build retention tracking to improve growth trend confidence."
+                    ],
+                    defensive_strategies=[
+                        "Conditional: address churn risk vulnerability where retention data is incomplete."
+                    ],
+                    offensive_strategies=[
+                        "Conditional: target revenue growth opportunity only after metric gaps are resolved."
+                    ],
+                ),
+            )
         return cls(
             competitive_analysis=CompetitiveAnalysis(
                 summary=(

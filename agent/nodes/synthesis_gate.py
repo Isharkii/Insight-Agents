@@ -14,9 +14,10 @@ from __future__ import annotations
 from typing import Any
 
 from agent.graph_config import graph_node_config_for_business_type, signal_name_for_state_key
-from agent.nodes.node_result import confidence_of, status_of
+from agent.nodes.node_result import status_of
+from agent.signal_integrity import UnifiedSignalIntegrity
 from agent.state import AgentState
-from llm_synthesis.schema import InsightOutput
+from llm_synthesis.schema import InsightOutput, set_self_analysis_mode
 
 # Minimum deterministic confidence to allow LLM synthesis.
 # Below this threshold the pipeline returns a structured failure.
@@ -38,19 +39,8 @@ def _collect_required_failures(state: AgentState) -> list[str]:
 
 def _compute_pre_synthesis_confidence(state: AgentState) -> float:
     """Compute deterministic confidence from signal envelopes before LLM runs."""
-    config = graph_node_config_for_business_type(
-        str(state.get("business_type") or ""),
-    )
-    total_delta = 0.0
-    for key in config.required:
-        value = state.get(key)
-        if value is None or status_of(value) in {"skipped", "failed"}:
-            total_delta += -0.35
-            continue
-        conf = confidence_of(value)
-        if 0.0 < conf < 1.0:
-            total_delta += conf - 1.0
-    return max(0.0, min(1.0, round(1.0 + total_delta, 6)))
+    integrity = UnifiedSignalIntegrity.compute(state)
+    return max(0.0, min(1.0, float(integrity.get("overall_score") or 0.0)))
 
 
 def should_block_synthesis(state: AgentState) -> bool:
@@ -71,38 +61,53 @@ def should_block_synthesis(state: AgentState) -> bool:
     return False
 
 
+def _has_competitor_data(state: AgentState) -> bool:
+    """Read the deterministic competitive context contract from state."""
+    ctx = state.get("competitive_context")
+    if not isinstance(ctx, dict):
+        return False
+    return bool(ctx.get("available", False))
+
+
 def build_blocked_response(state: AgentState) -> str:
     """Build a structured failure response when synthesis is blocked.
 
     Returns the serialized JSON string for ``state["final_response"]``.
+    Sets self-analysis mode so the fallback text matches the data context.
     """
-    failed_signals = _collect_required_failures(state)
-    pipeline_status = str(state.get("pipeline_status") or "failed").strip().lower()
-    pre_confidence = _compute_pre_synthesis_confidence(state)
+    has_competitors = _has_competitor_data(state)
+    set_self_analysis_mode(not has_competitors)
 
-    parts: list[str] = []
-    if failed_signals:
-        parts.append(
-            f"required signal(s) unavailable: {', '.join(failed_signals)}"
+    try:
+        failed_signals = _collect_required_failures(state)
+        pipeline_status = str(state.get("pipeline_status") or "failed").strip().lower()
+        pre_confidence = _compute_pre_synthesis_confidence(state)
+
+        parts: list[str] = []
+        if failed_signals:
+            parts.append(
+                f"required signal(s) unavailable: {', '.join(failed_signals)}"
+            )
+        if pre_confidence < MIN_CONFIDENCE_FOR_SYNTHESIS:
+            parts.append(
+                f"deterministic confidence too low ({pre_confidence:.2f} < "
+                f"{MIN_CONFIDENCE_FOR_SYNTHESIS})"
+            )
+        reason = (
+            f"Insight generation blocked: {'; '.join(parts)}. "
+            f"Pipeline status: {pipeline_status}. "
+            f"The system requires validated deterministic signals "
+            f"above the confidence threshold before LLM synthesis can execute."
         )
-    if pre_confidence < MIN_CONFIDENCE_FOR_SYNTHESIS:
-        parts.append(
-            f"deterministic confidence too low ({pre_confidence:.2f} < "
-            f"{MIN_CONFIDENCE_FOR_SYNTHESIS})"
+
+        failure = InsightOutput.failure(
+            reason=reason,
+            pipeline_status=pipeline_status if pipeline_status in ("success", "partial", "failed") else "failed",
         )
-    reason = (
-        f"Insight generation blocked: {'; '.join(parts)}. "
-        f"Pipeline status: {pipeline_status}. "
-        f"The system requires validated deterministic signals "
-        f"above the confidence threshold before LLM synthesis can execute."
-    )
 
-    failure = InsightOutput.failure(
-        reason=reason,
-        pipeline_status=pipeline_status if pipeline_status in ("success", "partial", "failed") else "failed",
-    )
-
-    return failure.model_dump_json()
+        return failure.model_dump_json()
+    finally:
+        set_self_analysis_mode(False)
 
 
 def synthesis_gate_node(state: AgentState) -> AgentState:
@@ -112,14 +117,29 @@ def synthesis_gate_node(state: AgentState) -> AgentState:
     sets ``synthesis_blocked = True`` so the conditional edge can route
     directly to END, skipping the LLM node entirely.
     """
+    integrity = UnifiedSignalIntegrity.compute(state)
+    integrity_scores = UnifiedSignalIntegrity.score_vector_from_integrity(integrity)
+
     if should_block_synthesis(state):
         return {
             **state,
             "synthesis_blocked": True,
             "final_response": build_blocked_response(state),
+            "signal_integrity": integrity,
+            "envelope_diagnostics": {
+                "warnings": [
+                    "Synthesis blocked by deterministic pre-checks.",
+                ],
+                "missing_signal": _collect_required_failures(state),
+                "confidence_adjustments": integrity.get("confidence_adjustments", []),
+                "confidence_score": float(integrity.get("overall_score") or 0.0),
+                "signal_integrity_scores": integrity_scores,
+                "signal_integrity": integrity,
+            },
         }
 
     return {
         **state,
         "synthesis_blocked": False,
+        "signal_integrity": integrity,
     }

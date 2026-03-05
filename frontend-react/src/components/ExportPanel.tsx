@@ -2,6 +2,7 @@ import { useState, useCallback, type FC } from "react";
 import type { AnalyzeResult } from "../api/client";
 import {
   fetchExportBlob,
+  fetchBIWorkbookBlob,
   fetchReportMarkdownBlob,
 } from "../api/client";
 
@@ -112,16 +113,17 @@ const ExportPanel: FC<ExportPanelProps> = ({
   }, [entityName]);
 
   const handlePbi = useCallback(async () => {
+    if (!entityName || !prompt) return;
     setLoadingPbi(true);
     try {
-      const blob = await fetchExportBlob("kpis", "csv", entityName);
-      downloadBlob(blob, "powerbi_dataset.csv");
+      const blob = await fetchBIWorkbookBlob(entityName, prompt, businessType);
+      downloadBlob(blob, `${entityName}_insight_workbook.xlsx`);
     } catch {
       /* ignore */
     } finally {
       setLoadingPbi(false);
     }
-  }, [entityName]);
+  }, [entityName, prompt, businessType]);
 
   const handleReport = useCallback(async () => {
     if (!entityName || !prompt) return;
@@ -158,9 +160,9 @@ const ExportPanel: FC<ExportPanelProps> = ({
           onClick={handleCsv}
         />
         <ExportBtn
-          label="PowerBI Dataset"
+          label="BI Workbook (.xlsx)"
           loading={loadingPbi}
-          disabled={!entityName}
+          disabled={!entityName || !prompt}
           onClick={handlePbi}
         />
         <ExportBtn

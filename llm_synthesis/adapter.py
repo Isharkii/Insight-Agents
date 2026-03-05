@@ -61,7 +61,7 @@ class OpenAILLMAdapter(BaseLLMAdapter):
             client_kwargs["base_url"] = base_url
 
         self._client = OpenAI(**client_kwargs)
-        self._model = model
+        self._model = str(model or "").strip() or "gpt-4o"
         self._max_tokens = max_tokens
 
     def generate(self, prompt: str) -> str:
@@ -86,9 +86,9 @@ class OpenAILLMAdapter(BaseLLMAdapter):
 
 
 # ---------------------------------------------------------------------------
-# Fixed mock response used for local testing.
+# Fixed mock responses used for local testing.
 # ---------------------------------------------------------------------------
-_MOCK_RESPONSE = {
+_MOCK_RESPONSE_COMPETITOR = {
     "competitive_analysis": {
         "summary": "Mock competitor benchmark summary based on provided peer metrics.",
         "market_position": "Mock market position indicates balanced peer standing.",
@@ -113,7 +113,33 @@ _MOCK_RESPONSE = {
     },
 }
 
-_MOCK_RESPONSE_JSON = json.dumps(_MOCK_RESPONSE, indent=2)
+_MOCK_RESPONSE_SELF_ANALYSIS = {
+    "competitive_analysis": {
+        "summary": "Mock performance trend analysis shows revenue growth momentum decelerating over the observed period.",
+        "market_position": "Mock trajectory indicates a risk of revenue plateau with declining growth rate metrics.",
+        "relative_performance": "Mock recurring revenue growth dropped while churn risk volatility increased.",
+        "key_advantages": ["Mock advantage: revenue base remains stable despite growth deceleration."],
+        "key_vulnerabilities": ["Mock vulnerability: declining growth momentum exposes retention risk."],
+        "confidence": 0.95,
+    },
+    "strategic_recommendations": {
+        "immediate_actions": [
+            "Address churn risk by targeting at-risk segments where retention metrics show the steepest decline."
+        ],
+        "mid_term_moves": [
+            "Build a revenue growth recovery plan to improve recurring revenue trajectory over the next two quarters."
+        ],
+        "defensive_strategies": [
+            "Reduce churn vulnerability by strengthening retention in segments showing the highest revenue decline."
+        ],
+        "offensive_strategies": [
+            "Target revenue growth opportunity in segments where recurring revenue momentum is still positive."
+        ],
+    },
+}
+
+_MOCK_RESPONSE_COMPETITOR_JSON = json.dumps(_MOCK_RESPONSE_COMPETITOR, indent=2)
+_MOCK_RESPONSE_SELF_ANALYSIS_JSON = json.dumps(_MOCK_RESPONSE_SELF_ANALYSIS, indent=2)
 
 
 class MockLLMAdapter(BaseLLMAdapter):
@@ -124,12 +150,17 @@ class MockLLMAdapter(BaseLLMAdapter):
     """
 
     def generate(self, prompt: str) -> str:
-        """Return a fixed JSON string regardless of input.
+        """Return a fixed JSON string matching the current analysis mode.
+
+        Detects self-analysis vs competitor mode from the prompt content
+        and returns the appropriate mock response.
 
         Args:
-            prompt: Ignored - present only to satisfy the interface.
+            prompt: The formatted prompt (inspected for mode detection).
 
         Returns:
             A valid JSON string that can be normalized into InsightOutput.
         """
-        return _MOCK_RESPONSE_JSON
+        if "No competitor or peer benchmark data" in prompt:
+            return _MOCK_RESPONSE_SELF_ANALYSIS_JSON
+        return _MOCK_RESPONSE_COMPETITOR_JSON

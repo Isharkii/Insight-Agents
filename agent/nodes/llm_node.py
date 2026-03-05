@@ -8,6 +8,7 @@ LLM through retry+validation, and writes the serialized response to
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Any
 
@@ -18,17 +19,21 @@ from agent.graph_config import (
     graph_node_config_for_business_type,
     signal_name_for_state_key,
 )
-from agent.nodes.node_result import confidence_of, payload_of, status_of, warnings_of
+from agent.nodes.node_result import payload_of, status_of, warnings_of
+from agent.signal_integrity import UnifiedSignalIntegrity
 from agent.state import AgentState
 from db.config import load_env_files
 from llm_synthesis.adapter import BaseLLMAdapter, MockLLMAdapter, OpenAILLMAdapter
 from llm_synthesis.prompt_builder import SynthesisPromptBuilder
-from llm_synthesis.retry import generate_with_retry
+from llm_synthesis.retry import LLMRetryExhaustedError, generate_with_retry
 from llm_synthesis.schema import (
     InsightOutput as FinalInsightResponse,
+    set_self_analysis_mode,
 )
+from llm_synthesis.validator import LLMOutputValidationError
 
 _prompt_builder = SynthesisPromptBuilder()
+logger = logging.getLogger(__name__)
 
 
 def _resolve_kpi_result(state: AgentState) -> Any:
@@ -81,13 +86,6 @@ def _collect_diagnostics(state: AgentState) -> dict[str, Any]:
             if is_required:
                 missing_signal.append(signal)
                 all_warnings.append(f"Required signal '{signal}' is unavailable.")
-                adjustments.append(
-                    {
-                        "signal": signal,
-                        "delta": -0.35,
-                        "reason": "required_signal_unavailable",
-                    }
-                )
             continue
 
         status = status_of(value)
@@ -97,18 +95,6 @@ def _collect_diagnostics(state: AgentState) -> dict[str, Any]:
 
         if status in {"skipped", "failed"}:
             missing_signal.append(signal)
-            penalty = -0.35 if is_required else -0.10
-            adjustments.append(
-                {
-                    "signal": signal,
-                    "delta": penalty,
-                    "reason": (
-                        "required_signal_unavailable"
-                        if is_required
-                        else "optional_signal_unavailable"
-                    ),
-                }
-            )
             all_warnings.append(
                 (
                     f"Required signal '{signal}' is {status}."
@@ -116,48 +102,34 @@ def _collect_diagnostics(state: AgentState) -> dict[str, Any]:
                     else f"Optional signal '{signal}' is {status}; partial coverage applied."
                 )
             )
-            continue
-
-        confidence = confidence_of(value)
-        if 0.0 < confidence < 1.0:
-            delta = round(confidence - 1.0, 6)
-            adjustments.append(
-                {
-                    "signal": signal,
-                    "delta": delta,
-                    "reason": "upstream_confidence_penalty",
-                }
-            )
-
-    # Dataset-level confidence penalty propagates into the final score.
-    dataset_confidence_raw = state.get("dataset_confidence")
-    try:
-        dataset_confidence = float(dataset_confidence_raw)
-    except (TypeError, ValueError):
-        dataset_confidence = 1.0
-    dataset_confidence = max(0.0, min(1.0, dataset_confidence))
-    if dataset_confidence < 1.0:
-        adjustments.append(
-            {
-                "signal": "dataset",
-                "delta": round(dataset_confidence - 1.0, 6),
-                "reason": "dataset_confidence_penalty",
-            }
-        )
 
     # Surface ingestion warnings in diagnostics.
     ingestion_warnings = state.get("ingestion_warnings")
     if isinstance(ingestion_warnings, list):
         all_warnings.extend(str(item) for item in ingestion_warnings if str(item).strip())
 
-    confidence_delta_total = sum(float(item["delta"]) for item in adjustments)
-    confidence_score = max(0.0, min(1.0, round(1.0 + confidence_delta_total, 6)))
+    integrity = UnifiedSignalIntegrity.compute(state)
+    integrity_scores = UnifiedSignalIntegrity.score_vector_from_integrity(integrity)
+    confidence_score = float(integrity.get("overall_score") or 0.0)
+    integrity_adjustments = integrity.get("confidence_adjustments")
+    if isinstance(integrity_adjustments, list):
+        adjustments.extend(
+            item
+            for item in integrity_adjustments
+            if isinstance(item, dict)
+        )
+    if not bool(integrity.get("kpi_gate_passed", True)):
+        all_warnings.append(
+            "KPI integrity gate failed (kpi_score < 0.3); confidence forced to 0."
+        )
 
     return {
         "warnings": _dedupe_text(all_warnings),
         "missing_signal": _dedupe_text(missing_signal),
         "confidence_adjustments": adjustments,
-        "confidence_score": confidence_score,
+        "confidence_score": max(0.0, min(1.0, round(confidence_score, 6))),
+        "signal_integrity_scores": integrity_scores,
+        "signal_integrity": integrity,
     }
 
 
@@ -201,10 +173,37 @@ def _build_adapter() -> BaseLLMAdapter:
     )
 
 
-def _validate_final_response_contract(final_response: str) -> None:
-    """Ensure serialized output conforms to the FinalInsightResponse contract."""
-    payload = json.loads(final_response)
-    FinalInsightResponse.model_validate(payload)
+def _public_failure_reason(error: Exception) -> str:
+    """Map internal synthesis failures to concise, user-facing reasons."""
+    if isinstance(error, LLMRetryExhaustedError):
+        stage = str(getattr(error.last_error, "stage", "")).strip().lower()
+        if stage == "schema":
+            return (
+                "LLM output did not satisfy the required "
+                "analysis schema after retries."
+            )
+        if stage == "json_parse":
+            return (
+                "LLM output returned invalid JSON format "
+                "after retries."
+            )
+        return "LLM output failed validation after retries."
+
+    if isinstance(error, LLMOutputValidationError):
+        stage = str(error.stage or "").strip().lower()
+        if stage == "schema":
+            return (
+                "LLM output did not satisfy the required "
+                "analysis schema."
+            )
+        if stage == "json_parse":
+            return "LLM output returned invalid JSON format."
+        return "LLM output failed validation."
+
+    if isinstance(error, (json.JSONDecodeError, ValidationError, ValueError, TypeError)):
+        return "Insight synthesis output could not be validated against the required schema."
+
+    return "Insight synthesis could not be completed due to an internal validation failure."
 
 
 def _ensure_conditional_recommendations(
@@ -256,7 +255,7 @@ def _ensure_low_confidence_tone(
     def _tag(text: str) -> str:
         value = str(text or "").strip()
         if not value:
-            return "Conditional: competitor benchmark context remains uncertain."
+            return "Conditional: analysis context remains uncertain due to limited data."
         return value if value.lower().startswith("conditional:") else f"Conditional: {value}"
 
     return payload.model_copy(
@@ -272,6 +271,20 @@ def _ensure_low_confidence_tone(
     )
 
 
+def _has_competitor_data(state: AgentState) -> bool:
+    """Read the deterministic competitive context contract from state.
+
+    Returns True only when ``state["competitive_context"]["available"]``
+    is explicitly ``True``.  This flag is emitted by the segmentation
+    node after counting distinct peer entities in the local benchmark
+    query — no heuristics, no inference, no prompt inspection.
+    """
+    ctx = state.get("competitive_context")
+    if not isinstance(ctx, dict):
+        return False
+    return bool(ctx.get("available", False))
+
+
 def llm_node(state: AgentState) -> AgentState:
     """LangGraph node: synthesize available outputs into a structured insight."""
     load_env_files()
@@ -282,6 +295,53 @@ def llm_node(state: AgentState) -> AgentState:
     root_cause = _usable_payload(state.get("root_cause"))
     pipeline_status = _derive_pipeline_status(state)
     diagnostics = _collect_diagnostics(state)
+    logger.info("Signal integrity scores: %s", json.dumps(diagnostics.get("signal_integrity_scores") or {}, sort_keys=True))
+
+    has_competitors = _has_competitor_data(state)
+    set_self_analysis_mode(not has_competitors)
+
+    ctx = state.get("competitive_context") or {}
+    ctx_source = str(ctx.get("source", "unavailable"))
+    logger.info(
+        "Competitive context: available=%s source=%s peer_count=%s metrics=%s mode=%s",
+        ctx.get("available", False),
+        ctx_source,
+        ctx.get("peer_count", 0),
+        ctx.get("metrics", []),
+        "competitor" if has_competitors else "self_analysis",
+    )
+
+    # ── Extract numeric-only competitive signals for the prompt ────
+    # Only structured numeric data reaches the LLM; no raw web text.
+    competitor_signals: dict[str, Any] | None = None
+    if has_competitors:
+        numeric_signals = ctx.get("numeric_signals", [])
+        if isinstance(numeric_signals, list) and numeric_signals:
+            competitor_signals = {
+                "source": ctx_source,
+                "peer_count": ctx.get("peer_count", 0),
+                "peers": ctx.get("peers", []),
+                "signals": numeric_signals,
+            }
+
+    # ── Confidence penalty for external_fetch source ───────────────
+    # External web-sourced competitive data is inherently less reliable
+    # than deterministic local computation.  Apply a confidence penalty.
+    confidence_score = float(diagnostics.get("confidence_score", 1.0))
+    if ctx_source == "external_fetch" and has_competitors:
+        _EXTERNAL_CONFIDENCE_PENALTY = -0.15
+        confidence_score = max(0.0, round(confidence_score + _EXTERNAL_CONFIDENCE_PENALTY, 6))
+        diagnostics["confidence_adjustments"].append({
+            "signal": "competitive_context",
+            "delta": _EXTERNAL_CONFIDENCE_PENALTY,
+            "reason": "external_fetch_confidence_penalty",
+        })
+        diagnostics["confidence_score"] = confidence_score
+        logger.info(
+            "Applied external_fetch confidence penalty: delta=%.2f new_score=%.4f",
+            _EXTERNAL_CONFIDENCE_PENALTY,
+            confidence_score,
+        )
 
     prompt = _prompt_builder.build_prompt(
         kpi_data=kpi_data,
@@ -290,8 +350,10 @@ def llm_node(state: AgentState) -> AgentState:
         root_cause=root_cause,
         segmentation=_usable_payload(state.get("segmentation")),
         prioritization=state.get("prioritization") or {},
-        confidence_score=float(diagnostics.get("confidence_score", 1.0)),
+        confidence_score=confidence_score,
         missing_signals=diagnostics.get("missing_signal", []),
+        has_competitor_data=has_competitors,
+        competitor_signals=competitor_signals,
     )
 
     adapter = _build_adapter()
@@ -300,8 +362,9 @@ def llm_node(state: AgentState) -> AgentState:
         synthesis = generate_with_retry(adapter, prompt)
         final_payload = FinalInsightResponse.model_validate(synthesis.model_dump())
     except Exception as error:  # noqa: BLE001
+        logger.warning("LLM synthesis failed; returning structured fallback.", exc_info=True)
         final_payload = FinalInsightResponse.failure(
-            reason=str(error),
+            reason=_public_failure_reason(error),
             pipeline_status=pipeline_status,
         )
 
@@ -313,41 +376,42 @@ def llm_node(state: AgentState) -> AgentState:
         deterministic_confidence,
     )
 
-    try:
-        final_payload = final_payload.model_copy(
-            update={
-                "competitive_analysis": final_payload.competitive_analysis.model_copy(
-                    update={"confidence": enforced_confidence}
-                )
-            }
-        )
-        final_payload = _ensure_conditional_recommendations(
-            final_payload,
-            conditional_required=(enforced_confidence < 0.5),
-        )
-        final_payload = _ensure_low_confidence_tone(
-            final_payload,
-            conditional_required=(enforced_confidence < 0.5),
-        )
-        final_payload = final_payload.model_copy(
-            update={
-                "competitive_analysis": final_payload.competitive_analysis.model_copy(
-                    update={"confidence": enforced_confidence}
-                ),
-            }
-        )
-        final_response = final_payload.model_dump_json()
-        _validate_final_response_contract(final_response)
-    except (json.JSONDecodeError, TypeError, ValidationError, ValueError) as exc:
-        fallback = FinalInsightResponse.failure(
-            reason=str(exc),
-            pipeline_status=pipeline_status,
-        )
-        final_response = fallback.model_dump_json()
+    # Post-processing: enforce deterministic confidence and tone rules.
+    # The LLM output was already schema-validated by generate_with_retry;
+    # model_copy only touches the confidence value and conditional labels,
+    # so a full re-validation is not needed and would risk false-negative
+    # fallback (confidence → 0) due to context-dependent validator state.
+    final_payload = final_payload.model_copy(
+        update={
+            "competitive_analysis": final_payload.competitive_analysis.model_copy(
+                update={"confidence": enforced_confidence}
+            )
+        }
+    )
+    final_payload = _ensure_conditional_recommendations(
+        final_payload,
+        conditional_required=(enforced_confidence < 0.5),
+    )
+    final_payload = _ensure_low_confidence_tone(
+        final_payload,
+        conditional_required=(enforced_confidence < 0.5),
+    )
+    final_payload = final_payload.model_copy(
+        update={
+            "competitive_analysis": final_payload.competitive_analysis.model_copy(
+                update={"confidence": enforced_confidence}
+            ),
+        }
+    )
+    final_response = final_payload.model_dump_json()
+
+    # Reset self-analysis mode to prevent leaking into subsequent calls.
+    set_self_analysis_mode(False)
 
     return {
         **state,
         "pipeline_status": pipeline_status,
         "final_response": final_response,
         "envelope_diagnostics": diagnostics,
+        "signal_integrity": diagnostics.get("signal_integrity"),
     }

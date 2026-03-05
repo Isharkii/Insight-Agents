@@ -7,7 +7,17 @@
 
 import type { DashboardData } from "../components/IntelligenceDashboard/types";
 
-const BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+const RAW_BASE = import.meta.env.VITE_API_BASE_URL;
+const BASE =
+  typeof RAW_BASE === "string" && RAW_BASE.trim()
+    ? RAW_BASE.trim().replace(/\/+$/, "")
+    : "";
+
+function buildUrl(path: string): string {
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  if (!BASE) return normalizedPath;
+  return `${BASE}${normalizedPath}`;
+}
 
 interface BackendError {
   detail:
@@ -21,7 +31,7 @@ function extractErrorMessage(body: BackendError): string {
 }
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${url}`, init);
+  const res = await fetch(buildUrl(url), init);
   if (!res.ok) {
     let message = `HTTP ${res.status}`;
     try {
@@ -36,7 +46,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 async function requestBlob(url: string): Promise<Blob> {
-  const res = await fetch(`${BASE}${url}`);
+  const res = await fetch(buildUrl(url));
   if (!res.ok) {
     let message = `HTTP ${res.status}`;
     try {
@@ -88,10 +98,92 @@ export interface AnalyzeResult {
   diagnostics: DiagnosticsData | null;
 }
 
+export interface StructuredInsightOutput {
+  competitive_analysis: {
+    summary: string;
+    market_position: string;
+    relative_performance: string;
+    key_advantages: string[];
+    key_vulnerabilities: string[];
+    confidence: number;
+  };
+  strategic_recommendations: {
+    immediate_actions: string[];
+    mid_term_moves: string[];
+    defensive_strategies: string[];
+    offensive_strategies: string[];
+  };
+}
+
 export interface AnalyzeRunResponse {
   result: AnalyzeResult;
   resolvedEntityName?: string;
   resolvedBusinessType?: string;
+}
+
+function coerceNumber(value: unknown, fallback: number): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return fallback;
+}
+
+function derivePriority(confidence: number): string {
+  if (confidence >= 0.8) return "high";
+  if (confidence >= 0.6) return "medium";
+  if (confidence >= 0.4) return "low";
+  return "critical";
+}
+
+function derivePipelineStatus(confidence: number): string {
+  if (confidence <= 0) return "failed";
+  if (confidence < 0.8) return "partial";
+  return "success";
+}
+
+function asStructuredInsight(value: unknown): StructuredInsightOutput | null {
+  if (!value || typeof value !== "object") return null;
+  const payload = value as Record<string, unknown>;
+  const competitive = payload.competitive_analysis;
+  const strategic = payload.strategic_recommendations;
+  if (!competitive || typeof competitive !== "object") return null;
+  if (!strategic || typeof strategic !== "object") return null;
+  return value as StructuredInsightOutput;
+}
+
+export function normalizeAnalyzeResult(value: unknown): AnalyzeResult {
+  const structured = asStructuredInsight(value);
+  if (structured) {
+    const confidence = coerceNumber(
+      structured.competitive_analysis?.confidence,
+      0,
+    );
+    const firstImmediate =
+      structured.strategic_recommendations?.immediate_actions?.[0] ?? "";
+    return {
+      insight: structured.competitive_analysis?.summary ?? "",
+      evidence: structured.competitive_analysis?.relative_performance ?? "",
+      impact: structured.competitive_analysis?.market_position ?? "",
+      recommended_action: firstImmediate,
+      priority: derivePriority(confidence),
+      confidence_score: confidence,
+      pipeline_status: derivePipelineStatus(confidence),
+      diagnostics: null,
+    };
+  }
+
+  const payload = (value || {}) as Record<string, unknown>;
+  return {
+    insight: String(payload.insight ?? ""),
+    evidence: String(payload.evidence ?? ""),
+    impact: String(payload.impact ?? ""),
+    recommended_action: String(payload.recommended_action ?? ""),
+    priority: String(payload.priority ?? "low"),
+    confidence_score: coerceNumber(payload.confidence_score, 0),
+    pipeline_status: String(payload.pipeline_status ?? "partial"),
+    diagnostics:
+      payload.diagnostics && typeof payload.diagnostics === "object"
+        ? (payload.diagnostics as DiagnosticsData)
+        : null,
+  };
 }
 
 // —— Business Intelligence ———————————————————————————————————————————————————————
@@ -198,7 +290,7 @@ export async function runAnalysis(params: {
   if (params.model && params.model !== "default")
     form.append("model", params.model);
 
-  const res = await fetch(`${BASE}/analyze`, {
+  const res = await fetch(buildUrl("/analyze"), {
     method: "POST",
     body: form,
   });
@@ -213,7 +305,8 @@ export async function runAnalysis(params: {
     throw new Error(message);
   }
 
-  const result = (await res.json()) as AnalyzeResult;
+  const raw = (await res.json()) as unknown;
+  const result = normalizeAnalyzeResult(raw);
   const resolvedEntityName =
     res.headers.get("X-Resolved-Entity-Name")?.trim() || undefined;
   const resolvedBusinessType =
@@ -311,6 +404,19 @@ export async function fetchReportMarkdownBlob(
   });
   if (businessType) params.set("business_type", businessType);
   return requestBlob(`/export/report?${params}`);
+}
+
+export async function fetchBIWorkbookBlob(
+  entityName: string,
+  prompt: string,
+  businessType?: string,
+): Promise<Blob> {
+  const params = new URLSearchParams({
+    entity_name: entityName,
+    prompt,
+  });
+  if (businessType) params.set("business_type", businessType);
+  return requestBlob(`/export/bi-workbook?${params}`);
 }
 
 // ─── Health ──────────────────────────────────────────────────────────────────

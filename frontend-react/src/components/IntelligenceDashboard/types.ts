@@ -49,6 +49,7 @@ export interface DashboardData {
   market_share: ProjectedTimeSeriesPoint[];
   classification: ClassificationData;
   insights: StructuredInsight[];
+  competitive_benchmark?: Record<string, unknown> | null;
   insight_cards?: InsightCardData[];
   pipeline_errors?: string[];
 }

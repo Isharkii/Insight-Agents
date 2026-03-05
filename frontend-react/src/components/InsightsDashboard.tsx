@@ -42,6 +42,57 @@ interface ReportDerivedSignals {
       >;
     };
   };
+  competitive_benchmark?: {
+    status?: string;
+    reason?: string;
+    peer_selection?: {
+      peer_candidates?: string[];
+      selected_peers?: string[];
+    };
+    ranking?: {
+      overall_rank?: number;
+      total_participants?: number;
+      overall_percentile?: number;
+      tier?: string;
+      peer_scores?: Record<string, number>;
+      skipped_metrics?: Record<string, string>;
+      metric_ranks?: Record<
+        string,
+        {
+          rank?: number;
+          percentile?: number;
+          client_value?: number;
+          field_mean?: number;
+          field_median?: number;
+        }
+      >;
+    };
+    composite?: {
+      overall_score?: number;
+      base_overall_score?: number;
+      growth_score?: number;
+      level_score?: number;
+      stability_score?: number;
+      confidence_score?: number;
+      competitive_metrics?: {
+        relative_growth_index?: number | null;
+        market_share_proxy?: number | null;
+        stability_score?: number;
+        momentum_classification?: string;
+        risk_divergence_score?: number | null;
+      };
+    };
+    metric_comparison_specs?: Record<
+      string,
+      {
+        direction?: string;
+        unit?: string;
+        scale?: string;
+        aggregation?: string;
+        window_alignment?: string;
+      }
+    >;
+  };
 }
 
 interface InsightsDashboardProps {
@@ -416,6 +467,13 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
   const biStrategy = biData?.strategy ?? null;
   const biPipeline = biData?.pipeline ?? [];
   const biWarnings = biData?.warnings ?? [];
+  const benchmark = derivedSignals.competitive_benchmark;
+  const benchmarkRanking = benchmark?.ranking;
+  const benchmarkComposite = benchmark?.composite;
+  const benchmarkMetrics = benchmarkComposite?.competitive_metrics;
+  const benchmarkReason = benchmark?.reason
+    ? benchmark.reason.replace(/_/g, " ")
+    : "";
 
   return (
     <div ref={ref} className="space-y-6">
@@ -688,6 +746,173 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
               <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-3">
                 <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-1">Long-Term Positioning</p>
                 <p className="text-sm text-gray-700 dark:text-gray-200">{biStrategy.long_term_positioning}</p>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {benchmark && (
+        <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6 space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-sm font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+              Competitive Benchmark Engine
+            </h3>
+            <div className="flex items-center gap-2 text-xs">
+              <span className={`px-2.5 py-1 rounded-full font-semibold capitalize ${benchmark?.status === "success" ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300" : "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"}`}>
+                {benchmark?.status || "partial"}
+              </span>
+              {benchmarkRanking?.tier && (
+                <span className="px-2.5 py-1 rounded-full font-semibold bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
+                  {benchmarkRanking.tier}
+                </span>
+              )}
+            </div>
+          </div>
+          {benchmarkReason && (
+            <p className="text-xs text-amber-700 dark:text-amber-300">
+              {benchmarkReason}
+            </p>
+          )}
+
+          <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-3">
+              <p className="text-xs text-gray-400 uppercase tracking-wider">Overall</p>
+              <p className="text-xl font-bold tabular-nums text-gray-900 dark:text-gray-100">
+                {benchmarkComposite?.overall_score?.toFixed?.(2) ?? "N/A"}
+              </p>
+            </div>
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-3">
+              <p className="text-xs text-gray-400 uppercase tracking-wider">Growth</p>
+              <p className="text-xl font-bold tabular-nums text-gray-900 dark:text-gray-100">
+                {benchmarkComposite?.growth_score?.toFixed?.(2) ?? "N/A"}
+              </p>
+            </div>
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-3">
+              <p className="text-xs text-gray-400 uppercase tracking-wider">Level</p>
+              <p className="text-xl font-bold tabular-nums text-gray-900 dark:text-gray-100">
+                {benchmarkComposite?.level_score?.toFixed?.(2) ?? "N/A"}
+              </p>
+            </div>
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-3">
+              <p className="text-xs text-gray-400 uppercase tracking-wider">Stability</p>
+              <p className="text-xl font-bold tabular-nums text-gray-900 dark:text-gray-100">
+                {benchmarkComposite?.stability_score?.toFixed?.(2) ?? "N/A"}
+              </p>
+            </div>
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-3">
+              <p className="text-xs text-gray-400 uppercase tracking-wider">Confidence</p>
+              <p className="text-xl font-bold tabular-nums text-gray-900 dark:text-gray-100">
+                {benchmarkComposite?.confidence_score?.toFixed?.(2) ?? "N/A"}
+              </p>
+            </div>
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-3">
+              <p className="text-xs text-gray-400 uppercase tracking-wider">Rank</p>
+              <p className="text-xl font-bold tabular-nums text-gray-900 dark:text-gray-100">
+                {benchmarkRanking?.overall_rank ?? "N/A"}
+                {benchmarkRanking?.total_participants ? `/${benchmarkRanking.total_participants}` : ""}
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">
+                Competitive Metrics
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
+                <p className="text-gray-700 dark:text-gray-200">
+                  Relative Growth Index: <span className="font-semibold">{benchmarkMetrics?.relative_growth_index ?? "N/A"}</span>
+                </p>
+                <p className="text-gray-700 dark:text-gray-200">
+                  Market Share Proxy: <span className="font-semibold">{benchmarkMetrics?.market_share_proxy ?? "N/A"}</span>
+                </p>
+                <p className="text-gray-700 dark:text-gray-200">
+                  Stability Score: <span className="font-semibold">{benchmarkMetrics?.stability_score ?? "N/A"}</span>
+                </p>
+                <p className="text-gray-700 dark:text-gray-200">
+                  Momentum: <span className="font-semibold">{benchmarkMetrics?.momentum_classification ?? "N/A"}</span>
+                </p>
+                <p className="text-gray-700 dark:text-gray-200">
+                  Risk Divergence: <span className="font-semibold">{benchmarkMetrics?.risk_divergence_score ?? "N/A"}</span>
+                </p>
+                <p className="text-gray-700 dark:text-gray-200">
+                  Percentile: <span className="font-semibold">{benchmarkRanking?.overall_percentile ?? "N/A"}</span>
+                </p>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">
+                Peer Sourcing
+              </p>
+              <p className="text-sm text-gray-700 dark:text-gray-200">
+                Candidate peers: {benchmark?.peer_selection?.peer_candidates?.length ?? 0}
+              </p>
+              <p className="text-sm text-gray-700 dark:text-gray-200">
+                Selected peers: {benchmark?.peer_selection?.selected_peers?.length ?? 0}
+              </p>
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+                Same category + aligned trailing window, client excluded.
+              </p>
+              {(benchmark?.peer_selection?.selected_peers?.length ?? 0) > 0 && (
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-2 line-clamp-3">
+                  {benchmark?.peer_selection?.selected_peers?.join(", ")}
+                </p>
+              )}
+            </div>
+          </div>
+
+          {benchmarkRanking?.metric_ranks && Object.keys(benchmarkRanking.metric_ranks).length > 0 && (
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-3">
+                Metric Ranking Breakdown
+              </p>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                {Object.entries(benchmarkRanking.metric_ranks).map(([metric, rank]) => (
+                  <div key={metric} className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                    <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">{metric}</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      Rank {rank.rank ?? "N/A"} | Percentile {rank.percentile ?? "N/A"}
+                    </p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      Value {rank.client_value ?? "N/A"} | Mean {rank.field_mean ?? "N/A"}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {benchmark?.metric_comparison_specs && Object.keys(benchmark.metric_comparison_specs).length > 0 && (
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-3">
+                Metric Comparison Specs
+              </p>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                {Object.entries(benchmark.metric_comparison_specs).map(([metric, spec]) => (
+                  <div key={metric} className="rounded-lg border border-gray-200 dark:border-gray-700 p-3 text-xs">
+                    <p className="font-semibold text-sm text-gray-900 dark:text-gray-100 mb-1">{metric}</p>
+                    <p className="text-gray-600 dark:text-gray-300">Direction: {spec.direction || "N/A"}</p>
+                    <p className="text-gray-600 dark:text-gray-300">Unit: {spec.unit || "N/A"}</p>
+                    <p className="text-gray-600 dark:text-gray-300">Scale: {spec.scale || "N/A"}</p>
+                    <p className="text-gray-600 dark:text-gray-300">Aggregation: {spec.aggregation || "N/A"}</p>
+                    <p className="text-gray-600 dark:text-gray-300">Window: {spec.window_alignment || "N/A"}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {benchmarkRanking?.skipped_metrics && Object.keys(benchmarkRanking.skipped_metrics).length > 0 && (
+            <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/10 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-300 mb-2">
+                Skipped Metrics (Validation)
+              </p>
+              <div className="space-y-1 text-xs text-amber-800 dark:text-amber-200">
+                {Object.entries(benchmarkRanking.skipped_metrics).map(([metric, reason]) => (
+                  <p key={metric}>{metric}: {reason}</p>
+                ))}
               </div>
             </div>
           )}

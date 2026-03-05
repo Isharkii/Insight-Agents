@@ -41,11 +41,13 @@ from sqlalchemy.orm import Session
 from agent.graph import insight_graph
 from agent.nodes.node_result import payload_of
 from app.failure_codes import INTERNAL_FAILURE, SCHEMA_CONFLICT, build_error_detail
+from app.services.competitive_benchmark_service import build_competitive_benchmark_snapshot
 from app.services.bi_export_service import (
     BIExportService,
     ExportResult,
     get_bi_export_service,
 )
+from app.services.bi_workbook_export import generate_bi_workbook
 from app.services.category_registry import get_processing_strategy
 from llm_synthesis.schema import InsightOutput
 from db.session import get_db
@@ -240,6 +242,7 @@ def export_report(
         alias="format",
         description='Output format: "json" or "md".',
     ),
+    db: Session = Depends(get_db),
 ) -> JSONResponse | PlainTextResponse:
     if output_format not in {"json", "md"}:
         raise HTTPException(
@@ -268,6 +271,11 @@ def export_report(
         strategic = insight_payload.strategic_recommendations
         immediate = strategic.immediate_actions[0] if strategic.immediate_actions else ""
         pipeline_status = str(state.get("pipeline_status") or insight_payload.pipeline_status)
+        benchmark_snapshot = build_competitive_benchmark_snapshot(
+            db=db,
+            entity_name=entity_name,
+            business_type=resolved,
+        )
         report_payload: dict[str, Any] = {
             "entity_name": entity_name,
             "business_type": resolved,
@@ -289,6 +297,7 @@ def export_report(
                 "role_contribution": payload_of(state.get("segmentation")) or {},
                 "risk": payload_of(state.get("risk_data")) or {},
                 "prioritization": state.get("prioritization") or {},
+                "competitive_benchmark": benchmark_snapshot,
             },
         }
 
@@ -306,6 +315,60 @@ def export_report(
             detail=build_error_detail(
                 code=INTERNAL_FAILURE,
                 message=f"Report export failed: {exc}",
+            ),
+        ) from exc
+
+
+@router.get("/export/bi-workbook", summary="Export interactive BI workbook (.xlsx)", response_model=None)
+def export_bi_workbook(
+    entity_name: str = Query(..., description="Entity/client identifier."),
+    business_type: str | None = Query(
+        default=None,
+        description="Optional business type/category override.",
+    ),
+    prompt: str = Query(
+        default="Generate deterministic insight report.",
+        description="Prompt used for synthesis.",
+    ),
+    db: Session = Depends(get_db),
+) -> StreamingResponse:
+    """Export a multi-sheet Excel workbook with charts, KPI trends, risk
+    scores, forecasts, and strategic insights.  Openable in Power BI,
+    Excel, or any tool that supports .xlsx."""
+    try:
+        resolved = get_processing_strategy(business_type) or "general_timeseries"
+        state = insight_graph.invoke(
+            {
+                "user_query": prompt,
+                "business_type": resolved,
+                "entity_name": entity_name,
+            }
+        )
+
+        workbook_bytes = generate_bi_workbook(
+            db,
+            entity_name=entity_name,
+            business_type=resolved,
+            graph_state=state,
+        )
+
+        filename = f"{entity_name}_insight_workbook.xlsx"
+        return StreamingResponse(
+            content=io.BytesIO(workbook_bytes),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("BI workbook export failed entity=%r", entity_name)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=build_error_detail(
+                code=INTERNAL_FAILURE,
+                message=f"Workbook export failed: {exc}",
             ),
         ) from exc
 

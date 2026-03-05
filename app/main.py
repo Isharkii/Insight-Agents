@@ -18,6 +18,39 @@ from llm_synthesis.schema import FinalInsightResponse
 _REACT_DIST = Path(__file__).resolve().parent.parent / "frontend-react" / "dist"
 
 
+def _default_cors_origins() -> list[str]:
+    return [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:8501",
+        "http://127.0.0.1:8501",
+    ]
+
+
+def _resolve_cors_origins() -> list[str]:
+    """
+    Resolve CORS origins from env plus defaults.
+
+    CORS_ALLOW_ORIGINS format:
+        "http://localhost:3000,http://127.0.0.1:3000"
+    """
+    configured = [
+        origin.strip()
+        for origin in os.getenv("CORS_ALLOW_ORIGINS", "").split(",")
+        if origin.strip()
+    ]
+    if not configured:
+        return _default_cors_origins()
+
+    deduped: list[str] = []
+    for origin in [*configured, *_default_cors_origins()]:
+        if origin not in deduped:
+            deduped.append(origin)
+    return deduped
+
+
 def _validate_env() -> None:
     """
     Validate all required environment variables at startup.
@@ -184,14 +217,12 @@ def create_app() -> FastAPI:
     )
     register_exception_handlers(application)
 
+    cors_origins = _resolve_cors_origins()
+    logging.getLogger(__name__).info("Configured CORS origins: %s", cors_origins)
+
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=[
-            "http://localhost:3000",
-            "http://127.0.0.1:3000",
-            "http://localhost:8501",
-            "http://127.0.0.1:8501",
-        ],
+        allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

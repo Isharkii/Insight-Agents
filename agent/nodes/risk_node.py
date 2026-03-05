@@ -18,10 +18,10 @@ from agent.nodes.node_result import (
     warnings_of, confidence_of,
 )
 from agent.signal_normalizer import (
-    check_kpi_readiness,
     normalize_forecast_signals,
     normalize_kpi_signals,
 )
+from agent.signal_integrity import UnifiedSignalIntegrity
 from db.session import SessionLocal
 from risk.orchestrator import RiskOrchestrator
 
@@ -470,7 +470,6 @@ def risk_node(state: AgentState) -> AgentState:
         }
 
         risk_warnings: list[str] = []
-        confidence_candidates: list[float] = []
 
         if upstream_warnings or (0.0 < upstream_confidence < 1.0):
             risk_warnings.extend(
@@ -479,8 +478,6 @@ def risk_node(state: AgentState) -> AgentState:
                     *upstream_warnings,
                 ]
             )
-            if upstream_confidence > 0.0:
-                confidence_candidates.append(upstream_confidence)
 
         if cohort_signals_used and cohort_snapshot.get("status") == "partial":
             cohort_conf = float(cohort_snapshot.get("confidence_score") or 0.5)
@@ -490,7 +487,6 @@ def risk_node(state: AgentState) -> AgentState:
                     *cohort_snapshot.get("warnings", []),
                 ]
             )
-            confidence_candidates.append(cohort_conf)
 
         if growth_signals_used and growth_snapshot.get("status") == "partial":
             growth_conf = float(growth_snapshot.get("confidence_score") or 0.5)
@@ -500,7 +496,6 @@ def risk_node(state: AgentState) -> AgentState:
                     *growth_snapshot.get("warnings", []),
                 ]
             )
-            confidence_candidates.append(growth_conf)
 
         if scenario_signals_used and scenario_snapshot.get("status") == "partial":
             scenario_conf = float(scenario_snapshot.get("confidence_score") or 0.5)
@@ -510,16 +505,14 @@ def risk_node(state: AgentState) -> AgentState:
                     *scenario_snapshot.get("warnings", []),
                 ]
             )
-            confidence_candidates.append(scenario_conf)
-
-        if risk_warnings:
-            risk_data = success(
-                risk_payload,
-                warnings=risk_warnings,
-                confidence_score=min(confidence_candidates or [0.8]),
-            )
-        else:
-            risk_data = success(risk_payload)
+        integrity = UnifiedSignalIntegrity.compute(state)
+        integrity_score = max(0.0, min(1.0, float(integrity.get("overall_score") or 0.0)))
+        risk_payload["signal_integrity"] = integrity
+        risk_data = success(
+            risk_payload,
+            warnings=risk_warnings,
+            confidence_score=integrity_score,
+        )
 
     except Exception as exc:  # noqa: BLE001
         risk_data = failed(str(exc), {"entity_name": entity_name})

@@ -11,6 +11,7 @@ import {
   fetchDashboard,
   runAnalysis,
   runBusinessIntelligence,
+  normalizeAnalyzeResult,
   fetchReportPayload,
   fetchExportJson,
   type AnalyzeResult,
@@ -41,6 +42,57 @@ interface ReportDerivedSignals {
         { projected_value?: number; projected_growth?: number }
       >;
     };
+  };
+  competitive_benchmark?: {
+    status?: string;
+    reason?: string;
+    peer_selection?: {
+      peer_candidates?: string[];
+      selected_peers?: string[];
+    };
+    ranking?: {
+      overall_rank?: number;
+      total_participants?: number;
+      overall_percentile?: number;
+      tier?: string;
+      peer_scores?: Record<string, number>;
+      skipped_metrics?: Record<string, string>;
+      metric_ranks?: Record<
+        string,
+        {
+          rank?: number;
+          percentile?: number;
+          client_value?: number;
+          field_mean?: number;
+          field_median?: number;
+        }
+      >;
+    };
+    composite?: {
+      overall_score?: number;
+      base_overall_score?: number;
+      growth_score?: number;
+      level_score?: number;
+      stability_score?: number;
+      confidence_score?: number;
+      competitive_metrics?: {
+        relative_growth_index?: number | null;
+        market_share_proxy?: number | null;
+        stability_score?: number;
+        momentum_classification?: string;
+        risk_divergence_score?: number | null;
+      };
+    };
+    metric_comparison_specs?: Record<
+      string,
+      {
+        direction?: string;
+        unit?: string;
+        scale?: string;
+        aggregation?: string;
+        window_alignment?: string;
+      }
+    >;
   };
 }
 
@@ -145,8 +197,8 @@ export default function App() {
 
   const reportInsight = useMemo(() => {
     const payload = reportPayload?.insight_payload;
-    if (payload && typeof payload === "object") {
-      return payload as AnalyzeResult;
+    if (payload) {
+      return normalizeAnalyzeResult(payload);
     }
     return null;
   }, [reportPayload]);

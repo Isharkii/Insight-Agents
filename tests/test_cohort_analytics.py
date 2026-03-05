@@ -239,7 +239,11 @@ def test_risk_node_success_with_warnings_when_cohort_signals_partial(monkeypatch
     updated = risk_node(state)
     risk_data = updated["risk_data"]
     assert status_of(risk_data) == "success"
-    assert abs(float(risk_data["confidence_score"]) - 0.40) < 1e-9
+    assert abs(
+        float(risk_data["confidence_score"])
+        - float(risk_data["payload"]["signal_integrity"]["overall_score"])
+    ) < 1e-9
+    assert float(risk_data["confidence_score"]) < 1.0
     assert any("partial cohort signals" in warning for warning in risk_data["warnings"])
 
 

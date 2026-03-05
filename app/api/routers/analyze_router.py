@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from agent.graph import insight_graph
 from agent.nodes.intent import intent_node
+from agent.signal_integrity import UnifiedSignalIntegrity
 from app.failure_codes import (
     INGESTION_VALIDATION,
     INTERNAL_FAILURE,
@@ -420,8 +421,9 @@ def analyze(
     6. Guard against empty KPI data
     7. Return structured InsightOutput
     """
-    if model and model != "default":
-        os.environ["LLM_MODEL"] = model
+    model_name = str(model or "").strip()
+    if model_name and model_name != "default":
+        os.environ["LLM_MODEL"] = model_name
 
     try:
         # Step 1: Resolve business_type only (entity_name is never inferred from prompt).
@@ -683,6 +685,11 @@ def analyze(
             invoke_state["ingestion_provenance"] = ingestion_provenance
 
         state = insight_graph.invoke(invoke_state)
+        integrity_payload = state.get("signal_integrity")
+        if not isinstance(integrity_payload, dict):
+            integrity_payload = UnifiedSignalIntegrity.compute(state)
+        integrity_scores = UnifiedSignalIntegrity.score_vector_from_integrity(integrity_payload)
+        logger.info("Analyze signal integrity: %s", json.dumps(integrity_scores, sort_keys=True))
 
         # Step 6: Guard — empty KPI records (post-graph safety net)
         if not _has_kpi_data(state):

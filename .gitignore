@@ -37,6 +37,13 @@ config.local.json
 *.token
 
 # =========================
+# 📦 NODE / FRONTEND
+# =========================
+node_modules/
+frontend-react/node_modules/
+frontend-react/dist/
+
+# =========================
 # 📊 JUPYTER NOTEBOOKS
 # =========================
 .ipynb_checkpoints/

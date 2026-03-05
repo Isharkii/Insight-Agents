@@ -26,6 +26,7 @@ from app.services.category_registry import (
     get_processing_strategy,
     primary_metric_for_business_type,
 )
+from app.services.competitive_benchmark_service import build_competitive_benchmark_snapshot
 from db.repositories.kpi_repository import KPIRepository
 from db.session import get_db
 from forecast.repository import ForecastRepository
@@ -312,6 +313,17 @@ def get_dashboard(
         confidence_value = 0.85
     confidence_value = max(0.0, min(1.0, confidence_value))
     classification = _build_classification(processing_strategy, confidence_value)
+    competitive_benchmark: dict[str, Any] | None = None
+    if kpi_rows:
+        try:
+            competitive_benchmark = build_competitive_benchmark_snapshot(
+                db=db,
+                entity_name=entity_name,
+                business_type=processing_strategy,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Dashboard competitive benchmark failed: %s", exc)
+            pipeline_errors.append(f"Competitive benchmark: {exc}")
 
     return {
         "entity_name": entity_name,
@@ -323,6 +335,7 @@ def get_dashboard(
         "market_share": market_share,
         "classification": classification,
         "insights": insights,
+        "competitive_benchmark": competitive_benchmark,
         "pipeline_errors": pipeline_errors if pipeline_errors else None,
     }
 

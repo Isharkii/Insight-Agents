@@ -30,6 +30,7 @@ from agent.graph_config import (
 )
 from agent.nodes.agency_kpi_node import agency_kpi_fetch_node
 from agent.nodes.business_router import business_router_node, route_by_business_type
+from agent.nodes.competitor_node import competitor_node
 from agent.nodes.ecommerce_kpi_node import ecommerce_kpi_fetch_node
 from agent.nodes.forecast_node import forecast_fetch_node
 from agent.nodes.intent import intent_node
@@ -1067,16 +1068,29 @@ def role_analytics_node(state: AgentState) -> AgentState:
                 period_end=period_end,
             )
 
+        _no_competitive_context: dict[str, Any] = {
+            "available": False,
+            "source": "unavailable",
+            "peer_count": 0,
+            "peers": [],
+            "metrics": [],
+            "benchmark_rows_count": 0,
+            "numeric_signals": [],
+            "cache_hit": False,
+            "generated_at": datetime.now(tz=timezone.utc).isoformat(),
+            "warnings": [],
+        }
+
         if not canonical_rows:
             canonical_rows = _rows_from_kpi_payload(records)
         if not canonical_rows:
             role_analytics_data = skipped("dimension_values_missing", {"records": len(records)})
-            return {**state, "segmentation": role_analytics_data}
+            return {**state, "segmentation": role_analytics_data, "competitive_context": _no_competitive_context}
 
         summary = build_role_dimension_summary(canonical_rows, top_n=3)
         if not summary.get("records_used"):
             role_analytics_data = skipped("dimension_values_missing", {"records": len(canonical_rows)})
-            return {**state, "segmentation": role_analytics_data}
+            return {**state, "segmentation": role_analytics_data, "competitive_context": _no_competitive_context}
 
         inflation_rows: list[dict[str, Any]] = []
         benchmark_rows: list[dict[str, Any]] = []
@@ -1091,6 +1105,32 @@ def role_analytics_node(state: AgentState) -> AgentState:
             except Exception:
                 inflation_rows = []
                 benchmark_rows = []
+
+        # ── Deterministic competitive context contract ──────────────
+        peer_entities: set[str] = set()
+        benchmark_metrics: set[str] = set()
+        for row in benchmark_rows:
+            ename = str(row.get("entity_name") or "").strip()
+            mname = str(row.get("metric_name") or "").strip()
+            if ename:
+                peer_entities.add(ename)
+            if mname:
+                benchmark_metrics.add(mname)
+
+        _has_peers = len(peer_entities) > 0
+        competitive_context: dict[str, Any] = {
+            "available": _has_peers,
+            "source": "deterministic_local" if _has_peers else "unavailable",
+            "peer_count": len(peer_entities),
+            "peers": sorted(peer_entities),
+            "metrics": sorted(benchmark_metrics),
+            "benchmark_rows_count": len(benchmark_rows),
+            "numeric_signals": [],
+            "cache_hit": False,
+            "generated_at": datetime.now(tz=timezone.utc).isoformat(),
+            "warnings": [],
+        }
+        # ────────────────────────────────────────────────────────────
 
         aliases = metric_aliases_for_business_type(business_type)
         revenue_candidates = aliases.get("recurring_revenue", ("recurring_revenue",))
@@ -1223,11 +1263,30 @@ def role_analytics_node(state: AgentState) -> AgentState:
             warnings=node_warnings,
             confidence_score=min(confidence_inputs),
         )
-        return {**state, "segmentation": role_analytics_data}
+        return {
+            **state,
+            "segmentation": role_analytics_data,
+            "competitive_context": competitive_context,
+        }
 
     except Exception as exc:  # noqa: BLE001
         role_analytics_data = failed(str(exc), {"stage": "role_analytics_node"})
-        return {**state, "segmentation": role_analytics_data}
+        return {
+            **state,
+            "segmentation": role_analytics_data,
+            "competitive_context": {
+                "available": False,
+                "source": "unavailable",
+                "peer_count": 0,
+                "peers": [],
+                "metrics": [],
+                "benchmark_rows_count": 0,
+                "numeric_signals": [],
+                "cache_hit": False,
+                "generated_at": datetime.now(tz=timezone.utc).isoformat(),
+                "warnings": [f"segmentation_failed: {exc}"],
+            },
+        }
 
 
 def build_graph():
@@ -1251,6 +1310,7 @@ def build_graph():
     graph.add_node("prioritization", prioritization_node)
     graph.add_node("pipeline_status", pipeline_status_node)
     graph.add_node("synthesis_gate", synthesis_gate_node)
+    graph.add_node("competitor_intelligence", competitor_node)
     graph.add_node("llm", llm_node)
 
     graph.add_edge(START, "intent")
@@ -1284,13 +1344,14 @@ def build_graph():
     def _route_after_gate(state: AgentState) -> str:
         if state.get("synthesis_blocked"):
             return "end"
-        return "llm"
+        return "competitor_intelligence"
 
     graph.add_conditional_edges(
         "synthesis_gate",
         _route_after_gate,
-        {"llm": "llm", "end": END},
+        {"competitor_intelligence": "competitor_intelligence", "end": END},
     )
+    graph.add_edge("competitor_intelligence", "llm")
     graph.add_edge("llm", END)
 
     return graph.compile()
