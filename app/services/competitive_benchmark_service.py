@@ -72,6 +72,34 @@ def build_competitive_benchmark_snapshot(
     period_start = now - timedelta(days=max(30, int(window_days)))
     period_end = now
 
+    repo = KPIRepository(db)
+
+    # First, try the default window.  If the entity has no KPIs in that
+    # range (data may be older than window_days), widen to the full
+    # available history so the benchmark engine can still operate.
+    all_rows = repo.get_kpis_by_period(
+        period_start=period_start,
+        period_end=period_end,
+        entity_name=None,
+    )
+    latest_rows = _latest_rows_by_entity(all_rows)
+    client_latest = latest_rows.get(resolved_entity)
+
+    if client_latest is None:
+        # Widen to full history — the entity's KPIs may predate the window.
+        wide_start = datetime(1970, 1, 1, tzinfo=timezone.utc)
+        all_rows = repo.get_kpis_by_period(
+            period_start=wide_start,
+            period_end=period_end,
+            entity_name=None,
+        )
+        latest_rows = _latest_rows_by_entity(all_rows)
+        client_latest = latest_rows.get(resolved_entity)
+        if client_latest is not None:
+            # Adjust period_start to cover the actual data range so peer
+            # sourcing and window metadata reflect reality.
+            period_start = wide_start
+
     category_aliases = tuple(category_aliases_for_business_type(business_type))
     peer_entities = _source_peer_entities(
         db=db,
@@ -80,15 +108,6 @@ def build_competitive_benchmark_snapshot(
         period_start=period_start,
         period_end=period_end,
     )
-
-    repo = KPIRepository(db)
-    all_rows = repo.get_kpis_by_period(
-        period_start=period_start,
-        period_end=period_end,
-        entity_name=None,
-    )
-    latest_rows = _latest_rows_by_entity(all_rows)
-    client_latest = latest_rows.get(resolved_entity)
     if client_latest is None:
         return {
             "status": "partial",
