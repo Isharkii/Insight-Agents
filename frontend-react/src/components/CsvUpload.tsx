@@ -93,11 +93,18 @@ const CsvUpload: FC<CsvUploadProps> = ({ file, onFileChange }) => {
 
   return (
     <div className="space-y-4">
-      <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
-        Historical Data Upload
-      </h3>
+      <div className="flex items-end justify-between gap-3">
+        <div>
+          <p className="ia-label">Historical CSV Upload</p>
+          <p className="ia-subtitle mt-1">Drop or browse a file to analyze retained metrics.</p>
+        </div>
+        {file && (
+          <span className="ia-chip">
+            {(file.size / 1024).toFixed(1)} KB
+          </span>
+        )}
+      </div>
 
-      {/* Drop zone */}
       <div
         onDragOver={(e) => {
           e.preventDefault();
@@ -106,12 +113,12 @@ const CsvUpload: FC<CsvUploadProps> = ({ file, onFileChange }) => {
         onDragLeave={() => setDragging(false)}
         onDrop={handleDrop}
         onClick={() => inputRef.current?.click()}
-        className={`relative border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-colors ${
+        className={`relative cursor-pointer rounded-2xl border-2 border-dashed p-8 text-center transition-colors ${
           dragging
-            ? "border-blue-500 bg-blue-50 dark:bg-blue-900/10"
+            ? "border-teal-600 bg-teal-50"
             : file
-              ? "border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/10"
-              : "border-gray-300 dark:border-gray-700 hover:border-gray-400 dark:hover:border-gray-600"
+              ? "border-teal-300 bg-teal-50/70"
+              : "border-slate-300 bg-white/60 hover:border-slate-400"
         }`}
       >
         <input
@@ -121,10 +128,11 @@ const CsvUpload: FC<CsvUploadProps> = ({ file, onFileChange }) => {
           className="hidden"
           onChange={(e) => handleFile(e.target.files?.[0] ?? null)}
         />
+
         {file ? (
-          <div className="flex items-center justify-center gap-3">
+          <div className="flex flex-wrap items-center justify-center gap-3">
             <svg
-              className="w-6 h-6 text-emerald-500"
+              className="h-6 w-6 text-teal-600"
               fill="none"
               viewBox="0 0 24 24"
               stroke="currentColor"
@@ -137,22 +145,19 @@ const CsvUpload: FC<CsvUploadProps> = ({ file, onFileChange }) => {
               />
             </svg>
             <div className="text-left">
-              <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                {file.name}
-              </p>
-              <p className="text-xs text-gray-500 dark:text-gray-400">
-                {(file.size / 1024).toFixed(1)} KB
-              </p>
+              <p className="text-sm font-semibold text-slate-800">{file.name}</p>
+              <p className="text-xs text-slate-500">Click to replace this file</p>
             </div>
             <button
               onClick={(e) => {
                 e.stopPropagation();
                 handleFile(null);
               }}
-              className="ml-4 text-gray-400 hover:text-red-500 transition-colors"
+              className="rounded-md p-1 text-slate-400 transition-colors hover:bg-white hover:text-red-500"
+              aria-label="Remove file"
             >
               <svg
-                className="w-5 h-5"
+                className="h-5 w-5"
                 fill="none"
                 viewBox="0 0 24 24"
                 stroke="currentColor"
@@ -169,7 +174,7 @@ const CsvUpload: FC<CsvUploadProps> = ({ file, onFileChange }) => {
         ) : (
           <div>
             <svg
-              className="mx-auto h-10 w-10 text-gray-400"
+              className="mx-auto h-10 w-10 text-slate-400"
               fill="none"
               viewBox="0 0 24 24"
               stroke="currentColor"
@@ -181,21 +186,15 @@ const CsvUpload: FC<CsvUploadProps> = ({ file, onFileChange }) => {
                 d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"
               />
             </svg>
-            <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
-              Drop a CSV file here or click to browse
-            </p>
+            <p className="mt-2 text-sm text-slate-600">Drop a CSV file here or click to browse</p>
           </div>
         )}
       </div>
 
-      {/* Preview */}
       {preview && preview.headers.length > 0 && (
-        <div className="space-y-3">
-          {/* Row slider */}
+        <div className="space-y-3 rounded-2xl border border-slate-300/70 bg-white/70 p-4">
           <div className="flex items-center gap-3">
-            <label className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">
-              Preview rows
-            </label>
+            <label className="ia-label whitespace-nowrap">Preview Rows</label>
             <input
               type="range"
               min={5}
@@ -203,56 +202,44 @@ const CsvUpload: FC<CsvUploadProps> = ({ file, onFileChange }) => {
               step={5}
               value={previewRows}
               onChange={(e) => handleRowSlider(Number(e.target.value))}
-              className="flex-1 accent-blue-600"
+              className="flex-1 accent-teal-700"
             />
-            <span className="text-xs text-gray-500 dark:text-gray-400 w-8 text-right">
-              {previewRows}
-            </span>
+            <span className="text-xs font-semibold text-slate-600">{previewRows}</span>
           </div>
 
-          {/* Column list */}
           <div className="flex flex-wrap gap-1.5">
             {preview.headers.map((col) => (
               <span
                 key={col}
-                className="inline-block px-2 py-0.5 text-xs rounded-full bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700"
+                className="rounded-full border border-slate-300 bg-slate-50 px-2 py-0.5 text-xs text-slate-600"
               >
                 {col}
               </span>
             ))}
           </div>
 
-          {/* Table */}
-          <div className="border border-gray-200 dark:border-gray-700 rounded-xl overflow-hidden">
-            <div className="overflow-x-auto max-h-80">
+          <div className="overflow-hidden rounded-xl border border-slate-300/70 bg-white">
+            <div className="max-h-80 overflow-x-auto">
               <table className="min-w-full text-xs">
-                <thead className="bg-gray-50 dark:bg-gray-800 sticky top-0">
+                <thead className="sticky top-0 bg-slate-100">
                   <tr>
-                    <th className="px-3 py-2 text-left font-medium text-gray-500 dark:text-gray-400 w-10">
-                      #
-                    </th>
+                    <th className="w-10 px-3 py-2 text-left font-semibold text-slate-500">#</th>
                     {preview.headers.map((h) => (
                       <th
                         key={h}
-                        className="px-3 py-2 text-left font-medium text-gray-500 dark:text-gray-400 whitespace-nowrap"
+                        className="whitespace-nowrap px-3 py-2 text-left font-semibold text-slate-500"
                       >
                         {h}
                       </th>
                     ))}
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+                <tbody className="divide-y divide-slate-100">
                   {preview.rows.map((row, i) => (
-                    <tr
-                      key={i}
-                      className="hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors"
-                    >
-                      <td className="px-3 py-1.5 text-gray-400">{i + 1}</td>
+                    <tr key={i} className="transition-colors hover:bg-slate-50">
+                      <td className="px-3 py-1.5 text-slate-400">{i + 1}</td>
                       {row.map((cell, j) => (
-                        <td
-                          key={j}
-                          className="px-3 py-1.5 text-gray-700 dark:text-gray-300 whitespace-nowrap"
-                        >
+                        <td key={j} className="whitespace-nowrap px-3 py-1.5 text-slate-700">
                           {cell}
                         </td>
                       ))}
@@ -261,7 +248,7 @@ const CsvUpload: FC<CsvUploadProps> = ({ file, onFileChange }) => {
                 </tbody>
               </table>
             </div>
-            <div className="px-3 py-1.5 bg-gray-50 dark:bg-gray-800 text-xs text-gray-500 dark:text-gray-400 border-t border-gray-200 dark:border-gray-700">
+            <div className="border-t border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-500">
               Showing {preview.rows.length} of {preview.totalRows} rows
             </div>
           </div>

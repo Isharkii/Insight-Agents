@@ -1,7 +1,7 @@
 """
 forecast/orchestrator.py
 
-Coordinates the forecast pipeline: regression → classification → persist.
+Coordinates the forecast pipeline: robust forecast → classification → persist.
 Contains no forecasting math or classification logic.
 """
 
@@ -13,8 +13,8 @@ from typing import Any, List
 from sqlalchemy.orm import Session
 
 from forecast.classifier import TrendClassifier
-from forecast.regression import LinearRegressionForecast
 from forecast.repository import ForecastRepository
+from forecast.robust_forecast import RobustForecast
 
 
 class ForecastOrchestrator:
@@ -23,9 +23,9 @@ class ForecastOrchestrator:
 
     Each call to :meth:`generate_forecast` executes in order:
 
-    1. Fit a linear regression model on *values*.
-    2. Derive the average value of the series.
-    3. Classify the slope into a trend label.
+    1. Run the robust tiered forecast model on *values*.
+    2. Extract trend label from the model output (or classify via slope).
+    3. Compute churn acceleration from the 3-month projection.
     4. Assemble the canonical output dictionary.
     5. Persist the result via :class:`ForecastRepository`.
 
@@ -41,7 +41,7 @@ class ForecastOrchestrator:
 
     def __init__(self, session: Session) -> None:
         self._session = session
-        self._model = LinearRegressionForecast()
+        self._model = RobustForecast()
         self._classifier = TrendClassifier()
 
     # ------------------------------------------------------------------
@@ -49,7 +49,7 @@ class ForecastOrchestrator:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _compute_churn_acceleration(regression_result: dict[str, Any]) -> float | None:
+    def _compute_churn_acceleration(forecast_result: dict[str, Any]) -> float | None:
         """
         Compute churn acceleration from three-step forecast values.
 
@@ -58,11 +58,11 @@ class ForecastOrchestrator:
 
         Returns None when slope is unavailable.
         """
-        slope = regression_result.get("slope")
+        slope = forecast_result.get("slope")
         if slope is None:
             return None
 
-        forecast = regression_result.get("forecast")
+        forecast = forecast_result.get("forecast")
         if not isinstance(forecast, dict):
             return 0.0
 
@@ -85,6 +85,8 @@ class ForecastOrchestrator:
             "slope": None,
             "deviation_percentage": None,
             "churn_acceleration": None,
+            "confidence_score": 0.0,
+            "tier": "insufficient",
             "error": message,
         }
 
@@ -105,7 +107,6 @@ class ForecastOrchestrator:
             KPI identifier (e.g. ``"monthly_revenue"``).
         values:
             Monthly KPI values in chronological order, oldest first.
-            Must contain at least 2 points for a meaningful result.
 
         Returns
         -------
@@ -114,50 +115,76 @@ class ForecastOrchestrator:
 
                 {
                     "metric_name":          str,
-                    "slope":                float,
+                    "status":               "ok",
+                    "forecast_available":   True,
+                    "tier":                 str,
+                    "confidence_score":     float,
+                    "slope":                float | None,
                     "trend":                str,
-                    "forecast":             {"month_1": float, "month_2": float, "month_3": float},
-                    "deviation_percentage": float,
-                    "churn_acceleration":   float,
+                    "forecast":             {"month_1": float, …},
+                    "deviation_percentage": float | None,
+                    "churn_acceleration":   float | None,
+                    "data_quality":         dict,
+                    "regression":           dict | None,
+                    "warnings":             list[str],
                 }
 
             On insufficient data::
 
                 {
                     "metric_name":          str,
+                    "status":               "insufficient_data",
+                    "forecast_available":   False,
                     "slope":                None,
-                    "deviation_percentage": None,
-                    "churn_acceleration":   None,
+                    "confidence_score":     0.0,
+                    "tier":                 "insufficient",
                     "error":                str,
                 }
         """
-        regression_result = self._model.forecast(values)
-        churn_acceleration = self._compute_churn_acceleration(regression_result)
+        forecast_result = self._model.forecast(values)
+        churn_acceleration = self._compute_churn_acceleration(forecast_result)
 
         # Propagate insufficient-data signal without saving.
-        if regression_result.get("slope") is None:
+        if forecast_result.get("status") == "insufficient_data":
+            reason = ""
+            diagnostics = forecast_result.get("diagnostics")
+            if isinstance(diagnostics, dict):
+                reason = diagnostics.get("reason", "")
             return self._insufficient_data_result(
                 metric_name=metric_name,
-                message=regression_result.get("error", "Insufficient data."),
+                message=reason or "Insufficient data.",
             )
 
-        average_value: float = sum(values) / len(values)
-        slope: float = regression_result["slope"]
+        # Use trend from the robust model if available, else classify via slope
+        trend_info = forecast_result.get("trend") or {}
+        trend_label = trend_info.get("label") if isinstance(trend_info, dict) else None
 
-        trend: str = self._classifier.classify(
-            slope=slope,
-            average_value=average_value,
-        )
+        if not trend_label or trend_label == "inconclusive":
+            slope = forecast_result.get("slope")
+            if slope is not None:
+                average_value = sum(values) / len(values) if values else 0.0
+                trend_label = self._classifier.classify(
+                    slope=slope,
+                    average_value=average_value,
+                )
+            else:
+                trend_label = "inconclusive"
 
-        result: dict = {
+        result: dict[str, Any] = {
             "metric_name": metric_name,
             "status": "ok",
             "forecast_available": True,
-            "slope": slope,
-            "trend": trend,
-            "forecast": regression_result["forecast"],
-            "deviation_percentage": regression_result["deviation_percentage"],
+            "tier": forecast_result.get("tier", "unknown"),
+            "confidence_score": forecast_result.get("confidence_score", 0.0),
+            "slope": forecast_result.get("slope"),
+            "trend": trend_label,
+            "forecast": forecast_result.get("forecast", {}),
+            "deviation_percentage": forecast_result.get("deviation_percentage"),
             "churn_acceleration": churn_acceleration,
+            "data_quality": forecast_result.get("data_quality", {}),
+            "regression": forecast_result.get("regression"),
+            "input_points": forecast_result.get("input_points", len(values)),
+            "warnings": forecast_result.get("warnings", []),
         }
 
         repo = ForecastRepository(self._session)

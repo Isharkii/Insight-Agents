@@ -23,6 +23,11 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.failure_codes import INTERNAL_FAILURE, SCHEMA_CONFLICT, build_error_detail
+from app.security.dependencies import (
+    assert_entity_allowed_for_tenant,
+    require_security_context,
+)
+from app.security.models import SecurityContext
 from app.services.category_registry import primary_metric_for_business_type
 from app.services.kpi_orchestrator import (
     KPIOrchestrator,
@@ -122,6 +127,7 @@ class KPIRecomputeResponse(BaseModel):
 def recompute_kpis(
     body: KPIRecomputeRequest,
     db: Session = Depends(get_db),
+    security: SecurityContext = Depends(require_security_context),
 ) -> KPIRecomputeResponse:
     """
     Trigger the full analytics pipeline for one entity.
@@ -135,6 +141,7 @@ def recompute_kpis(
     Raises HTTP 400 for an unrecognised ``business_type``.
     Raises HTTP 500 for unrecoverable aggregation or persistence failures.
     """
+    assert_entity_allowed_for_tenant(entity_name=body.entity_name, security=security)
     now = datetime.now(tz=timezone.utc)
     period_start = now - timedelta(days=90)
     monthly_windows = _generate_monthly_windows(period_start, now)

@@ -58,6 +58,7 @@ class MultivariateConfig:
     min_abs_correlation: float = _as_float(_MULTI_DEFAULTS.get("min_abs_correlation"), 0.25)
     max_metrics: int = _as_int(_MULTI_DEFAULTS.get("max_metrics"), 8)
     zero_guard: float = _as_float(_MULTI_DEFAULTS.get("zero_guard"), 1e-9)
+    correlation_method: str = str(_MULTI_DEFAULTS.get("correlation_method") or "spearman")
 
 
 def compute_multivariate_context(
@@ -80,8 +81,11 @@ def compute_multivariate_context(
             "confidence_score": 0.4,
             "warnings": ["Need at least two metrics for multivariate analysis."],
             "correlation": {
+                "method": "spearman",
                 "matrix": {},
                 "filtered_matrix": {},
+                "pearson_matrix": {},
+                "spearman_matrix": {},
                 "pairs": [],
                 "significance_alpha": cfg.significance_alpha,
                 "min_abs_correlation": cfg.min_abs_correlation,
@@ -98,8 +102,11 @@ def compute_multivariate_context(
     pair_details: list[dict[str, Any]] = []
     matrix: dict[str, dict[str, float | None]] = {name: {} for name in selected_metrics}
     filtered: dict[str, dict[str, float | None]] = {name: {} for name in selected_metrics}
+    pearson_matrix: dict[str, dict[str, float | None]] = {name: {} for name in selected_metrics}
+    spearman_matrix: dict[str, dict[str, float | None]] = {name: {} for name in selected_metrics}
     insufficient_pairs = 0
     significant_pairs = 0
+    method = "spearman" if str(cfg.correlation_method).strip().lower() != "pearson" else "pearson"
 
     for i, m1 in enumerate(selected_metrics):
         for j, m2 in enumerate(selected_metrics):
@@ -108,35 +115,50 @@ def compute_multivariate_context(
             if m1 == m2:
                 matrix[m1][m2] = 1.0
                 filtered[m1][m2] = 1.0
+                pearson_matrix[m1][m2] = 1.0
+                spearman_matrix[m1][m2] = 1.0
                 continue
-            r, n = _pearson_tail(metric_series.get(m1, ()), metric_series.get(m2, ()))
-            p_value = _p_value_from_correlation(r, n) if r is not None else None
+            pearson_r, n = _pearson_tail(metric_series.get(m1, ()), metric_series.get(m2, ()))
+            spearman_r, spearman_n = _spearman_tail(metric_series.get(m1, ()), metric_series.get(m2, ()))
+            active_r = spearman_r if method == "spearman" else pearson_r
+            active_n = spearman_n if method == "spearman" else n
+            p_value = _p_value_from_correlation(active_r, active_n) if active_r is not None else None
             significant = (
-                r is not None
-                and n >= cfg.min_shared_points
-                and abs(r) >= cfg.min_abs_correlation
+                active_r is not None
+                and active_n >= cfg.min_shared_points
+                and abs(active_r) >= cfg.min_abs_correlation
                 and p_value is not None
                 and p_value <= cfg.significance_alpha
             )
-            if n < cfg.min_shared_points or r is None:
+            if active_n < cfg.min_shared_points or active_r is None:
                 insufficient_pairs += 1
             if significant:
                 significant_pairs += 1
 
-            corr_value = round(r, 6) if r is not None else None
+            corr_value = round(active_r, 6) if active_r is not None else None
             matrix[m1][m2] = corr_value
             matrix[m2][m1] = corr_value
             filtered[m1][m2] = corr_value if significant else None
             filtered[m2][m1] = corr_value if significant else None
 
+            pearson_value = round(pearson_r, 6) if pearson_r is not None else None
+            spearman_value = round(spearman_r, 6) if spearman_r is not None else None
+            pearson_matrix[m1][m2] = pearson_value
+            pearson_matrix[m2][m1] = pearson_value
+            spearman_matrix[m1][m2] = spearman_value
+            spearman_matrix[m2][m1] = spearman_value
+
             pair_details.append(
                 {
                     "metric_x": m1,
                     "metric_y": m2,
+                    "correlation_method": method,
                     "correlation": corr_value,
-                    "sample_size": n,
+                    "sample_size": active_n,
                     "p_value": round(p_value, 6) if p_value is not None else None,
                     "significant": significant,
+                    "pearson_correlation": pearson_value,
+                    "spearman_correlation": spearman_value,
                 }
             )
 
@@ -164,8 +186,11 @@ def compute_multivariate_context(
         "confidence_score": confidence,
         "warnings": warnings,
         "correlation": {
+            "method": method,
             "matrix": matrix,
             "filtered_matrix": filtered,
+            "pearson_matrix": pearson_matrix,
+            "spearman_matrix": spearman_matrix,
             "pairs": pair_details,
             "significance_alpha": cfg.significance_alpha,
             "min_abs_correlation": cfg.min_abs_correlation,
@@ -232,6 +257,35 @@ def _pearson_tail(values_a: Sequence[Any], values_b: Sequence[Any]) -> tuple[flo
     r = numerator / denominator
     r = max(-1.0, min(1.0, r))
     return r, n
+
+
+def _spearman_tail(values_a: Sequence[Any], values_b: Sequence[Any]) -> tuple[float | None, int]:
+    a = coerce_numeric_series(values_a)
+    b = coerce_numeric_series(values_b)
+    n = min(len(a), len(b))
+    if n < 2:
+        return None, n
+    x = a[-n:]
+    y = b[-n:]
+    x_rank = _rankdata(x)
+    y_rank = _rankdata(y)
+    return _pearson_tail(x_rank, y_rank)
+
+
+def _rankdata(values: Sequence[float]) -> list[float]:
+    indexed = sorted(enumerate(values), key=lambda item: item[1])
+    ranks = [0.0 for _ in values]
+    idx = 0
+    while idx < len(indexed):
+        end = idx
+        while end + 1 < len(indexed) and indexed[end + 1][1] == indexed[idx][1]:
+            end += 1
+        avg_rank = (idx + end + 2) / 2.0
+        for pos in range(idx, end + 1):
+            original_index = indexed[pos][0]
+            ranks[original_index] = avg_rank
+        idx = end + 1
+    return ranks
 
 
 def _p_value_from_correlation(r: float, n: int) -> float | None:
@@ -317,4 +371,3 @@ def _segment_contribution(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "segments": contributors,
         "top_segment": contributors[0] if contributors else None,
     }
-

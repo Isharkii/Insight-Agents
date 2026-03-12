@@ -60,6 +60,70 @@ def _strip_markdown_fences(text: str) -> str:
     return stripped
 
 
+_LOW_CONFIDENCE_TONE_TERMS = (
+    "conditional",
+    "suggest",
+    "appears",
+    "may",
+    "might",
+    "could",
+    "uncertain",
+    "likely",
+)
+
+_RECOMMENDATION_FIELDS = (
+    "immediate_actions",
+    "mid_term_moves",
+    "defensive_strategies",
+    "offensive_strategies",
+)
+
+
+def _apply_conditional_labels(data: dict) -> dict:
+    """Deterministically enforce confidence-governed labeling.
+
+    When confidence < 0.5, prefixes all recommendations with "Conditional:"
+    and injects cautious tone into analysis text if missing. This is a
+    deterministic post-processing step — the LLM should not need to know
+    about internal labeling conventions.
+    """
+    ca = data.get("competitive_analysis")
+    sr = data.get("strategic_recommendations")
+    if not isinstance(ca, dict) or not isinstance(sr, dict):
+        return data
+
+    confidence = ca.get("confidence")
+    if confidence is None or confidence >= 0.5:
+        return data
+
+    # Deep-copy the mutable parts we'll modify
+    ca = dict(ca)
+    sr = dict(sr)
+
+    # Prefix recommendations with "Conditional:" if not already
+    for field in _RECOMMENDATION_FIELDS:
+        items = sr.get(field)
+        if isinstance(items, list):
+            sr[field] = [
+                item if item.strip().lower().startswith("conditional:")
+                else f"Conditional: {item}"
+                for item in items
+            ]
+
+    # Inject cautious tone into analysis summary if missing
+    analysis_text = " ".join(
+        str(ca.get(f, "")) for f in ("summary", "market_position", "relative_performance")
+    ).lower()
+    if not any(term in analysis_text for term in _LOW_CONFIDENCE_TONE_TERMS):
+        summary = ca.get("summary", "")
+        ca["summary"] = f"Conditional: {summary}" if summary else "Conditional: analysis uncertain."
+
+    data = dict(data)
+    data["competitive_analysis"] = ca
+    data["strategic_recommendations"] = sr
+    return data
+
+
 def validate_llm_output(raw_response: str) -> InsightOutput:
     """Parse and validate a raw LLM response string.
 
@@ -96,6 +160,11 @@ def validate_llm_output(raw_response: str) -> InsightOutput:
             errors=["top-level JSON must be an object"],
             raw_response=raw_response,
         )
+
+    # Step 2.5: Deterministic post-processing — apply confidence-governed
+    # tone rules *before* schema validation so the LLM doesn't need to know
+    # about internal labeling conventions.
+    data = _apply_conditional_labels(data)
 
     # Step 3: Schema validation (rejects unknown fields via model config)
     try:

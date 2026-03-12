@@ -16,6 +16,11 @@ from app.failure_codes import (
     SCHEMA_CONFLICT,
     build_error_detail,
 )
+from app.security.dependencies import (
+    assert_entity_allowed_for_tenant,
+    require_security_context,
+)
+from app.security.models import SecurityContext
 from app.schemas.csv_ingestion import CSVIngestionSummaryResponse, CSVValidationErrorResponse
 from app.services.csv_ingestion_service import (
     CSVHeaderValidationError,
@@ -36,16 +41,20 @@ def upload_csv(
     mapping_config_name: str | None = Query(default=None, description="Optional explicit mapping config name"),
     db: Session = Depends(get_db),
     ingestion_service: CSVIngestionService = Depends(get_csv_ingestion_service),
+    security: SecurityContext = Depends(require_security_context),
 ) -> CSVIngestionSummaryResponse:
     """
     Ingest one CSV file into canonical insight records.
     """
 
     try:
+        if client_name:
+            assert_entity_allowed_for_tenant(entity_name=client_name, security=security)
         summary = ingestion_service.ingest_csv(
             upload_file=file,
             db=db,
             client_name=client_name,
+            tenant_id=security.tenant_id,
             mapping_config_name=mapping_config_name,
         )
     except CSVSchemaMappingError as exc:

@@ -35,10 +35,13 @@ class BaseForecastModel(ABC):
         Returns
         -------
         dict
-            Forecast result.  The exact keys are defined by each
-            concrete subclass, but implementations are encouraged to
-            include at minimum:
+            Forecast result.  Implementations must include at minimum:
 
-            - ``"forecast"`` – predicted next value or values
-            - ``"model"``    – string identifier for the model used
+            - ``"forecast"``         – dict of predicted values (month_1, …)
+            - ``"model"``            – string identifier for the model used
+            - ``"status"``           – ``"ok"`` or ``"insufficient_data"``
+            - ``"confidence_score"`` – float in [0, 1]
+            - ``"tier"``             – data-depth tier label
+            - ``"slope"``            – regression slope or None
+            - ``"warnings"``         – list of diagnostic strings
         """

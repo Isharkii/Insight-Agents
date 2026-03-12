@@ -20,7 +20,7 @@ _KPI_FORMULA_WEIGHT = 1.0
 _KPI_BACKFILL_WEIGHT = 0.7
 _KPI_MIN_DEPTH_POINTS = 3
 
-_FORECAST_MIN_POINTS = 2
+_FORECAST_MIN_POINTS = 6
 
 _COMPETITIVE_MIN_PEERS = 2
 _COMPETITIVE_MIN_METRICS = 2
@@ -227,6 +227,12 @@ class UnifiedSignalIntegrity:
         records = payload.get("records")
         if not isinstance(records, list):
             records = []
+        compact_series = payload.get("metric_series")
+        if not isinstance(compact_series, Mapping):
+            compact_series = {}
+        latest_computed = payload.get("latest_computed_kpis")
+        if not isinstance(latest_computed, Mapping):
+            latest_computed = {}
         expected = payload.get("metrics")
         if isinstance(expected, list):
             expected_metrics = [
@@ -237,17 +243,18 @@ class UnifiedSignalIntegrity:
         else:
             expected_metrics = []
         if not expected_metrics:
-            discovered: set[str] = set()
-            for record in records:
-                if not isinstance(record, Mapping):
-                    continue
-                computed = record.get("computed_kpis")
-                if not isinstance(computed, Mapping):
-                    continue
-                for metric_name in computed:
-                    text = str(metric_name).strip()
-                    if text:
-                        discovered.add(text)
+            discovered: set[str] = set(str(name).strip() for name in compact_series.keys() if str(name).strip())
+            if not discovered:
+                for record in records:
+                    if not isinstance(record, Mapping):
+                        continue
+                    computed = record.get("computed_kpis")
+                    if not isinstance(computed, Mapping):
+                        continue
+                    for metric_name in computed:
+                        text = str(metric_name).strip()
+                        if text:
+                            discovered.add(text)
             expected_metrics = sorted(discovered)
 
         expected_total = len(expected_metrics)
@@ -269,25 +276,21 @@ class UnifiedSignalIntegrity:
         weight_by_metric = {name: 0.0 for name in expected_metrics}
         depth_by_metric = {name: 0 for name in expected_metrics}
 
-        for record in records:
-            if not isinstance(record, Mapping):
-                continue
-            computed = record.get("computed_kpis")
-            if not isinstance(computed, Mapping):
-                continue
+        if compact_series:
             for metric_name in expected_metrics:
-                entry = computed.get(metric_name)
-                if entry is None:
+                series_values = compact_series.get(metric_name)
+                if isinstance(series_values, list):
+                    depth = sum(1 for value in series_values if _safe_float(value, default=None) is not None)
+                else:
+                    depth = 0
+                if depth <= 0:
                     continue
-                if isinstance(entry, Mapping):
-                    if entry.get("error") is not None:
-                        continue
-                    if entry.get("value") is None:
-                        continue
-                    source = str(entry.get("source") or "formula").strip().lower()
+                depth_by_metric[metric_name] = depth
+                latest_entry = latest_computed.get(metric_name)
+                if isinstance(latest_entry, Mapping):
+                    source = str(latest_entry.get("source") or "formula").strip().lower()
                 else:
                     source = "formula"
-                depth_by_metric[metric_name] += 1
                 if source == "precomputed_backfill":
                     weight_by_metric[metric_name] = max(
                         weight_by_metric[metric_name],
@@ -298,6 +301,36 @@ class UnifiedSignalIntegrity:
                         weight_by_metric[metric_name],
                         _KPI_FORMULA_WEIGHT,
                     )
+        else:
+            for record in records:
+                if not isinstance(record, Mapping):
+                    continue
+                computed = record.get("computed_kpis")
+                if not isinstance(computed, Mapping):
+                    continue
+                for metric_name in expected_metrics:
+                    entry = computed.get(metric_name)
+                    if entry is None:
+                        continue
+                    if isinstance(entry, Mapping):
+                        if entry.get("error") is not None:
+                            continue
+                        if entry.get("value") is None:
+                            continue
+                        source = str(entry.get("source") or "formula").strip().lower()
+                    else:
+                        source = "formula"
+                    depth_by_metric[metric_name] += 1
+                    if source == "precomputed_backfill":
+                        weight_by_metric[metric_name] = max(
+                            weight_by_metric[metric_name],
+                            _KPI_BACKFILL_WEIGHT,
+                        )
+                    else:
+                        weight_by_metric[metric_name] = max(
+                            weight_by_metric[metric_name],
+                            _KPI_FORMULA_WEIGHT,
+                        )
 
         available_count = sum(1 for value in weight_by_metric.values() if value > 0.0)
         weighted_sum = sum(weight_by_metric.values())
@@ -359,6 +392,7 @@ class UnifiedSignalIntegrity:
         r2_values: list[float] = []
         horizons: list[int] = []
         statuses: list[str] = []
+        confidence_scores: list[float] = []
         for row in forecasts.values():
             if not isinstance(row, Mapping):
                 continue
@@ -371,11 +405,24 @@ class UnifiedSignalIntegrity:
                 if value > 0:
                     input_points.append(value)
                     break
-            for key in ("regression_r2", "r2"):
-                raw_r2 = _safe_float(data.get(key))
+            # Read R² from new regression sub-dict or legacy flat keys
+            regression = data.get("regression")
+            r2_found = False
+            if isinstance(regression, Mapping):
+                raw_r2 = _safe_float(regression.get("r_squared"))
                 if raw_r2 is not None:
                     r2_values.append(_clamp01(raw_r2))
-                    break
+                    r2_found = True
+            if not r2_found:
+                for key in ("regression_r2", "r2"):
+                    raw_r2 = _safe_float(data.get(key))
+                    if raw_r2 is not None:
+                        r2_values.append(_clamp01(raw_r2))
+                        break
+            # Read confidence_score from new format
+            raw_conf = _safe_float(data.get("confidence_score"))
+            if raw_conf is not None:
+                confidence_scores.append(_clamp01(raw_conf))
             horizon = _safe_int(data.get("horizon_months"), default=0)
             if horizon <= 0:
                 forecast_values = data.get("forecast")
@@ -424,7 +471,11 @@ class UnifiedSignalIntegrity:
         )
         horizon = max(horizons) if horizons else 3
         completeness = _clamp01(1.0 / (1.0 + log(1.0 + float(max(0, horizon)))))
-        score = _clamp01(coverage_ratio * source_reliability * completeness)
+        # Prefer model-provided confidence when available
+        if confidence_scores:
+            score = _clamp01(mean(confidence_scores))
+        else:
+            score = _clamp01(coverage_ratio * source_reliability * completeness)
 
         return LayerIntegrity(
             available=True,
@@ -652,3 +703,36 @@ class UnifiedSignalIntegrity:
             score=score,
             meta={"status": "success" if score > 0 else "insufficient_data", "segment_count": segment_count},
         )
+
+    @staticmethod
+    def metric_confidence(
+        values: list[float],
+        *,
+        signals: dict[str, float | None] | None = None,
+        tier_cap: float | None = None,
+    ) -> dict[str, Any]:
+        """Compute unified confidence for a single metric series.
+
+        Delegates to the composable confidence scoring model which evaluates
+        four dimensions: depth, volatility, anomaly presence, and signal
+        consistency.  This provides a single entry-point for nodes that need
+        confidence without constructing the full layer integrity model.
+
+        Parameters
+        ----------
+        values:
+            Time-series data points, oldest first.
+        signals:
+            Optional directional signals for consistency scoring.
+        tier_cap:
+            Optional hard ceiling (e.g. 0.40 for minimal-tier data).
+
+        Returns
+        -------
+        dict
+            Full confidence result from
+            ``app.services.statistics.confidence_scoring.compute_confidence``.
+        """
+        from app.services.statistics.confidence_scoring import compute_confidence
+
+        return compute_confidence(values, signals=signals, tier_cap=tier_cap)

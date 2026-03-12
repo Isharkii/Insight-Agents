@@ -9,6 +9,9 @@ FailureCode = Literal[
     "schema_conflict",
     "insufficient_history",
     "external_unavailable",
+    "authentication_failed",
+    "authorization_failed",
+    "rate_limited",
     "internal_failure",
 ]
 
@@ -16,6 +19,9 @@ INGESTION_VALIDATION: FailureCode = "ingestion_validation"
 SCHEMA_CONFLICT: FailureCode = "schema_conflict"
 INSUFFICIENT_HISTORY: FailureCode = "insufficient_history"
 EXTERNAL_UNAVAILABLE: FailureCode = "external_unavailable"
+AUTHENTICATION_FAILED: FailureCode = "authentication_failed"
+AUTHORIZATION_FAILED: FailureCode = "authorization_failed"
+RATE_LIMITED: FailureCode = "rate_limited"
 INTERNAL_FAILURE: FailureCode = "internal_failure"
 
 ALL_FAILURE_CODES: frozenset[str] = frozenset(
@@ -24,6 +30,9 @@ ALL_FAILURE_CODES: frozenset[str] = frozenset(
         SCHEMA_CONFLICT,
         INSUFFICIENT_HISTORY,
         EXTERNAL_UNAVAILABLE,
+        AUTHENTICATION_FAILED,
+        AUTHORIZATION_FAILED,
+        RATE_LIMITED,
         INTERNAL_FAILURE,
     }
 )
@@ -106,6 +115,43 @@ def infer_failure_code(*, status_code: int, detail: Any = None) -> FailureCode:
     if any(
         token in text
         for token in (
+            "api key",
+            "api_key",
+            "bearer",
+            "jwt",
+            "auth",
+            "token",
+            "unauthorized",
+            "authentication",
+        )
+    ):
+        return AUTHENTICATION_FAILED
+    if any(
+        token in text
+        for token in (
+            "forbidden",
+            "scope",
+            "tenant",
+            "permission",
+            "authorization",
+            "not allowed",
+            "access denied",
+        )
+    ):
+        return AUTHORIZATION_FAILED
+    if any(
+        token in text
+        for token in (
+            "rate limit",
+            "too many requests",
+            "throttle",
+            "retry-after",
+        )
+    ):
+        return RATE_LIMITED
+    if any(
+        token in text
+        for token in (
             "schema",
             "mapping",
             "unsupported",
@@ -122,6 +168,12 @@ def infer_failure_code(*, status_code: int, detail: Any = None) -> FailureCode:
 
     if status_code >= 500:
         return INTERNAL_FAILURE
+    if status_code == 429:
+        return RATE_LIMITED
+    if status_code == 401:
+        return AUTHENTICATION_FAILED
+    if status_code == 403:
+        return AUTHORIZATION_FAILED
     if status_code in {400, 404, 409, 422}:
         return SCHEMA_CONFLICT
     return INTERNAL_FAILURE

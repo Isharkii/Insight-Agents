@@ -36,7 +36,7 @@ def _synthetic_llm_output_max_confidence() -> InsightOutput:
 
 def test_llm_node_optional_signal_outage_yields_partial_success(monkeypatch) -> None:
     monkeypatch.setattr("agent.nodes.llm_node.load_env_files", lambda: None)
-    monkeypatch.setattr("agent.nodes.llm_node._build_adapter", lambda: object())
+    monkeypatch.setattr("agent.nodes.llm_node._build_adapter", lambda **_kw: object())
     monkeypatch.setattr(
         "agent.nodes.llm_node.generate_with_retry",
         lambda *_args, **_kwargs: _synthetic_llm_output(),
@@ -78,7 +78,7 @@ def test_llm_node_optional_signal_outage_yields_partial_success(monkeypatch) -> 
 
 def test_llm_node_required_signal_failure_is_structured_and_machine_readable(monkeypatch) -> None:
     monkeypatch.setattr("agent.nodes.llm_node.load_env_files", lambda: None)
-    monkeypatch.setattr("agent.nodes.llm_node._build_adapter", lambda: object())
+    monkeypatch.setattr("agent.nodes.llm_node._build_adapter", lambda **_kw: object())
     monkeypatch.setattr(
         "agent.nodes.llm_node.generate_with_retry",
         lambda *_args, **_kwargs: _synthetic_llm_output(),
@@ -104,7 +104,7 @@ def test_llm_node_required_signal_failure_is_structured_and_machine_readable(mon
 
 def test_llm_node_uses_unified_signal_integrity_for_confidence(monkeypatch) -> None:
     monkeypatch.setattr("agent.nodes.llm_node.load_env_files", lambda: None)
-    monkeypatch.setattr("agent.nodes.llm_node._build_adapter", lambda: object())
+    monkeypatch.setattr("agent.nodes.llm_node._build_adapter", lambda **_kw: object())
     monkeypatch.setattr(
         "agent.nodes.llm_node.generate_with_retry",
         lambda *_args, **_kwargs: _synthetic_llm_output_max_confidence(),

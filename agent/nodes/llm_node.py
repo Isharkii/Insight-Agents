@@ -22,6 +22,7 @@ from agent.graph_config import (
 from agent.nodes.node_result import payload_of, status_of, warnings_of
 from agent.signal_integrity import UnifiedSignalIntegrity
 from agent.state import AgentState
+from app.services.statistics.signal_conflict import apply_conflict_penalty
 from db.config import load_env_files
 from llm_synthesis.adapter import BaseLLMAdapter, MockLLMAdapter, OpenAILLMAdapter
 from llm_synthesis.prompt_builder import SynthesisPromptBuilder
@@ -123,11 +124,57 @@ def _collect_diagnostics(state: AgentState) -> dict[str, Any]:
             "KPI integrity gate failed (kpi_score < 0.3); confidence forced to 0."
         )
 
+    conflict_envelope = state.get("signal_conflicts")
+    conflict_payload = payload_of(conflict_envelope) if conflict_envelope is not None else None
+    conflict_result = (
+        conflict_payload.get("conflict_result")
+        if isinstance(conflict_payload, dict)
+        else None
+    )
+    conflict_adjustment = (
+        conflict_payload.get("confidence_adjustment")
+        if isinstance(conflict_payload, dict)
+        else None
+    )
+    if isinstance(conflict_result, dict):
+        for item in conflict_result.get("warnings", []):
+            text = str(item).strip()
+            if text:
+                all_warnings.append(text)
+        penalty = float(conflict_result.get("confidence_penalty") or 0.0)
+        if penalty > 0.0:
+            adjusted = apply_conflict_penalty(
+                confidence_score,
+                conflict_result,
+                floor=0.0,
+            )
+            confidence_score = float(adjusted.get("adjusted_confidence") or confidence_score)
+            adjustments.append(
+                {
+                    "signal": "global_signal_conflicts",
+                    "delta": round(-penalty, 6),
+                    "reason": "global_signal_conflict_penalty",
+                }
+            )
+            if isinstance(conflict_adjustment, dict):
+                adjustments.append(
+                    {
+                        "signal": "signal_conflicts_node",
+                        "delta": round(
+                            float(conflict_adjustment.get("adjusted_confidence", 0.0))
+                            - float(conflict_adjustment.get("base_confidence", 0.0)),
+                            6,
+                        ),
+                        "reason": "signal_conflicts_node_adjustment",
+                    }
+                )
+
     return {
         "warnings": _dedupe_text(all_warnings),
         "missing_signal": _dedupe_text(missing_signal),
         "confidence_adjustments": adjustments,
         "confidence_score": max(0.0, min(1.0, round(confidence_score, 6))),
+        "signal_conflicts": conflict_result if isinstance(conflict_result, dict) else {},
         "signal_integrity_scores": integrity_scores,
         "signal_integrity": integrity,
     }
@@ -156,20 +203,24 @@ def _derive_pipeline_status(state: AgentState) -> str:
     return "success"
 
 
-def _build_adapter() -> BaseLLMAdapter:
+def _build_adapter(*, model_override: str | None = None) -> BaseLLMAdapter:
     """Instantiate the adapter selected by the LLM_ADAPTER env var."""
     adapter_name = os.getenv("LLM_ADAPTER", "openai").strip().lower()
     if adapter_name == "mock":
         return MockLLMAdapter()
 
-    model_env = os.getenv("LLM_MODEL", "").strip()
-    model_name = model_env or "gpt-4o-mini"
+    model_name = (
+        model_override
+        or os.getenv("LLM_MODEL", "").strip()
+        or "gpt-4o-mini"
+    )
 
     return OpenAILLMAdapter(
         model=model_name,
         max_tokens=int(os.getenv("LLM_MAX_TOKENS", "2048")),
         api_key=os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY"),
         base_url=os.getenv("LLM_BASE_URL") or None,
+        timeout=float(os.getenv("LLM_TIMEOUT_SECONDS", "30")),
     )
 
 
@@ -203,7 +254,26 @@ def _public_failure_reason(error: Exception) -> str:
     if isinstance(error, (json.JSONDecodeError, ValidationError, ValueError, TypeError)):
         return "Insight synthesis output could not be validated against the required schema."
 
-    return "Insight synthesis could not be completed due to an internal validation failure."
+    # Surface actionable messages for common LLM adapter failures.
+    error_type = type(error).__name__
+    error_msg = str(error)[:200]
+
+    # OpenAI / httpx errors
+    if "AuthenticationError" in error_type or "api_key" in error_msg.lower():
+        return "LLM API authentication failed. Check LLM_API_KEY or OPENAI_API_KEY."
+    if "RateLimitError" in error_type:
+        return "LLM API rate limit exceeded. Retry after a brief wait."
+    if "Timeout" in error_type or "timed out" in error_msg.lower():
+        return "LLM API request timed out. The model may be overloaded."
+    if "APIConnectionError" in error_type or "Connection" in error_type:
+        return "Could not connect to the LLM API. Check LLM_BASE_URL and network."
+    if "NotFoundError" in error_type or "model" in error_msg.lower() and "not found" in error_msg.lower():
+        return "LLM model not found. Check LLM_MODEL configuration."
+    if "ImportError" in error_type:
+        return "LLM adapter dependency missing. Install the openai package."
+
+    logger.error("Unhandled LLM synthesis error type=%s: %s", error_type, error_msg)
+    return f"LLM synthesis failed ({error_type}). Check server logs for details."
 
 
 def _ensure_conditional_recommendations(
@@ -343,6 +413,9 @@ def llm_node(state: AgentState) -> AgentState:
             confidence_score,
         )
 
+    # Extract enriched signal summary for the prompt
+    signal_enrichment = _usable_payload(state.get("signal_enrichment"))
+
     prompt = _prompt_builder.build_prompt(
         kpi_data=kpi_data,
         forecast_data=forecast_data,
@@ -354,15 +427,22 @@ def llm_node(state: AgentState) -> AgentState:
         missing_signals=diagnostics.get("missing_signal", []),
         has_competitor_data=has_competitors,
         competitor_signals=competitor_signals,
+        conflict_metadata=diagnostics.get("signal_conflicts"),
+        signal_enrichment=signal_enrichment,
     )
 
-    adapter = _build_adapter()
+    adapter = _build_adapter(model_override=state.get("llm_model_override"))
 
     try:
-        synthesis = generate_with_retry(adapter, prompt)
+        synthesis = generate_with_retry(adapter, prompt, max_retries=1)
         final_payload = FinalInsightResponse.model_validate(synthesis.model_dump())
     except Exception as error:  # noqa: BLE001
-        logger.warning("LLM synthesis failed; returning structured fallback.", exc_info=True)
+        logger.error(
+            "LLM synthesis failed [%s]: %s",
+            type(error).__name__,
+            str(error)[:500],
+            exc_info=True,
+        )
         final_payload = FinalInsightResponse.failure(
             reason=_public_failure_reason(error),
             pipeline_status=pipeline_status,
@@ -409,7 +489,6 @@ def llm_node(state: AgentState) -> AgentState:
     set_self_analysis_mode(False)
 
     return {
-        **state,
         "pipeline_status": pipeline_status,
         "final_response": final_response,
         "envelope_diagnostics": diagnostics,

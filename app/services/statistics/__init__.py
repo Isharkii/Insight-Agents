@@ -1,4 +1,10 @@
-from app.services.statistics.anomaly import detect_iqr_anomalies, iqr_bounds
+from app.services.statistics.anomaly import (
+    detect_anomalies,
+    detect_iqr_anomalies,
+    iqr_bounds,
+)
+from app.services.statistics.causal_inference import GrangerConfig, granger_causality
+from app.services.statistics.changepoint import ChangepointConfig, detect_changepoints
 from app.services.statistics.growth_engine import (
     GrowthEngineConfig,
     compute_growth_context,
@@ -8,6 +14,10 @@ from app.services.statistics.growth_engine import (
 from app.services.statistics.multivariate import (
     MultivariateConfig,
     compute_multivariate_context,
+)
+from app.services.statistics.leading_indicators import (
+    LeadingIndicatorConfig,
+    detect_leading_indicators,
 )
 from app.services.statistics.base_projection import (
     BaseProjectionConfig,
@@ -47,6 +57,11 @@ from app.services.statistics.scenario_simulator import (
     ScenarioConfig,
     ScenarioShock,
     simulate_deterministic_scenarios,
+)
+from app.services.statistics.survival_analysis import (
+    SurvivalConfig,
+    kaplan_meier,
+    survival_from_retention_curve,
 )
 from app.services.statistics.recession_modeling import (
     RecessionCurveProfile,
@@ -89,12 +104,19 @@ __all__ = [
     "rolling_median",
     "iqr_bounds",
     "detect_iqr_anomalies",
+    "detect_anomalies",
+    "GrangerConfig",
+    "granger_causality",
+    "ChangepointConfig",
+    "detect_changepoints",
     "GrowthEngineConfig",
     "metric_growth_config",
     "compute_growth_signals",
     "compute_growth_context",
     "MultivariateConfig",
     "compute_multivariate_context",
+    "LeadingIndicatorConfig",
+    "detect_leading_indicators",
     "BaseProjectionConfig",
     "compute_growth_rates",
     "cagr_growth",
@@ -119,6 +141,9 @@ __all__ = [
     "ScenarioConfig",
     "ScenarioShock",
     "simulate_deterministic_scenarios",
+    "SurvivalConfig",
+    "kaplan_meier",
+    "survival_from_retention_curve",
     "RecessionCurveProfile",
     "RecessionModelConfig",
     "extract_macro_shock_inputs",

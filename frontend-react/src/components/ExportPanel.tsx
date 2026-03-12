@@ -37,14 +37,10 @@ const ExportBtn: FC<BtnProps> = ({ label, loading, disabled, onClick }) => (
   <button
     onClick={onClick}
     disabled={loading || disabled}
-    className="flex-1 inline-flex items-center justify-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+    className="ia-btn-secondary h-11 min-w-[170px] flex-1 px-4"
   >
     {loading ? (
-      <svg
-        className="animate-spin h-4 w-4 text-gray-400"
-        viewBox="0 0 24 24"
-        fill="none"
-      >
+      <svg className="h-4 w-4 animate-spin text-slate-500" viewBox="0 0 24 24" fill="none">
         <circle
           className="opacity-25"
           cx="12"
@@ -61,7 +57,7 @@ const ExportBtn: FC<BtnProps> = ({ label, loading, disabled, onClick }) => (
       </svg>
     ) : (
       <svg
-        className="w-4 h-4 text-gray-400"
+        className="h-4 w-4 text-slate-500"
         fill="none"
         viewBox="0 0 24 24"
         stroke="currentColor"
@@ -106,7 +102,7 @@ const ExportPanel: FC<ExportPanelProps> = ({
       const blob = await fetchExportBlob("records", "csv", entityName);
       downloadBlob(blob, "insight_records.csv");
     } catch {
-      /* ignore */
+      // No-op by design: caller surface already indicates availability.
     } finally {
       setLoadingCsv(false);
     }
@@ -119,7 +115,7 @@ const ExportPanel: FC<ExportPanelProps> = ({
       const blob = await fetchBIWorkbookBlob(entityName, prompt, businessType);
       downloadBlob(blob, `${entityName}_insight_workbook.xlsx`);
     } catch {
-      /* ignore */
+      // No-op by design: caller surface already indicates availability.
     } finally {
       setLoadingPbi(false);
     }
@@ -136,23 +132,23 @@ const ExportPanel: FC<ExportPanelProps> = ({
       );
       downloadBlob(blob, "insight_report.md");
     } catch {
-      /* ignore */
+      // No-op by design: caller surface already indicates availability.
     } finally {
       setLoadingReport(false);
     }
   }, [entityName, prompt, businessType]);
 
   return (
-    <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-800 p-5">
-      <h3 className="text-sm font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-3">
-        Export
-      </h3>
-      <div className="flex flex-wrap gap-2">
-        <ExportBtn
-          label="JSON"
-          loading={loadingJson}
-          onClick={handleJson}
-        />
+    <div className="ia-surface px-5 py-5 sm:px-6">
+      <div className="mb-3 flex items-end justify-between gap-3">
+        <div>
+          <p className="ia-label">Export</p>
+          <p className="ia-subtitle mt-1">Download analysis artifacts in operational formats.</p>
+        </div>
+        <span className="ia-chip">4 formats</span>
+      </div>
+      <div className="flex flex-wrap gap-2.5">
+        <ExportBtn label="JSON" loading={loadingJson} onClick={handleJson} />
         <ExportBtn
           label="CSV Records"
           loading={loadingCsv}

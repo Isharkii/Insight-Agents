@@ -12,6 +12,8 @@ from fastapi.staticfiles import StaticFiles
 from starlette.responses import FileResponse
 
 from app.api.error_handling import register_exception_handlers
+from app.observability import configure_root_logging
+from app.security.middleware import SecurityMiddleware
 from llm_synthesis.schema import FinalInsightResponse
 
 # React production build directory
@@ -123,12 +125,7 @@ def _configure_logging() -> None:
     """
     Configure root logging once for the API process.
     """
-
-    log_level = os.getenv("LOG_LEVEL", "INFO").strip().upper()
-    logging.basicConfig(
-        level=getattr(logging, log_level, logging.INFO),
-        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-    )
+    configure_root_logging()
 
 
 def _check_db() -> None:
@@ -227,6 +224,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    application.add_middleware(SecurityMiddleware)
 
     from app.api.routers import (
         analyze_router,
@@ -235,6 +233,7 @@ def create_app() -> FastAPI:
         client_router,
         competitor_scraping_router,
         csv_ingestion_router,
+        decision_engine_router,
         external_ingestion_router,
         ingestion_orchestrator_router,
         kpi_router,
@@ -251,6 +250,7 @@ def create_app() -> FastAPI:
     application.include_router(kpi_router)
     application.include_router(bi_export_router)
     application.include_router(dashboard_router)
+    application.include_router(decision_engine_router)
 
     @application.get("/health")
     def healthcheck() -> FinalInsightResponse:

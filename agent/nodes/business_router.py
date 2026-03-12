@@ -31,7 +31,7 @@ def business_router_node(state: AgentState) -> AgentState:
     Returns:
         The unchanged state dictionary.
     """
-    return state
+    return {}
 
 
 def route_by_business_type(state: AgentState) -> str:

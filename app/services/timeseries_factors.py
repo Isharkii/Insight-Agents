@@ -138,12 +138,18 @@ def compute_timeseries_factors(
         zero_guard=cfg.zero_guard,
     )
 
+    from app.services.statistics.seasonality import detect_seasonality
+
+    seasonality_result = detect_seasonality(values)
+
     return {
         "momentum_up": momentum_up,
         "momentum_down": momentum_down,
         "volatility_regime": vol_regime,
         "structural_break_detected": break_meta["detected"],
         "cycle_state": cycle_state,
+        "seasonality_detected": seasonality_result.get("detected", False),
+        "seasonality": seasonality_result,
         "diagnostics": {
             "points_used": points,
             "momentum_score": round(momentum_score, 6),

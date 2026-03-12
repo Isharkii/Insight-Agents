@@ -32,6 +32,8 @@ export default defineConfig(({ mode }) => {
         "/analyze": {
           target: proxyTarget,
           changeOrigin: true,
+          timeout: 120000,
+          proxyTimeout: 120000,
         },
         "/health": {
           target: proxyTarget,

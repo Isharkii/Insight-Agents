@@ -13,6 +13,7 @@ from typing import Optional
 
 from sqlalchemy import (
     DateTime,
+    ForeignKey,
     Index,
     String,
     UniqueConstraint,
@@ -22,6 +23,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from db.base import Base
+from db.repositories.entity_scope import normalize_tenant_id, resolve_entity_scope
 
 
 # ---------------------------------------------------------------------------
@@ -43,11 +45,11 @@ class ForecastMetric(Base):
 
     Indexes
     -------
-    Individual B-tree indexes on ``entity_name``, ``metric_name``, and
-    ``period_end`` support single-column filtering.
+    Individual B-tree indexes on ``tenant_id``, ``entity_id``, ``entity_name``,
+    ``metric_name``, and ``period_end`` support filtered access paths.
 
-    A composite index on ``(entity_name, metric_name, period_end)`` supports
-    the canonical lookup pattern and is used by
+    A composite index on ``(tenant_id, entity_id, metric_name, period_end)``
+    supports tenant-isolated lookup and is used by
     :meth:`ForecastRepository.get_latest_forecast`.
     """
 
@@ -57,6 +59,18 @@ class ForecastMetric(Base):
         UUID(as_uuid=True),
         primary_key=True,
         default=uuid.uuid4,
+    )
+    tenant_id: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        index=True,
+        server_default="legacy",
+    )
+    entity_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("tenant_entities.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
     )
     entity_name: Mapped[str] = mapped_column(
         String(255),
@@ -85,13 +99,22 @@ class ForecastMetric(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "entity_name",
+            "tenant_id",
+            "entity_id",
             "metric_name",
             "period_end",
-            name="uq_forecast_metric_entity_metric_period",
+            name="uq_forecast_metric_tenant_entity_metric_period",
         ),
         Index(
-            "ix_forecast_metric_entity_metric_period",
+            "ix_forecast_metric_tenant_entity_metric_period",
+            "tenant_id",
+            "entity_id",
+            "metric_name",
+            "period_end",
+        ),
+        Index(
+            "ix_forecast_metric_tenant_entity_name_metric_period",
+            "tenant_id",
             "entity_name",
             "metric_name",
             "period_end",
@@ -101,6 +124,7 @@ class ForecastMetric(Base):
     def __repr__(self) -> str:
         return (
             f"<ForecastMetric id={self.id} "
+            f"tenant={self.tenant_id!r} "
             f"entity={self.entity_name!r} "
             f"metric={self.metric_name!r} "
             f"period_end={self.period_end.date()}>"
@@ -139,6 +163,9 @@ class ForecastRepository:
         metric_name: str,
         period_end: datetime,
         forecast_data: dict,
+        *,
+        tenant_id: str = "legacy",
+        entity_id: uuid.UUID | None = None,
     ) -> ForecastMetric:
         """
         Persist a new forecast snapshot and return the mapped instance.
@@ -158,6 +185,11 @@ class ForecastRepository:
             assumed to be UTC.
         forecast_data:
             Serialisable dictionary produced by a forecast model.
+        tenant_id:
+            Owning tenant identifier for isolation.
+        entity_id:
+            Optional stable entity identifier. When omitted, resolved from
+            ``tenant_id + entity_name``.
 
         Returns
         -------
@@ -167,8 +199,18 @@ class ForecastRepository:
         if period_end.tzinfo is None:
             period_end = period_end.replace(tzinfo=timezone.utc)
 
-        record = ForecastMetric(
+        scope = resolve_entity_scope(
+            self._session,
+            tenant_id=tenant_id,
             entity_name=entity_name,
+            entity_id=entity_id,
+            create_if_missing=True,
+        )
+
+        record = ForecastMetric(
+            tenant_id=scope.tenant_id,
+            entity_id=scope.entity_id,
+            entity_name=scope.entity_name,
             metric_name=metric_name,
             period_end=period_end,
             forecast_data=forecast_data,
@@ -184,6 +226,9 @@ class ForecastRepository:
         self,
         entity_name: str,
         metric_name: str,
+        *,
+        tenant_id: str = "legacy",
+        entity_id: uuid.UUID | None = None,
     ) -> Optional[ForecastMetric]:
         """
         Return the most recently *created* forecast for a given
@@ -198,18 +243,22 @@ class ForecastRepository:
             Logical owner of the metric.
         metric_name:
             KPI identifier.
+        tenant_id:
+            Owning tenant identifier for isolation.
+        entity_id:
+            Optional stable entity identifier for exact entity scope.
 
         Returns
         -------
         ForecastMetric or None
         """
-        stmt = (
-            select(ForecastMetric)
-            .where(
-                ForecastMetric.entity_name == entity_name,
-                ForecastMetric.metric_name == metric_name,
-            )
-            .order_by(ForecastMetric.created_at.desc())
-            .limit(1)
+        stmt = select(ForecastMetric).where(
+            ForecastMetric.tenant_id == normalize_tenant_id(tenant_id),
+            ForecastMetric.metric_name == metric_name,
         )
+        if entity_id is not None:
+            stmt = stmt.where(ForecastMetric.entity_id == entity_id)
+        else:
+            stmt = stmt.where(ForecastMetric.entity_name == entity_name)
+        stmt = stmt.order_by(ForecastMetric.created_at.desc()).limit(1)
         return self._session.scalars(stmt).first()

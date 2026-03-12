@@ -18,8 +18,6 @@ import {
   type BusinessIntelligenceResponse,
 } from "./api/client";
 
-// ─── Embed mode hook ─────────────────────────────────────────────────────────
-
 function useEmbedParams() {
   const params = new URLSearchParams(window.location.search);
   const embed = params.get("embed") === "1";
@@ -27,8 +25,6 @@ function useEmbedParams() {
   const btype = params.get("business_type") ?? "saas";
   return { embed, entity, btype };
 }
-
-// ─── Derived signals helpers ─────────────────────────────────────────────────
 
 interface ReportDerivedSignals {
   risk?: { risk_score?: number; risk_level?: string };
@@ -105,8 +101,6 @@ function extractDerivedSignals(
   return {};
 }
 
-// ─── KPI rows from export JSON ───────────────────────────────────────────────
-
 interface KpiRow {
   period_end: string;
   metric_name: string;
@@ -129,12 +123,9 @@ function extractKpiRows(
   );
 }
 
-// ─── Main App ────────────────────────────────────────────────────────────────
-
 export default function App() {
   const { embed, entity: embedEntity, btype: embedBtype } = useEmbedParams();
 
-  // Sidebar state
   const [sidebar, setSidebar] = useState<SidebarState>({
     mode: "LOCAL",
     clientId: "default",
@@ -145,11 +136,9 @@ export default function App() {
   });
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
-  // Input state
   const [prompt, setPrompt] = useState("");
   const [file, setFile] = useState<File | null>(null);
 
-  // Result state
   const [analyzeResult, setAnalyzeResult] = useState<AnalyzeResult | null>(
     null,
   );
@@ -173,11 +162,9 @@ export default function App() {
     businessType?: string;
   }>({});
 
-  // UI state
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Derived
   const requestedEntity = useMemo(() => {
     const override = sidebar.entityOverride.trim();
     if (override) return override;
@@ -211,8 +198,6 @@ export default function App() {
     () => extractKpiRows(kpiExportJson),
     [kpiExportJson],
   );
-
-  // ─── Handlers ──────────────────────────────────────────────────────────────
 
   const handleRun = useCallback(async () => {
     if (!prompt.trim()) {
@@ -262,7 +247,6 @@ export default function App() {
       setAnalyzeResult(result);
       setExecutionTime((performance.now() - started) / 1000);
 
-      // Fetch dashboard + report + KPI export in parallel
       const entity = (run.resolvedEntityName || requestedEntity || "").trim();
       const btype = (run.resolvedBusinessType || requestedBusinessType || "saas").trim();
 
@@ -313,8 +297,6 @@ export default function App() {
     setFile(null);
   }, []);
 
-  // ─── Embed mode ────────────────────────────────────────────────────────────
-
   useEffect(() => {
     if (embed && embedEntity) {
       setLoading(true);
@@ -330,31 +312,32 @@ export default function App() {
 
   if (embed) {
     return (
-      <div className="bg-gray-50 dark:bg-gray-950">
+      <div className="ia-shell-bg">
         {loading && (
-          <div className="flex items-center justify-center py-16">
-            <p className="text-gray-400 dark:text-gray-500">
-              Loading dashboard...
-            </p>
+          <div className="mx-auto max-w-7xl px-4 py-16 sm:px-6">
+            <div className="ia-surface p-8 text-center">
+              <p className="ia-subtitle">Loading dashboard...</p>
+            </div>
           </div>
         )}
         {error && (
-          <div className="max-w-7xl mx-auto px-4 py-4">
-            <div className="rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 p-4 text-sm text-red-700 dark:text-red-300">
+          <div className="mx-auto max-w-7xl px-4 py-4 sm:px-6">
+            <div className="ia-surface border-red-200 bg-red-50/90 p-4 text-sm text-red-700">
               {error}
             </div>
           </div>
         )}
-        {dashboardData && <IntelligenceDashboard data={dashboardData} />}
+        {dashboardData && (
+          <div className="relative z-10">
+            <IntelligenceDashboard data={dashboardData} />
+          </div>
+        )}
       </div>
     );
   }
 
-  // ─── Main layout ───────────────────────────────────────────────────────────
-
   return (
-    <div className="flex h-screen bg-gray-50 dark:bg-gray-950">
-      {/* Sidebar */}
+    <div className="ia-shell-bg flex min-h-screen">
       <Sidebar
         state={sidebar}
         onChange={setSidebar}
@@ -365,46 +348,34 @@ export default function App() {
         onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
       />
 
-      {/* Main content */}
-      <main className="flex-1 overflow-y-auto">
-        <div className="max-w-6xl mx-auto px-6 py-8 space-y-6">
-          {/* Header */}
-          <header>
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
-              InsightAgent
-            </h1>
-            <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
-              Upload data, analyze, and explore insights in one place
-            </p>
-          </header>
-
-          {/* Error banner */}
-          {error && (
-            <div className="rounded-xl bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 p-4 flex items-start gap-3">
-              <svg
-                className="w-5 h-5 text-red-500 shrink-0 mt-0.5"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={2}
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"
-                />
-              </svg>
-              <div className="flex-1">
-                <p className="text-sm text-red-700 dark:text-red-300">
-                  {error}
+      <main className="relative z-10 flex-1 overflow-y-auto">
+        <div className="mx-auto w-full max-w-[1240px] space-y-5 px-4 pb-10 pt-7 sm:px-6 lg:px-8">
+          <header className="ia-surface ia-fade-up px-6 py-5 sm:px-7 sm:py-6">
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <p className="ia-label mb-1">Decision Intelligence Platform</p>
+                <h1 className="ia-title">InsightAgent Studio</h1>
+                <p className="ia-subtitle mt-1.5">
+                  Analyze historical data, generate intelligence, and export structured outputs.
                 </p>
               </div>
-              <button
-                onClick={() => setError(null)}
-                className="text-red-400 hover:text-red-600 transition-colors"
-              >
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="ia-chip">{loading ? "Running" : "Ready"}</span>
+                {effectiveEntity && <span className="ia-chip">Entity: {effectiveEntity}</span>}
+                {effectiveBusinessType && (
+                  <span className="ia-chip">
+                    Type: {effectiveBusinessType.replace(/_/g, " ")}
+                  </span>
+                )}
+              </div>
+            </div>
+          </header>
+
+          {error && (
+            <div className="ia-surface border-red-200 bg-red-50/90 px-5 py-4">
+              <div className="flex items-start gap-3">
                 <svg
-                  className="w-4 h-4"
+                  className="mt-0.5 h-5 w-5 shrink-0 text-red-500"
                   fill="none"
                   viewBox="0 0 24 24"
                   stroke="currentColor"
@@ -413,30 +384,61 @@ export default function App() {
                   <path
                     strokeLinecap="round"
                     strokeLinejoin="round"
-                    d="M6 18L18 6M6 6l12 12"
+                    d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"
                   />
                 </svg>
-              </button>
+                <p className="flex-1 text-sm text-red-700">{error}</p>
+                <button
+                  onClick={() => setError(null)}
+                  className="rounded-md p-1 text-red-400 transition-colors hover:bg-red-100 hover:text-red-600"
+                  aria-label="Dismiss error"
+                >
+                  <svg
+                    className="h-4 w-4"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M6 18L18 6M6 6l12 12"
+                    />
+                  </svg>
+                </button>
+              </div>
             </div>
           )}
 
-          {/* CSV Upload */}
-          <section className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-800 p-6">
+          <section className="ia-surface ia-fade-up p-5 sm:p-6">
+            <div className="mb-4">
+              <p className="ia-label">Data Input</p>
+              <p className="ia-subtitle mt-1">
+                Upload a CSV dataset to run analysis from raw records.
+              </p>
+            </div>
             <CsvUpload file={file} onFileChange={setFile} />
           </section>
 
-          {/* Prompt Input */}
-          <section className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-800 p-6">
-            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3">
-              Strategic Prompt
-            </h3>
-            <div className="flex gap-3">
+          <section className="ia-surface ia-fade-up p-5 sm:p-6">
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <p className="ia-label">Strategic Prompt</p>
+                <p className="ia-subtitle mt-1">
+                  Define the business question to steer synthesis and recommendations.
+                </p>
+              </div>
+              <span className="ia-kbd">Ctrl + Enter</span>
+            </div>
+
+            <div className="flex flex-col gap-3 lg:flex-row">
               <textarea
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
                 placeholder="Enter your strategic business question..."
-                rows={3}
-                className="flex-1 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 px-4 py-3 text-sm text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
+                rows={4}
+                className="ia-textarea min-h-[120px] flex-1"
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
                     e.preventDefault();
@@ -447,31 +449,50 @@ export default function App() {
               <button
                 onClick={handleRun}
                 disabled={loading}
-                className="self-end rounded-xl bg-blue-600 px-6 py-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shrink-0"
+                className="ia-btn-primary h-[46px] px-6 lg:self-end"
               >
-                {loading ? "Analyzing..." : "Analyze"}
+                {loading ? (
+                  <>
+                    <svg
+                      className="h-4 w-4 animate-spin"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                    >
+                      <circle
+                        className="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        strokeWidth="4"
+                      />
+                      <path
+                        className="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                      />
+                    </svg>
+                    Analyzing
+                  </>
+                ) : (
+                  "Analyze"
+                )}
               </button>
             </div>
-            <p className="mt-2 text-xs text-gray-400">Ctrl+Enter to run</p>
           </section>
 
-          {/* Loading skeleton */}
           {loading && (
             <div className="space-y-4">
               {[1, 2, 3].map((i) => (
-                <div
-                  key={i}
-                  className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6 animate-pulse"
-                >
-                  <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded w-1/3 mb-4" />
-                  <div className="h-3 bg-gray-200 dark:bg-gray-700 rounded w-full mb-2" />
-                  <div className="h-3 bg-gray-200 dark:bg-gray-700 rounded w-2/3" />
+                <div key={i} className="ia-surface p-6">
+                  <div className="mb-4 h-4 w-1/3 animate-pulse rounded bg-slate-200" />
+                  <div className="mb-2 h-3 w-full animate-pulse rounded bg-slate-200" />
+                  <div className="h-3 w-2/3 animate-pulse rounded bg-slate-200" />
                 </div>
               ))}
             </div>
           )}
 
-          {/* Unified Insights Dashboard (auto-scrolls into view) */}
           {analyzeResult && !loading && (
             <InsightsDashboard
               analyzeResult={analyzeResult}
@@ -485,7 +506,6 @@ export default function App() {
             />
           )}
 
-          {/* Export Panel */}
           {analyzeResult && !loading && (
             <ExportPanel
               result={analyzeResult}
@@ -495,11 +515,10 @@ export default function App() {
             />
           )}
 
-          {/* Empty state */}
           {!loading && !analyzeResult && !error && (
-            <div className="flex flex-col items-center justify-center py-24 text-center">
+            <div className="ia-surface px-6 py-16 text-center sm:px-10">
               <svg
-                className="w-16 h-16 text-gray-300 dark:text-gray-700 mb-4"
+                className="mx-auto mb-4 h-14 w-14 text-slate-300"
                 fill="none"
                 viewBox="0 0 24 24"
                 stroke="currentColor"
@@ -511,11 +530,11 @@ export default function App() {
                   d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
                 />
               </svg>
-              <p className="text-lg text-gray-400 dark:text-gray-500">
-                Upload data and enter a prompt to begin analysis
+              <p className="text-base font-medium text-slate-600">
+                Upload data and enter a prompt to start analysis.
               </p>
-              <p className="text-sm text-gray-400 dark:text-gray-600 mt-1">
-                Or set an entity name in the sidebar and click "Run Analysis"
+              <p className="mt-2 text-sm text-slate-500">
+                You can also set an entity name in the sidebar and run without CSV upload.
               </p>
             </div>
           )}

@@ -121,11 +121,31 @@ def test_role_analytics_payload_includes_multivariate_and_scenarios(monkeypatch)
         _fake_fetch_canonical_dimension_rows,
     )
     monkeypatch.setattr("agent.graph._fetch_macro_context_rows", lambda **_: ([], []))
-    monkeypatch.setattr("agent.graph._fetch_canonical_cohort_rows", lambda **_: [])
+
+    # Supply upstream multivariate_scenario_data that role_analytics reads
+    # (the refactored node no longer re-computes missing upstream signals).
+    upstream_multivariate = {
+        "status": "success",
+        "payload": {
+            "statistical_context": {"confidence_score": 0.85, "anomaly_summary": {}},
+            "multivariate_context": {"confidence_score": 0.8, "correlation": {}},
+            "scenario_simulation": {
+                "status": "success",
+                "base_confidence": 0.75,
+                "scenarios": {
+                    "best": {"projected_growth": 0.05},
+                    "base": {"projected_growth": 0.02},
+                    "worst": {"projected_growth": -0.04},
+                },
+            },
+        },
+        "confidence_score": 0.8,
+    }
 
     state = {
         "business_type": "general_timeseries",
         "entity_name": "Acme",
+        "multivariate_scenario_data": upstream_multivariate,
         "kpi_data": {
             "status": "success",
             "payload": {
@@ -179,9 +199,7 @@ def test_role_analytics_payload_includes_multivariate_and_scenarios(monkeypatch)
     payload = segmentation["payload"]
     assert "multivariate_context" in payload
     assert "scenario_simulation" in payload
-    assert "derived" in payload["statistical_context"]
-    assert "multivariate" in payload["statistical_context"]["derived"]
-    assert "scenario_simulation" in payload["statistical_context"]["derived"]
+    assert "statistical_context" in payload
 
 
 def test_risk_and_prioritization_expose_scenario_metadata(monkeypatch) -> None:

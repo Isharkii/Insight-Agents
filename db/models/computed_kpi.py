@@ -11,13 +11,13 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Index, Integer, String, UniqueConstraint, func
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db.base import Base
 
-_UPSERT_CONSTRAINT = "uq_computed_kpis_entity_period"
+_UPSERT_CONSTRAINT = "uq_computed_kpis_tenant_entity_period"
 
 
 class ComputedKPI(Base):
@@ -34,7 +34,7 @@ class ComputedKPI(Base):
             "growth_rate": {"value": 0.12,    "unit": "rate"}
         }
 
-    The unique constraint on ``(entity_name, period_start, period_end)``
+    The unique constraint on ``(tenant_id, entity_id, period_start, period_end)``
     drives upsert semantics: re-running the engine for the same window
     updates the existing row instead of inserting a duplicate.
     """
@@ -46,10 +46,22 @@ class ComputedKPI(Base):
         primary_key=True,
         default=uuid.uuid4,
     )
+    tenant_id: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        server_default="legacy",
+        comment="Owning tenant identifier.",
+    )
+    entity_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("tenant_entities.id", ondelete="RESTRICT"),
+        nullable=False,
+        comment="Stable tenant-local entity identifier.",
+    )
     entity_name: Mapped[str] = mapped_column(
         String(255),
         nullable=False,
-        comment="Client or competitor entity name; matches CanonicalInsightRecord.entity_name",
+        comment="Denormalized display label retained for backward compatibility.",
     )
     period_start: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -84,16 +96,29 @@ class ComputedKPI(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "entity_name",
+            "tenant_id",
+            "entity_id",
             "period_start",
             "period_end",
             name=_UPSERT_CONSTRAINT,
         ),
-        Index("ix_computed_kpis_entity_name", "entity_name"),
-        Index("ix_computed_kpis_period_start", "period_start"),
         Index(
-            "ix_computed_kpis_entity_period_start",
+            "ix_computed_kpis_tenant_entity_period_start",
+            "tenant_id",
+            "entity_id",
+            "period_start",
+        ),
+        Index(
+            "ix_computed_kpis_tenant_entity_name_period_start",
+            "tenant_id",
             "entity_name",
             "period_start",
         ),
+        Index(
+            "ix_computed_kpis_tenant_period_start",
+            "tenant_id",
+            "period_start",
+        ),
+        Index("ix_computed_kpis_entity_name", "entity_name"),
+        Index("ix_computed_kpis_period_start", "period_start"),
     )

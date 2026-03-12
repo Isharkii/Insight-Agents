@@ -48,7 +48,7 @@ def root_cause_node(state: AgentState) -> AgentState:
             "unsupported_business_type",
             {"business_type": business_type},
         )
-        return {**state, "root_cause": root_cause}
+        return {"root_cause": root_cause}
 
     kpi_state = state.get(kpi_key)
     kpi_payload = payload_of(kpi_state)
@@ -57,7 +57,7 @@ def root_cause_node(state: AgentState) -> AgentState:
             "kpi_unavailable",
             {"engine_used": engine_used},
         )
-        return {**state, "root_cause": root_cause}
+        return {"root_cause": root_cause}
 
     forecast_state = state.get("forecast_data")
     forecast_payload = payload_of(forecast_state)
@@ -66,7 +66,7 @@ def root_cause_node(state: AgentState) -> AgentState:
             "forecast_unavailable",
             {"engine_used": engine_used},
         )
-        return {**state, "root_cause": root_cause}
+        return {"root_cause": root_cause}
 
     risk_state = state.get("risk_data")
     risk_data = payload_of(risk_state)
@@ -75,7 +75,7 @@ def root_cause_node(state: AgentState) -> AgentState:
             "risk_unavailable",
             {"engine_used": engine_used},
         )
-        return {**state, "root_cause": root_cause}
+        return {"root_cause": root_cause}
 
     try:
         flat_signals = normalize_signals(
@@ -97,4 +97,4 @@ def root_cause_node(state: AgentState) -> AgentState:
             {"engine_used": engine_used},
         )
 
-    return {**state, "root_cause": root_cause}
+    return {"root_cause": root_cause}

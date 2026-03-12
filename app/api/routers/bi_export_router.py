@@ -41,6 +41,11 @@ from sqlalchemy.orm import Session
 from agent.graph import insight_graph
 from agent.nodes.node_result import payload_of
 from app.failure_codes import INTERNAL_FAILURE, SCHEMA_CONFLICT, build_error_detail
+from app.security.dependencies import (
+    assert_entity_allowed_for_tenant,
+    require_security_context,
+)
+from app.security.models import SecurityContext
 from app.services.competitive_benchmark_service import build_competitive_benchmark_snapshot
 from app.services.bi_export_service import (
     BIExportService,
@@ -147,6 +152,7 @@ def export_bi(
     ),
     db: Session = Depends(get_db),
     service: BIExportService = Depends(get_bi_export_service),
+    security: SecurityContext = Depends(require_security_context),
 ) -> StreamingResponse | JSONResponse:
     """
     Export analytics data in a flat, tabular format consumable by PowerBI
@@ -158,6 +164,8 @@ def export_bi(
     applied.
     """
     # --- Validate query params ---
+    if entity_name:
+        assert_entity_allowed_for_tenant(entity_name=entity_name, security=security)
     if dataset not in _VALID_DATASETS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -243,7 +251,9 @@ def export_report(
         description='Output format: "json" or "md".',
     ),
     db: Session = Depends(get_db),
+    security: SecurityContext = Depends(require_security_context),
 ) -> JSONResponse | PlainTextResponse:
+    assert_entity_allowed_for_tenant(entity_name=entity_name, security=security)
     if output_format not in {"json", "md"}:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -257,6 +267,7 @@ def export_report(
         resolved = get_processing_strategy(business_type) or "general_timeseries"
         state = insight_graph.invoke(
             {
+                "request_id": security.request_id,
                 "user_query": prompt,
                 "business_type": resolved,
                 "entity_name": entity_name,
@@ -271,11 +282,18 @@ def export_report(
         strategic = insight_payload.strategic_recommendations
         immediate = strategic.immediate_actions[0] if strategic.immediate_actions else ""
         pipeline_status = str(state.get("pipeline_status") or insight_payload.pipeline_status)
-        benchmark_snapshot = build_competitive_benchmark_snapshot(
-            db=db,
-            entity_name=entity_name,
-            business_type=resolved,
-        )
+        try:
+            benchmark_snapshot = build_competitive_benchmark_snapshot(
+                db=db,
+                entity_name=entity_name,
+                business_type=resolved,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Report benchmark snapshot failed: %s", exc)
+            benchmark_snapshot = {
+                "status": "partial",
+                "reason": "benchmark_snapshot_unavailable",
+            }
         report_payload: dict[str, Any] = {
             "entity_name": entity_name,
             "business_type": resolved,
@@ -293,6 +311,7 @@ def export_report(
                 "timeseries_factors": payload_of(state.get("timeseries_factors_data")) or {},
                 "cohort": payload_of(state.get("cohort_data")) or {},
                 "category_formula": payload_of(state.get("category_formula_data")) or {},
+                "unit_economics": payload_of(state.get("unit_economics_data")) or {},
                 "multivariate_scenario": payload_of(state.get("multivariate_scenario_data")) or {},
                 "role_contribution": payload_of(state.get("segmentation")) or {},
                 "risk": payload_of(state.get("risk_data")) or {},
@@ -331,14 +350,17 @@ def export_bi_workbook(
         description="Prompt used for synthesis.",
     ),
     db: Session = Depends(get_db),
+    security: SecurityContext = Depends(require_security_context),
 ) -> StreamingResponse:
     """Export a multi-sheet Excel workbook with charts, KPI trends, risk
     scores, forecasts, and strategic insights.  Openable in Power BI,
     Excel, or any tool that supports .xlsx."""
     try:
+        assert_entity_allowed_for_tenant(entity_name=entity_name, security=security)
         resolved = get_processing_strategy(business_type) or "general_timeseries"
         state = insight_graph.invoke(
             {
+                "request_id": security.request_id,
                 "user_query": prompt,
                 "business_type": resolved,
                 "entity_name": entity_name,

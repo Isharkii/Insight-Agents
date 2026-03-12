@@ -56,6 +56,18 @@ STRICT RULES:
     "strategic_recommendations": {...}
   }
 
+SIGNAL-FIRST REASONING:
+- A "Signal Summary" section below provides classified signals (growth_trend,
+  volatility_level, forecast_direction, cohort_health, primary_risk).
+- Reason from these classified signals, NOT from raw KPI numbers.
+- Do NOT repeat raw metric values. Instead, reference the signal classification
+  and competitor deltas.
+- Structure your analysis as:
+  1. Key Signal Summary — what the signals tell us about competitive position
+  2. Primary Drivers — what is driving competitive gaps
+  3. Risk Assessment — what competitive risks the signals expose
+  4. Strategic Recommendations — what actions to take based on signals
+
 CONTENT RULES:
 - competitive_analysis must ONLY reference competitor data and metrics.
 - strategic_recommendations must explicitly reference competitor gaps, strengths, and weaknesses.
@@ -94,6 +106,18 @@ STRICT RULES:
 
 CONTEXT: No competitor or peer benchmark data is available.
 Analyze the entity's OWN performance trends, strengths, and weaknesses.
+
+SIGNAL-FIRST REASONING:
+- A "Signal Summary" section below provides classified signals (growth_trend,
+  volatility_level, forecast_direction, cohort_health, primary_risk).
+- Reason from these classified signals, NOT from raw KPI numbers.
+- Do NOT repeat raw metric values. Instead, reference the signal classification
+  (e.g., "growth is accelerating" not "revenue was 10000 then 12000").
+- Structure your analysis as:
+  1. Key Signal Summary — what the signals tell us
+  2. Primary Drivers — what is driving the observed trends
+  3. Risk Assessment — what risks the signals expose
+  4. Strategic Recommendations — what actions to take based on signals
 
 CONTENT RULES:
 - competitive_analysis fields should analyze the entity's own performance trajectory,
@@ -183,6 +207,8 @@ class SynthesisPromptBuilder:
         missing_signals: list | None = None,
         has_competitor_data: bool = False,
         competitor_signals: Dict | None = None,
+        conflict_metadata: Dict | None = None,
+        signal_enrichment: Dict | None = None,
     ) -> str:
         """Build the full synthesis prompt from upstream data.
 
@@ -203,14 +229,21 @@ class SynthesisPromptBuilder:
         Returns:
             A fully formatted prompt string ready for LLM consumption.
         """
-        data_kwargs: Dict = {
+        data_kwargs: Dict = {}
+        # Signal enrichment goes first so the LLM sees the high-level
+        # classified signals before the raw data sections.
+        if signal_enrichment:
+            data_kwargs["signal_summary"] = signal_enrichment
+        data_kwargs.update({
             "kpi_data": kpi_data,
             "forecast_data": forecast_data,
             "risk_data": risk_data,
             "root_cause": root_cause,
             "segmentation": segmentation,
             "prioritization": prioritization,
-        }
+        })
+        if conflict_metadata:
+            data_kwargs["signal_conflicts"] = conflict_metadata
         if has_competitor_data and competitor_signals:
             data_kwargs["competitor_benchmark_signals"] = competitor_signals
         sections = self._format_data_sections(**data_kwargs)

@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from agent.nodes.node_result import failed, skipped, success
+from agent.helpers.state_slimming import slim_kpi_payload
 from agent.signal_envelope import classify_kpi_completeness_for_type
 from agent.state import AgentState
 from db.repositories.kpi_repository import KPIRepository
@@ -94,14 +95,14 @@ def ecommerce_kpi_fetch_node(state: AgentState) -> AgentState:
             )
             records = [_serialize_row(r) for r in rows]
 
-        payload: dict[str, Any] = {
-            "records": records,
-            "fetched_for": entity_name,
-            "period_start": period_start.isoformat(),
-            "period_end": period_end.isoformat(),
-            "metrics": sorted(_ECOMMERCE_METRICS),
-        }
-        if records:
+        payload = slim_kpi_payload(
+            records,
+            fetched_for=entity_name,
+            period_start=period_start.isoformat(),
+            period_end=period_end.isoformat(),
+            metrics=sorted(_ECOMMERCE_METRICS),
+        )
+        if payload.get("record_count", 0):
             merged_kpis = _merge_computed_kpis(records)
             status, warnings, errors, confidence = classify_kpi_completeness_for_type(
                 merged_kpis, "ecommerce",
@@ -131,4 +132,4 @@ def ecommerce_kpi_fetch_node(state: AgentState) -> AgentState:
             },
         )
 
-    return {**state, "ecommerce_kpi_data": ecommerce_kpi_data}
+    return {"ecommerce_kpi_data": ecommerce_kpi_data}

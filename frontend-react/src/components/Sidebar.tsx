@@ -68,11 +68,12 @@ const Sidebar: FC<SidebarProps> = ({
 
   if (collapsed) {
     return (
-      <div className="w-12 shrink-0 bg-gray-900 flex flex-col items-center py-4">
+      <div className="relative z-20 flex w-14 shrink-0 flex-col items-center border-r border-slate-300/60 bg-slate-100/80 py-4 backdrop-blur">
         <button
           onClick={onToggleCollapse}
-          className="text-gray-400 hover:text-white transition-colors"
+          className="rounded-lg border border-slate-300 bg-white/80 p-2 text-slate-500 transition-colors hover:text-slate-700"
           title="Expand sidebar"
+          aria-label="Expand sidebar"
         >
           <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
             <path
@@ -87,16 +88,17 @@ const Sidebar: FC<SidebarProps> = ({
   }
 
   return (
-    <aside className="w-72 shrink-0 bg-gray-900 text-gray-100 flex flex-col h-screen overflow-y-auto">
-      {/* Header */}
-      <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800">
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-gray-400">
-          Controls
-        </h2>
+    <aside className="relative z-20 flex h-screen w-[300px] max-w-[88vw] shrink-0 flex-col border-r border-slate-300/60 bg-white/84 backdrop-blur">
+      <div className="flex items-center justify-between border-b border-slate-300/70 px-5 py-4">
+        <div>
+          <p className="ia-label">Controls</p>
+          <p className="mt-1 text-xs text-slate-500">Execution and context settings</p>
+        </div>
         <button
           onClick={onToggleCollapse}
-          className="text-gray-500 hover:text-gray-300 transition-colors"
+          className="rounded-lg border border-slate-300 bg-white/80 p-1.5 text-slate-500 transition-colors hover:text-slate-700"
           title="Collapse sidebar"
+          aria-label="Collapse sidebar"
         >
           <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
             <path
@@ -108,21 +110,18 @@ const Sidebar: FC<SidebarProps> = ({
         </button>
       </div>
 
-      <div className="flex-1 px-5 py-4 space-y-5">
-        {/* Mode Toggle */}
+      <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4">
         <div>
-          <label className="block text-xs font-medium text-gray-400 mb-1.5">
-            Mode
-          </label>
-          <div className="flex rounded-lg overflow-hidden border border-gray-700">
+          <label className="ia-label mb-1.5 block">Mode</label>
+          <div className="grid grid-cols-2 overflow-hidden rounded-xl border border-slate-300 bg-white/70">
             {(["LOCAL", "CLOUD"] as const).map((m) => (
               <button
                 key={m}
                 onClick={() => update({ mode: m })}
-                className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${
+                className={`px-3 py-2 text-xs font-semibold transition-colors ${
                   state.mode === m
-                    ? "bg-blue-600 text-white"
-                    : "bg-gray-800 text-gray-400 hover:text-gray-200"
+                    ? "bg-teal-700 text-white"
+                    : "bg-transparent text-slate-600 hover:text-slate-800"
                 }`}
               >
                 {m}
@@ -131,15 +130,12 @@ const Sidebar: FC<SidebarProps> = ({
           </div>
         </div>
 
-        {/* Client Select */}
         <div>
-          <label className="block text-xs font-medium text-gray-400 mb-1.5">
-            Client
-          </label>
+          <label className="ia-label mb-1.5 block">Client</label>
           <select
             value={state.clientId}
             onChange={(e) => update({ clientId: e.target.value })}
-            className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="ia-select"
           >
             {clients.map((c) => (
               <option key={c} value={c}>
@@ -149,29 +145,23 @@ const Sidebar: FC<SidebarProps> = ({
           </select>
         </div>
 
-        {/* Entity Override */}
         <div>
-          <label className="block text-xs font-medium text-gray-400 mb-1.5">
-            Entity / Client ID Override
-          </label>
+          <label className="ia-label mb-1.5 block">Entity Override</label>
           <input
             type="text"
             value={state.entityOverride}
             onChange={(e) => update({ entityOverride: e.target.value })}
             placeholder="Override entity name"
-            className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="ia-input"
           />
         </div>
 
-        {/* Business Type */}
         <div>
-          <label className="block text-xs font-medium text-gray-400 mb-1.5">
-            Business Type
-          </label>
+          <label className="ia-label mb-1.5 block">Business Type</label>
           <select
             value={state.businessType}
             onChange={(e) => update({ businessType: e.target.value })}
-            className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="ia-select"
           >
             {BUSINESS_TYPES.map((bt) => (
               <option key={bt.value} value={bt.value}>
@@ -181,15 +171,12 @@ const Sidebar: FC<SidebarProps> = ({
           </select>
         </div>
 
-        {/* Multi-Entity Behavior */}
         <div>
-          <label className="block text-xs font-medium text-gray-400 mb-1.5">
-            Multi-Entity Handling
-          </label>
+          <label className="ia-label mb-1.5 block">Multi-Entity Handling</label>
           <select
             value={state.multiEntityBehavior}
             onChange={(e) => update({ multiEntityBehavior: e.target.value })}
-            className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="ia-select"
           >
             {MULTI_ENTITY_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
@@ -199,15 +186,12 @@ const Sidebar: FC<SidebarProps> = ({
           </select>
         </div>
 
-        {/* Model */}
         <div>
-          <label className="block text-xs font-medium text-gray-400 mb-1.5">
-            Model
-          </label>
+          <label className="ia-label mb-1.5 block">Model</label>
           <select
             value={state.model}
             onChange={(e) => update({ model: e.target.value })}
-            className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="ia-select"
           >
             {MODEL_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
@@ -218,20 +202,15 @@ const Sidebar: FC<SidebarProps> = ({
         </div>
       </div>
 
-      {/* Action Buttons */}
-      <div className="px-5 py-4 border-t border-gray-800 space-y-2">
+      <div className="space-y-2 border-t border-slate-300/70 px-5 py-4">
         <button
           onClick={onRun}
           disabled={loading}
-          className="w-full rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="ia-btn-primary h-11 w-full"
         >
           {loading ? (
             <span className="flex items-center justify-center gap-2">
-              <svg
-                className="animate-spin h-4 w-4"
-                viewBox="0 0 24 24"
-                fill="none"
-              >
+              <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
                 <circle
                   className="opacity-25"
                   cx="12"
@@ -246,16 +225,13 @@ const Sidebar: FC<SidebarProps> = ({
                   d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
                 />
               </svg>
-              Running...
+              Running
             </span>
           ) : (
             "Run Analysis"
           )}
         </button>
-        <button
-          onClick={onClear}
-          className="w-full rounded-lg border border-gray-700 bg-gray-800 px-4 py-2 text-sm font-medium text-gray-300 hover:bg-gray-700 transition-colors"
-        >
+        <button onClick={onClear} className="ia-btn-secondary h-10 w-full">
           Clear
         </button>
       </div>

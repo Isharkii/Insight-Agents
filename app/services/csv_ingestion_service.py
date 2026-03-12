@@ -167,6 +167,7 @@ class CSVIngestionService:
         upload_file: UploadFile,
         db: Session,
         client_name: str | None = None,
+        tenant_id: str | None = None,
         mapping_config_name: str | None = None,
         manual_mapping: Mapping[str, str] | None = None,
         multi_entity_behavior: str | None = None,
@@ -283,6 +284,7 @@ class CSVIngestionService:
                 wide_meta=wide_meta,
                 headers=headers,
                 client_name=client_name,
+                tenant_id=tenant_id,
                 mapping_config_name=mapping_config_name,
                 upload_file=upload_file,
             )
@@ -414,6 +416,7 @@ class CSVIngestionService:
                 "mapping_config_id": mapping.mapping_config_id,
                 "canonical_to_source": dict(mapping.canonical_to_source),
                 "match_strategies": dict(mapping.match_strategies),
+                "tenant_id": tenant_id,
                 "wide_to_long": {
                     "applied": wide_normalized_df is not None,
                     "periodicity": wide_meta.inferred_periodicity,
@@ -964,6 +967,7 @@ class CSVIngestionService:
                         "mapping_config_id": ingestion_context.get("mapping_config_id"),
                         "canonical_to_source": ingestion_context.get("canonical_to_source"),
                         "match_strategies": ingestion_context.get("match_strategies"),
+                        "tenant_id": ingestion_context.get("tenant_id"),
                         "wide_to_long": ingestion_context.get("wide_to_long"),
                     }
                 )
@@ -1055,6 +1059,7 @@ class CSVIngestionService:
         wide_meta: Any,
         headers: Sequence[str],
         client_name: str | None,
+        tenant_id: str | None,
         mapping_config_name: str | None,
         upload_file: UploadFile,
     ) -> dict[str, Any]:
@@ -1065,6 +1070,7 @@ class CSVIngestionService:
             "content_type": upload_file.content_type,
             "headers": [str(header) for header in headers],
             "client_name": client_name,
+            "tenant_id": tenant_id,
             "mapping_config_name": mapping_config_name,
             "mapping_config_id": mapping.mapping_config_id,
             "canonical_to_source": dict(mapping.canonical_to_source),

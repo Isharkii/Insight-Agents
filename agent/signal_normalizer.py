@@ -158,31 +158,50 @@ def check_kpi_readiness(kpi_payload: dict) -> KPIReadinessResult:
             reasons=["kpi_payload is not a dict"],
         )
 
-    records = kpi_payload.get("records")
-    if not isinstance(records, list) or not records:
-        return KPIReadinessResult(
-            is_ready=False, record_count=0, available_metrics=[],
-            missing_revenue_proxy=True, missing_churn_proxy=True,
-            missing_conversion_proxy=True, max_series_depth=0,
-            reasons=["kpi_payload.records is empty or missing"],
-        )
-
-    # Count usable records and build metric inventory.
-    metric_series_depth: dict[str, int] = {}
-    usable_record_count = 0
-    for record in records:
-        if not isinstance(record, dict):
-            continue
-        computed = record.get("computed_kpis")
-        if not isinstance(computed, dict):
-            continue
-        usable_record_count += 1
-        for metric_name, raw_value in computed.items():
-            try:
-                _metric_to_float(raw_value)
-            except ValueError:
+    compact_series = kpi_payload.get("metric_series")
+    if isinstance(compact_series, dict) and compact_series:
+        metric_series_depth: dict[str, int] = {}
+        for metric_name, values in compact_series.items():
+            if not isinstance(values, list):
                 continue
-            metric_series_depth[metric_name] = metric_series_depth.get(metric_name, 0) + 1
+            depth = 0
+            for raw in values:
+                try:
+                    float(raw)
+                except (TypeError, ValueError):
+                    continue
+                depth += 1
+            if depth > 0:
+                metric_series_depth[str(metric_name)] = depth
+        usable_record_count = int(kpi_payload.get("record_count") or 0)
+        if usable_record_count <= 0:
+            usable_record_count = max(metric_series_depth.values(), default=0)
+    else:
+        records = kpi_payload.get("records")
+        if not isinstance(records, list) or not records:
+            return KPIReadinessResult(
+                is_ready=False, record_count=0, available_metrics=[],
+                missing_revenue_proxy=True, missing_churn_proxy=True,
+                missing_conversion_proxy=True, max_series_depth=0,
+                reasons=["kpi_payload.records is empty or missing"],
+            )
+
+        # Count usable records and build metric inventory.
+        metric_series_depth = {}
+        usable_record_count = 0
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            computed = record.get("computed_kpis")
+            if not isinstance(computed, dict):
+                continue
+            usable_record_count += 1
+            for metric_name, raw_value in computed.items():
+                try:
+                    _metric_to_float(raw_value)
+                except ValueError:
+                    continue
+                metric_series_depth[metric_name] = metric_series_depth.get(metric_name, 0) + 1
 
     if usable_record_count == 0:
         return KPIReadinessResult(
@@ -274,6 +293,23 @@ def _validate_required_signals(signals: dict[str, Any]) -> None:
 def _extract_kpi_series(kpi_payload: dict) -> dict[str, list[float]]:
     if not isinstance(kpi_payload, dict):
         raise ValueError("kpi_payload must be a dict.")
+
+    compact_series = kpi_payload.get("metric_series")
+    if isinstance(compact_series, dict) and compact_series:
+        series: dict[str, list[float]] = {}
+        for metric_name, values in compact_series.items():
+            if not isinstance(values, list):
+                continue
+            numeric_values: list[float] = []
+            for value in values:
+                try:
+                    numeric_values.append(float(value))
+                except (TypeError, ValueError):
+                    continue
+            if numeric_values:
+                series[str(metric_name)] = numeric_values
+        if series:
+            return series
 
     records = kpi_payload.get("records")
     if not isinstance(records, list) or not records:
@@ -405,6 +441,7 @@ def _derive_revenue_growth_delta(series: dict[str, list[float]]) -> float:
     from_revenue = _pct_change_from_series(series, "revenue")
     from_mrr = _pct_change_from_series(series, "mrr")
     from_total_revenue = _pct_change_from_series(series, "total_revenue")
+    from_recurring_revenue = _pct_change_from_series(series, "recurring_revenue")
     from_retainer = _pct_change_from_series(series, "retainer_revenue")
 
     return _require(
@@ -415,6 +452,7 @@ def _derive_revenue_growth_delta(series: dict[str, list[float]]) -> float:
             from_revenue,
             from_mrr,
             from_total_revenue,
+            from_recurring_revenue,
             from_retainer,
         ),
     )

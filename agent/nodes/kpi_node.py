@@ -12,6 +12,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from agent.helpers.state_slimming import slim_kpi_payload
 from agent.nodes.node_result import failed, skipped, success
 from agent.state import AgentState
 from db.repositories.kpi_repository import KPIRepository
@@ -66,13 +67,13 @@ def kpi_fetch_node(state: AgentState) -> AgentState:
             )
             records = [_serialize_row(r) for r in rows]
 
-        payload: dict[str, Any] = {
-            "records": records,
-            "fetched_for": entity_name,
-            "period_start": period_start.isoformat(),
-            "period_end": period_end.isoformat(),
-        }
-        if records:
+        payload = slim_kpi_payload(
+            records,
+            fetched_for=entity_name,
+            period_start=period_start.isoformat(),
+            period_end=period_end.isoformat(),
+        )
+        if payload.get("record_count", 0):
             kpi_data = success(payload)
         else:
             kpi_data = skipped("no_kpi_records", payload)
@@ -87,4 +88,4 @@ def kpi_fetch_node(state: AgentState) -> AgentState:
             },
         )
 
-    return {**state, "kpi_data": kpi_data}
+    return {"kpi_data": kpi_data}

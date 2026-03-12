@@ -38,6 +38,7 @@ class OpenAILLMAdapter(BaseLLMAdapter):
         max_tokens: int = 2048,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
+        timeout: float = 30.0,
     ) -> None:
         """Initialise the OpenAI adapter.
 
@@ -46,6 +47,7 @@ class OpenAILLMAdapter(BaseLLMAdapter):
             max_tokens: Maximum tokens in the completion.
             api_key: OpenAI API key. Falls back to OPENAI_API_KEY env var.
             base_url: Optional base URL for OpenAI-compatible endpoints.
+            timeout: Request timeout in seconds (default 45s).
         """
         try:
             from openai import OpenAI  # type: ignore[import-untyped]
@@ -56,7 +58,7 @@ class OpenAILLMAdapter(BaseLLMAdapter):
             ) from exc
 
         resolved_key = api_key or os.environ.get("OPENAI_API_KEY", "")
-        client_kwargs: dict = {"api_key": resolved_key}
+        client_kwargs: dict = {"api_key": resolved_key, "timeout": timeout}
         if base_url:
             client_kwargs["base_url"] = base_url
 

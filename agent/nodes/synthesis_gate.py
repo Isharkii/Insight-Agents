@@ -14,9 +14,10 @@ from __future__ import annotations
 from typing import Any
 
 from agent.graph_config import graph_node_config_for_business_type, signal_name_for_state_key
-from agent.nodes.node_result import status_of
+from agent.nodes.node_result import payload_of, status_of
 from agent.signal_integrity import UnifiedSignalIntegrity
 from agent.state import AgentState
+from app.services.statistics.signal_conflict import apply_conflict_penalty
 from llm_synthesis.schema import InsightOutput, set_self_analysis_mode
 
 # Minimum deterministic confidence to allow LLM synthesis.
@@ -40,7 +41,17 @@ def _collect_required_failures(state: AgentState) -> list[str]:
 def _compute_pre_synthesis_confidence(state: AgentState) -> float:
     """Compute deterministic confidence from signal envelopes before LLM runs."""
     integrity = UnifiedSignalIntegrity.compute(state)
-    return max(0.0, min(1.0, float(integrity.get("overall_score") or 0.0)))
+    confidence = max(0.0, min(1.0, float(integrity.get("overall_score") or 0.0)))
+
+    conflict_payload = payload_of(state.get("signal_conflicts")) or {}
+    conflict_result = conflict_payload.get("conflict_result")
+    if isinstance(conflict_result, dict):
+        adjusted = apply_conflict_penalty(confidence, conflict_result, floor=0.0)
+        confidence = max(
+            0.0,
+            min(1.0, float(adjusted.get("adjusted_confidence") or confidence)),
+        )
+    return confidence
 
 
 def should_block_synthesis(state: AgentState) -> bool:
@@ -121,8 +132,9 @@ def synthesis_gate_node(state: AgentState) -> AgentState:
     integrity_scores = UnifiedSignalIntegrity.score_vector_from_integrity(integrity)
 
     if should_block_synthesis(state):
+        conflict_payload = payload_of(state.get("signal_conflicts")) or {}
+        conflict_result = conflict_payload.get("conflict_result")
         return {
-            **state,
             "synthesis_blocked": True,
             "final_response": build_blocked_response(state),
             "signal_integrity": integrity,
@@ -132,14 +144,16 @@ def synthesis_gate_node(state: AgentState) -> AgentState:
                 ],
                 "missing_signal": _collect_required_failures(state),
                 "confidence_adjustments": integrity.get("confidence_adjustments", []),
-                "confidence_score": float(integrity.get("overall_score") or 0.0),
+                "confidence_score": _compute_pre_synthesis_confidence(state),
+                "signal_conflicts": (
+                    conflict_result if isinstance(conflict_result, dict) else {}
+                ),
                 "signal_integrity_scores": integrity_scores,
                 "signal_integrity": integrity,
             },
         }
 
     return {
-        **state,
         "synthesis_blocked": False,
         "signal_integrity": integrity,
     }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from agent.graph import role_analytics_node
+from agent.helpers.statistical_context import build_statistical_context
 from agent.nodes.node_result import status_of
 from app.services.statistics.anomaly import detect_iqr_anomalies, iqr_bounds
 from app.services.statistics.normalization import (
@@ -90,14 +91,26 @@ def test_role_analytics_payload_includes_statistical_context(monkeypatch) -> Non
         "agent.graph._fetch_macro_context_rows",
         lambda **_: ([], []),
     )
-    monkeypatch.setattr(
-        "agent.graph._fetch_canonical_cohort_rows",
-        lambda **_: [],
-    )
+
+    # Pre-compute the statistical context that the refactored node reads
+    # from the upstream multivariate_scenario_data envelope.
+    metric_series = {"timeseries_value": [100.0, 105.0, 160.0, 110.0]}
+    stat_ctx = build_statistical_context(metric_series)
+
+    upstream_multivariate = {
+        "status": "success",
+        "payload": {
+            "statistical_context": stat_ctx,
+            "multivariate_context": {},
+            "scenario_simulation": {},
+        },
+        "confidence_score": 0.8,
+    }
 
     state = {
         "business_type": "general_timeseries",
         "entity_name": "Acme",
+        "multivariate_scenario_data": upstream_multivariate,
         "kpi_data": {
             "status": "success",
             "payload": {
@@ -132,11 +145,11 @@ def test_role_analytics_payload_includes_statistical_context(monkeypatch) -> Non
     payload = segmentation["payload"]
     assert "statistical_context" in payload
 
-    stat_ctx = payload["statistical_context"]
-    assert "metrics" in stat_ctx
-    assert "timeseries_value" in stat_ctx["metrics"]
+    stat_result = payload["statistical_context"]
+    assert "metrics" in stat_result
+    assert "timeseries_value" in stat_result["metrics"]
 
-    metric_payload = stat_ctx["metrics"]["timeseries_value"]
+    metric_payload = stat_result["metrics"]["timeseries_value"]
     assert "zscore" in metric_payload
     assert "smoothing" in metric_payload
     assert "anomaly" in metric_payload

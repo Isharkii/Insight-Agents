@@ -18,6 +18,7 @@ from db.models.benchmarks import (
 from db.models.ingestion_job import IngestionJob
 from db.models.macro_metrics import MacroMetric, MacroMetricRun
 from db.models.mapping_config import MappingConfig
+from db.models.tenant_entity import TenantEntity
 from db.models.scoring import (
     CompositeScore,
     RankingResult,
@@ -44,6 +45,7 @@ __all__ = [
     "MacroMetric",
     "ForecastMetric",
     "BusinessRiskScore",
+    "TenantEntity",
     "ScoringRun",
     "ScoringSubject",
     "RelativeScore",

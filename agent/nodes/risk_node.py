@@ -12,6 +12,12 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from agent.helpers.confidence_model import compute_standard_confidence
+from agent.helpers.signal_snapshots import (
+    cohort_signal_snapshot,
+    growth_signal_snapshot,
+    scenario_signal_snapshot,
+)
 from agent.state import AgentState
 from agent.nodes.node_result import (
     failed, insufficient_data, payload_of, skipped, status_of, success,
@@ -22,6 +28,7 @@ from agent.signal_normalizer import (
     normalize_kpi_signals,
 )
 from agent.signal_integrity import UnifiedSignalIntegrity
+from app.services.statistics.signal_conflict import detect_conflicts, apply_conflict_penalty
 from db.session import SessionLocal
 from risk.orchestrator import RiskOrchestrator
 
@@ -49,212 +56,21 @@ def _kpi_data_for_business_type(state: AgentState) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
-def _segmentation_or_node_payload(
-    state: AgentState,
-    *,
-    segmentation_key: str,
-    node_key: str,
-) -> dict[str, Any]:
-    segmentation = payload_of(state.get("segmentation")) or {}
-    if isinstance(segmentation, dict):
-        candidate = segmentation.get(segmentation_key)
-        if isinstance(candidate, dict):
-            return candidate
-    candidate = payload_of(state.get(node_key))
-    return candidate if isinstance(candidate, dict) else {}
 
 
-def _cohort_signal_snapshot(state: AgentState) -> dict[str, Any]:
-    cohort = _segmentation_or_node_payload(
-        state,
-        segmentation_key="cohort_analytics",
-        node_key="cohort_data",
-    )
-    if not cohort:
-        return {
-            "available": False,
-            "status": "missing",
-            "confidence_score": 1.0,
-            "warnings": [],
-            "churn_acceleration": None,
-            "risk_hint": "low",
-        }
-
-    signals = cohort.get("signals")
-    if not isinstance(signals, dict):
-        signals = {}
-
-    confidence_raw = cohort.get("confidence_score")
-    try:
-        confidence = float(confidence_raw)
-    except (TypeError, ValueError):
-        confidence = 1.0
-    confidence = max(0.0, min(1.0, confidence))
-
-    churn_acceleration = signals.get("churn_acceleration")
-    try:
-        churn_acceleration = float(churn_acceleration) if churn_acceleration is not None else None
-    except (TypeError, ValueError):
-        churn_acceleration = None
-
-    warnings = cohort.get("warnings")
-    if not isinstance(warnings, list):
-        warnings = []
-
-    return {
-        "available": churn_acceleration is not None,
-        "status": str(cohort.get("status") or "success").strip().lower(),
-        "confidence_score": confidence,
-        "warnings": [str(item) for item in warnings],
-        "churn_acceleration": churn_acceleration,
-        "risk_hint": str(signals.get("risk_hint") or "low").strip().lower(),
-    }
+# Snapshot extraction delegated to shared helpers.
+_cohort_signal_snapshot = cohort_signal_snapshot
+_growth_signal_snapshot = growth_signal_snapshot
+_scenario_signal_snapshot = scenario_signal_snapshot
 
 
-def _growth_signal_snapshot(state: AgentState) -> dict[str, Any]:
-    growth = _segmentation_or_node_payload(
-        state,
-        segmentation_key="growth_context",
-        node_key="growth_data",
-    )
-    if not growth:
-        return {
-            "available": False,
-            "status": "missing",
-            "confidence_score": 1.0,
-            "warnings": [],
-            "short_growth": None,
-            "mid_growth": None,
-            "long_growth": None,
-            "trend_acceleration": None,
-            "insufficient_history": {},
-        }
-
-    horizons = growth.get("primary_horizons")
-    if not isinstance(horizons, dict):
-        horizons = {}
-    insufficient = horizons.get("insufficient_history")
-    if not isinstance(insufficient, dict):
-        insufficient = {}
-
-    def _num(value: Any) -> float | None:
-        try:
-            return float(value) if value is not None else None
-        except (TypeError, ValueError):
-            return None
-
-    short_growth = _num(horizons.get("short_growth"))
-    mid_growth = _num(horizons.get("mid_growth"))
-    long_growth = _num(horizons.get("long_growth"))
-    trend_acceleration = _num(horizons.get("trend_acceleration"))
-
-    confidence_raw = growth.get("confidence_score")
-    try:
-        confidence = float(confidence_raw)
-    except (TypeError, ValueError):
-        confidence = 1.0
-    confidence = max(0.0, min(1.0, confidence))
-
-    warnings = growth.get("warnings")
-    if not isinstance(warnings, list):
-        warnings = []
-
-    available = any(value is not None for value in (short_growth, mid_growth, long_growth))
-    return {
-        "available": available,
-        "status": str(growth.get("status") or "success").strip().lower(),
-        "confidence_score": confidence,
-        "warnings": [str(item) for item in warnings],
-        "short_growth": short_growth,
-        "mid_growth": mid_growth,
-        "long_growth": long_growth,
-        "trend_acceleration": trend_acceleration,
-        "insufficient_history": {str(k): bool(v) for k, v in insufficient.items()},
-    }
-
-
-def _scenario_signal_snapshot(state: AgentState) -> dict[str, Any]:
-    segmentation = payload_of(state.get("segmentation")) or {}
-    scenario = segmentation.get("scenario_simulation") if isinstance(segmentation, dict) else None
-    if not isinstance(scenario, dict):
-        bundled = _segmentation_or_node_payload(
-            state,
-            segmentation_key="multivariate_scenario",
-            node_key="multivariate_scenario_data",
-        )
-        if isinstance(bundled, dict):
-            candidate = bundled.get("scenario_simulation")
-            if isinstance(candidate, dict):
-                scenario = candidate
-    if not isinstance(scenario, dict):
-        return {
-            "available": False,
-            "status": "missing",
-            "confidence_score": 1.0,
-            "warnings": [],
-            "worst_growth": None,
-            "best_growth": None,
-            "worst_confidence_impact": None,
-            "assumptions": {},
-            "insufficient_history": {},
-        }
-
-    scenarios = scenario.get("scenarios")
-    if not isinstance(scenarios, Mapping):
-        scenarios = {}
-    worst = scenarios.get("worst")
-    best = scenarios.get("best")
-    if not isinstance(worst, Mapping):
-        worst = {}
-    if not isinstance(best, Mapping):
-        best = {}
-
-    def _num(value: Any) -> float | None:
-        try:
-            return float(value) if value is not None else None
-        except (TypeError, ValueError):
-            return None
-
-    worst_growth = _num(worst.get("projected_growth"))
-    best_growth = _num(best.get("projected_growth"))
-
-    assumptions = scenario.get("metadata")
-    if isinstance(assumptions, Mapping):
-        assumptions = assumptions.get("assumptions")
-    if not isinstance(assumptions, Mapping):
-        assumptions = {}
-
-    worst_assumptions = worst.get("assumptions")
-    if not isinstance(worst_assumptions, Mapping):
-        worst_assumptions = {}
-    worst_confidence_impact = _num(worst_assumptions.get("confidence_impact"))
-
-    warnings = scenario.get("warnings")
-    if not isinstance(warnings, list):
-        warnings = []
-
-    insufficient = scenario.get("insufficient_history")
-    if not isinstance(insufficient, Mapping):
-        insufficient = {}
-
-    confidence_raw = scenario.get("base_confidence")
-    try:
-        confidence = float(confidence_raw)
-    except (TypeError, ValueError):
-        confidence = 1.0
-    confidence = max(0.0, min(1.0, confidence))
-
-    return {
-        "available": (worst_growth is not None) or (best_growth is not None),
-        "status": str(scenario.get("status") or "success").strip().lower(),
-        "confidence_score": confidence,
-        "warnings": [str(item) for item in warnings],
-        "worst_growth": worst_growth,
-        "best_growth": best_growth,
-        "worst_confidence_impact": worst_confidence_impact,
-        "assumptions": dict(assumptions),
-        "insufficient_history": {str(k): bool(v) for k, v in insufficient.items()},
-    }
+def _global_conflict_result(state: AgentState) -> tuple[dict[str, Any], str]:
+    envelope = state.get("signal_conflicts")
+    payload = payload_of(envelope) or {}
+    result = payload.get("conflict_result")
+    if isinstance(result, Mapping):
+        return dict(result), "global"
+    return {}, "local_fallback"
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +103,7 @@ def risk_node(state: AgentState) -> AgentState:
             "unsupported_business_type",
             {"business_type": business_type},
         )
-        return {**state, "risk_data": risk_data}
+        return {"risk_data": risk_data}
 
     kpi_envelope = state.get(kpi_key)
     kpi_status = status_of(kpi_envelope)
@@ -298,14 +114,14 @@ def risk_node(state: AgentState) -> AgentState:
             "kpi_unavailable",
             {"business_type": business_type, "kpi_status": kpi_status},
         )
-        return {**state, "risk_data": risk_data}
+        return {"risk_data": risk_data}
 
     if not kpi_payload:
         risk_data = skipped(
             "kpi_unavailable",
             {"business_type": business_type},
         )
-        return {**state, "risk_data": risk_data}
+        return {"risk_data": risk_data}
 
     # Collect upstream diagnostics from KPI envelope.
     upstream_warnings: list[str] = warnings_of(kpi_envelope)
@@ -505,16 +321,77 @@ def risk_node(state: AgentState) -> AgentState:
                     *scenario_snapshot.get("warnings", []),
                 ]
             )
+        # ── Signal conflict detection ────────────────────────────────────
+        conflict_result, conflict_source = _global_conflict_result(state)
+        if not conflict_result:
+            conflict_result = detect_conflicts(kpi_signals)
+        risk_payload["signal_conflicts"] = conflict_result
+        risk_payload["signal_conflict_source"] = conflict_source
+        if conflict_result.get("conflict_count", 0) > 0:
+            risk_warnings.extend(conflict_result.get("warnings", []))
+
         integrity = UnifiedSignalIntegrity.compute(state)
         integrity_score = max(0.0, min(1.0, float(integrity.get("overall_score") or 0.0)))
+
+        # Apply conflict penalty to confidence
+        if conflict_result.get("confidence_penalty", 0.0) > 0:
+            adjustment = apply_conflict_penalty(integrity_score, conflict_result)
+            integrity_score = adjustment["adjusted_confidence"]
+            risk_payload["conflict_confidence_adjustment"] = adjustment
+
+        confidence_values = [
+            float(v)
+            for v in kpi_signals.values()
+            if isinstance(v, (int, float))
+        ]
+        if isinstance(forecast_context.get("slope"), (int, float)):
+            confidence_values.append(float(forecast_context["slope"]))
+        if isinstance(forecast_context.get("deviation_percentage"), (int, float)):
+            confidence_values.append(float(forecast_context["deviation_percentage"]))
+        if isinstance(forecast_context.get("churn_acceleration"), (int, float)):
+            confidence_values.append(float(forecast_context["churn_acceleration"]))
+
+        confidence_model = compute_standard_confidence(
+            values=confidence_values,
+            signals={
+                **{f"kpi_{k}": v for k, v in kpi_signals.items()},
+                "forecast_slope": forecast_context.get("slope"),
+                "forecast_deviation": (
+                    -abs(float(forecast_context.get("deviation_percentage")))
+                    if isinstance(forecast_context.get("deviation_percentage"), (int, float))
+                    else None
+                ),
+                "forecast_churn_acceleration": (
+                    -float(forecast_context.get("churn_acceleration"))
+                    if isinstance(forecast_context.get("churn_acceleration"), (int, float))
+                    else None
+                ),
+                "signal_conflict_count": -float(conflict_result.get("conflict_count", 0)),
+            },
+            dataset_confidence=upstream_confidence,
+            upstream_confidences=[
+                float(cohort_snapshot.get("confidence_score") or 1.0),
+                float(growth_snapshot.get("confidence_score") or 1.0),
+                float(scenario_snapshot.get("confidence_score") or 1.0),
+            ],
+            status="success",
+            base_warnings=risk_warnings,
+        )
+        reasoning_confidence = min(
+            float(confidence_model["confidence_score"]),
+            float(integrity_score),
+        )
+
         risk_payload["signal_integrity"] = integrity
+        risk_payload["confidence_breakdown"] = confidence_model
+        risk_payload["reasoning_confidence_score"] = round(reasoning_confidence, 6)
         risk_data = success(
             risk_payload,
-            warnings=risk_warnings,
+            warnings=confidence_model["warnings"],
             confidence_score=integrity_score,
         )
 
     except Exception as exc:  # noqa: BLE001
         risk_data = failed(str(exc), {"entity_name": entity_name})
 
-    return {**state, "risk_data": risk_data}
+    return {"risk_data": risk_data}

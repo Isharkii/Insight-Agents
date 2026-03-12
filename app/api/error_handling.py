@@ -28,6 +28,14 @@ def register_exception_handlers(application: FastAPI) -> None:
             status_code=exc.status_code,
             detail=exc.detail,
         )
+        context = detail.get("context")
+        if not isinstance(context, dict):
+            context = {}
+        request_id = str(getattr(request.state, "request_id", "") or "").strip()
+        if request_id:
+            context["request_id"] = request_id
+        if context:
+            detail["context"] = context
         return JSONResponse(
             status_code=exc.status_code,
             content={"detail": detail},
@@ -44,6 +52,14 @@ def register_exception_handlers(application: FastAPI) -> None:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=exc.errors(),
         )
+        context = detail.get("context")
+        if not isinstance(context, dict):
+            context = {}
+        request_id = str(getattr(request.state, "request_id", "") or "").strip()
+        if request_id:
+            context["request_id"] = request_id
+        if context:
+            detail["context"] = context
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             content={"detail": detail},
@@ -60,10 +76,14 @@ def register_exception_handlers(application: FastAPI) -> None:
             request.method,
             exc,
         )
+        context = {"exception_type": type(exc).__name__}
+        request_id = str(getattr(request.state, "request_id", "") or "").strip()
+        if request_id:
+            context["request_id"] = request_id
         detail = build_error_detail(
             code=INTERNAL_FAILURE,
             message="Internal server error.",
-            context={"exception_type": type(exc).__name__},
+            context=context,
         )
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

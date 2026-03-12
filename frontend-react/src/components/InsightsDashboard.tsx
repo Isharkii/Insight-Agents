@@ -12,6 +12,11 @@ import {
   Cell,
   RadialBarChart,
   RadialBar,
+  RadarChart,
+  Radar,
+  PolarGrid,
+  PolarAngleAxis,
+  PolarRadiusAxis,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -206,7 +211,7 @@ const KpiMetricCard: FC<{
   label?: string;
   index: number;
 }> = ({ name, value, unit, label, index }) => (
-  <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-5 relative overflow-hidden">
+  <div className="ia-surface p-5 relative overflow-hidden">
     <div
       className="absolute top-0 left-0 w-1 h-full rounded-l-2xl"
       style={{ backgroundColor: CHART_COLORS[index % CHART_COLORS.length] }}
@@ -331,6 +336,279 @@ const RiskDonut: FC<{ score: number; label?: string }> = ({ score, label }) => {
   );
 };
 
+// ─── Growth Horizons Chart ───────────────────────────────────────────────────
+
+const GrowthHorizonsChart: FC<{
+  shortGrowth: number | null;
+  midGrowth: number | null;
+  longGrowth: number | null;
+  acceleration: number | null;
+}> = ({ shortGrowth, midGrowth, longGrowth, acceleration }) => {
+  const data = [
+    { horizon: "Short", growth: (shortGrowth ?? 0) * 100 },
+    { horizon: "Mid", growth: (midGrowth ?? 0) * 100 },
+    { horizon: "Long", growth: (longGrowth ?? 0) * 100 },
+  ];
+  const accPct = (acceleration ?? 0) * 100;
+  return (
+    <div className="ia-surface p-6">
+      <div className="flex items-center justify-between mb-1">
+        <h3 className="text-sm font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+          Growth Horizons
+        </h3>
+        <span className={`text-xs font-semibold tabular-nums ${accPct >= 0 ? "text-emerald-600" : "text-red-500"}`}>
+          Acceleration: {accPct >= 0 ? "+" : ""}{accPct.toFixed(2)}%
+        </span>
+      </div>
+      <p className="text-xs text-gray-400 dark:text-gray-500 mb-4">
+        Short-term, mid-term, and long-term growth rates (%).
+      </p>
+      <div className="h-56">
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={data} margin={{ top: 8, right: 16, left: 8, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" className="stroke-gray-200 dark:stroke-gray-700" />
+            <XAxis dataKey="horizon" tick={{ fontSize: 12 }} />
+            <YAxis tick={{ fontSize: 11 }} tickFormatter={(v: number) => `${v.toFixed(1)}%`} width={55} />
+            <Tooltip formatter={(v: number) => [`${v.toFixed(2)}%`, "Growth"]} contentStyle={{ borderRadius: "0.5rem", fontSize: "0.75rem" }} />
+            <Bar dataKey="growth" radius={[6, 6, 0, 0]} barSize={48}>
+              {data.map((entry, i) => (
+                <Cell key={i} fill={entry.growth >= 0 ? "#10b981" : "#ef4444"} />
+              ))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+};
+
+// ─── Signal Integrity Radar ─────────────────────────────────────────────────
+
+const SignalIntegrityRadar: FC<{ integrity: Record<string, unknown> }> = ({ integrity }) => {
+  const scores = (integrity.signal_scores ?? integrity) as Record<string, unknown>;
+  const data = [
+    { signal: "KPI", score: Number(scores.KPI_score ?? scores.kpi_score ?? 0) * 100 },
+    { signal: "Forecast", score: Number(scores.Forecast_score ?? scores.forecast_score ?? 0) * 100 },
+    { signal: "Competitive", score: Number(scores.Competitive_score ?? scores.competitive_score ?? 0) * 100 },
+    { signal: "Cohort", score: Number(scores.Cohort_score ?? scores.cohort_score ?? 0) * 100 },
+    { signal: "Segmentation", score: Number(scores.Segmentation_score ?? scores.segmentation_score ?? 0) * 100 },
+  ];
+  const unified = Number(scores.Unified_integrity_score ?? scores.unified_integrity_score ?? 0) * 100;
+  return (
+    <div className="ia-surface p-6">
+      <div className="flex items-center justify-between mb-1">
+        <h3 className="text-sm font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+          Signal Integrity
+        </h3>
+        <span className="text-xs font-semibold tabular-nums text-blue-600">
+          Unified: {unified.toFixed(0)}%
+        </span>
+      </div>
+      <p className="text-xs text-gray-400 dark:text-gray-500 mb-4">
+        Quality of each signal category (0–100%).
+      </p>
+      <div className="h-64">
+        <ResponsiveContainer width="100%" height="100%">
+          <RadarChart data={data} cx="50%" cy="50%" outerRadius="70%">
+            <PolarGrid stroke="#e5e7eb" />
+            <PolarAngleAxis dataKey="signal" tick={{ fontSize: 11, fill: "#6b7280" }} />
+            <PolarRadiusAxis angle={30} domain={[0, 100]} tick={{ fontSize: 10 }} />
+            <Radar dataKey="score" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.25} strokeWidth={2} />
+          </RadarChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+};
+
+// ─── Unit Economics Cards ────────────────────────────────────────────────────
+
+const UnitEconomicsPanel: FC<{
+  ltv: number | null;
+  cac: number | null;
+  ltvCacRatio: number | null;
+  paybackMonths: number | null;
+  confidence: number;
+}> = ({ ltv, cac, ltvCacRatio, paybackMonths, confidence }) => {
+  const cards = [
+    { label: "LTV", value: ltv, fmt: (v: number) => `$${v >= 1000 ? (v / 1000).toFixed(1) + "K" : v.toFixed(0)}` },
+    { label: "CAC", value: cac, fmt: (v: number) => `$${v >= 1000 ? (v / 1000).toFixed(1) + "K" : v.toFixed(0)}` },
+    { label: "LTV/CAC", value: ltvCacRatio, fmt: (v: number) => v.toFixed(2) + "x" },
+    { label: "Payback", value: paybackMonths, fmt: (v: number) => v.toFixed(1) + " mo" },
+  ];
+  return (
+    <div className="ia-surface p-6">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-sm font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+          Unit Economics
+        </h3>
+        <span className="text-xs text-gray-400">Confidence {Math.round(confidence * 100)}%</span>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        {cards.map((card) => (
+          <div key={card.label} className="rounded-xl border border-gray-200 dark:border-gray-700 p-4 text-center">
+            <p className="text-xs text-gray-400 uppercase tracking-wider mb-1">{card.label}</p>
+            <p className="text-2xl font-bold tabular-nums text-gray-900 dark:text-gray-100">
+              {card.value != null ? card.fmt(card.value) : "N/A"}
+            </p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+// ─── Signal Conflicts Panel ─────────────────────────────────────────────────
+
+const SignalConflictsPanel: FC<{
+  conflictCount: number;
+  totalSeverity: number | null;
+  warnings: string[] | null;
+}> = ({ conflictCount, totalSeverity, warnings }) => {
+  if (conflictCount === 0 && (!warnings || warnings.length === 0)) return null;
+  const sev = totalSeverity ?? 0;
+  return (
+    <div className="ia-surface p-6 border-l-4 border-amber-400">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-sm font-medium uppercase tracking-wider text-amber-700 dark:text-amber-300">
+          Signal Conflicts
+        </h3>
+        <div className="flex items-center gap-3 text-xs">
+          <span className="font-semibold text-amber-700 dark:text-amber-300">
+            {conflictCount} conflict{conflictCount !== 1 ? "s" : ""}
+          </span>
+          <span className="text-gray-400">
+            Severity: {sev.toFixed(2)}
+          </span>
+        </div>
+      </div>
+      {warnings && warnings.length > 0 && (
+        <ul className="space-y-1.5">
+          {warnings.map((w, i) => (
+            <li key={i} className="text-sm text-gray-700 dark:text-gray-300 flex gap-2">
+              <span className="text-amber-500 shrink-0">!</span>
+              {w}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+};
+
+// ─── Prioritization Summary ─────────────────────────────────────────────────
+
+const PrioritizationPanel: FC<{
+  priorityLevel: string | null;
+  focus: string | null;
+  confidence: number | null;
+  cohortRiskHint: string | null;
+  scenarioWorst: number | null;
+  scenarioBest: number | null;
+}> = ({ priorityLevel, focus, confidence, cohortRiskHint, scenarioWorst, scenarioBest }) => {
+  const level = (priorityLevel || "low").toLowerCase();
+  const levelColor =
+    level === "critical" ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300"
+    : level === "high" ? "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300"
+    : level === "moderate" ? "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+    : "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300";
+  return (
+    <div className="ia-surface p-6">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-sm font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+          Prioritization
+        </h3>
+        <div className="flex items-center gap-2">
+          <span className={`px-3 py-1 rounded-full text-xs font-semibold capitalize ${levelColor}`}>
+            {level}
+          </span>
+          {confidence != null && (
+            <span className="text-xs text-gray-400">
+              Confidence {Math.round(confidence * 100)}%
+            </span>
+          )}
+        </div>
+      </div>
+      {focus && (
+        <p className="text-sm text-gray-700 dark:text-gray-200 mb-4">
+          <span className="font-medium text-gray-500">Focus:</span> {focus}
+        </p>
+      )}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
+        {cohortRiskHint && (
+          <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-3">
+            <p className="text-xs text-gray-400 uppercase tracking-wider mb-1">Cohort Risk</p>
+            <p className="font-semibold text-gray-900 dark:text-gray-100 capitalize">{cohortRiskHint}</p>
+          </div>
+        )}
+        {scenarioWorst != null && (
+          <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-3">
+            <p className="text-xs text-gray-400 uppercase tracking-wider mb-1">Worst Scenario</p>
+            <p className={`font-semibold tabular-nums ${scenarioWorst >= 0 ? "text-emerald-600" : "text-red-500"}`}>
+              {(scenarioWorst * 100).toFixed(1)}%
+            </p>
+          </div>
+        )}
+        {scenarioBest != null && (
+          <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-3">
+            <p className="text-xs text-gray-400 uppercase tracking-wider mb-1">Best Scenario</p>
+            <p className={`font-semibold tabular-nums ${scenarioBest >= 0 ? "text-emerald-600" : "text-red-500"}`}>
+              {(scenarioBest * 100).toFixed(1)}%
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// ─── Confidence Propagation ─────────────────────────────────────────────────
+
+const ConfidencePropagation: FC<{
+  datasetConfidence: number | null;
+  riskConfidence: number;
+  growthConfidence: number;
+  forecastConfidence: number;
+  cohortConfidence: number;
+  overallConfidence: number;
+}> = ({ datasetConfidence, riskConfidence, growthConfidence, forecastConfidence, cohortConfidence, overallConfidence }) => {
+  const stages = [
+    { label: "Dataset", value: datasetConfidence },
+    { label: "Risk", value: riskConfidence },
+    { label: "Growth", value: growthConfidence },
+    { label: "Forecast", value: forecastConfidence },
+    { label: "Cohort", value: cohortConfidence },
+    { label: "Overall", value: overallConfidence },
+  ];
+  return (
+    <div className="ia-surface p-6">
+      <h3 className="text-sm font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-4">
+        Confidence Propagation
+      </h3>
+      <div className="space-y-3">
+        {stages.map((stage) => {
+          const pct = Math.round((stage.value ?? 0) * 100);
+          const color = pct >= 80 ? "#10b981" : pct >= 50 ? "#f59e0b" : "#ef4444";
+          return (
+            <div key={stage.label} className="flex items-center gap-3">
+              <span className="w-20 text-xs text-gray-500 text-right shrink-0">{stage.label}</span>
+              <div className="flex-1 h-3 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                <div
+                  className="h-full rounded-full transition-all duration-500"
+                  style={{ width: `${pct}%`, backgroundColor: color }}
+                />
+              </div>
+              <span className="w-10 text-xs font-semibold tabular-nums text-gray-600 dark:text-gray-300 text-right">
+                {pct}%
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
 // ─── Main Dashboard ──────────────────────────────────────────────────────────
 
 const InsightsDashboard: FC<InsightsDashboardProps> = ({
@@ -350,6 +628,7 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
   }, [analyzeResult]);
 
   const pct = Math.round(analyzeResult.confidence_score * 100);
+  const ps = analyzeResult.pipeline_signals;
   const insightSource = reportInsight ?? analyzeResult;
   const strategies = useMemo(
     () => buildStrategies(insightSource ?? null),
@@ -526,7 +805,7 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
       {/* ── Row 1: Insight summary + gauges ── */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Main insight card */}
-        <div className="lg:col-span-7 bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6 space-y-4">
+        <div className="lg:col-span-7 ia-surface p-6 space-y-4">
           <div className="flex items-start gap-3">
             <div className={`w-1 shrink-0 self-stretch rounded-full ${priorityBg(analyzeResult.priority)}`} />
             <div className="space-y-3 flex-1">
@@ -560,25 +839,25 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
 
         {/* Gauges column */}
         <div className="lg:col-span-5 grid grid-cols-2 gap-4">
-          <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-4 flex items-center justify-center">
+          <div className="ia-surface p-4 flex items-center justify-center">
             <ConfidenceGauge score={analyzeResult.confidence_score} />
           </div>
           {dashboardData ? (
-            <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-4 flex items-center justify-center">
+            <div className="ia-surface p-4 flex items-center justify-center">
               <HealthDonut
                 score={dashboardData.health_index}
                 label={dashboardData.health_label}
               />
             </div>
           ) : derivedSignals.risk?.risk_score != null ? (
-            <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-4 flex items-center justify-center">
+            <div className="ia-surface p-4 flex items-center justify-center">
               <RiskDonut
                 score={derivedSignals.risk.risk_score}
                 label={derivedSignals.risk.risk_level}
               />
             </div>
           ) : (
-            <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-4 flex flex-col items-center justify-center">
+            <div className="ia-surface p-4 flex flex-col items-center justify-center">
               <p className="text-4xl font-bold tabular-nums text-gray-900 dark:text-gray-100">
                 {pct}%
               </p>
@@ -587,7 +866,7 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
           )}
           {derivedSignals.risk?.risk_score != null && dashboardData && (
             <>
-              <div className="col-span-2 bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-4 flex items-center justify-center">
+              <div className="col-span-2 ia-surface p-4 flex items-center justify-center">
                 <RiskDonut
                   score={derivedSignals.risk.risk_score}
                   label={derivedSignals.risk.risk_level}
@@ -600,7 +879,7 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
 
       {/* ── Strategies ── */}
       {biData && (
-        <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6 space-y-4">
+        <div className="ia-surface p-6 space-y-4">
           <div className="flex items-start justify-between gap-3">
             <div>
               <h3 className="text-sm font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
@@ -664,7 +943,7 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
       {(biContext || biInsights || biStrategy) && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           {biContext && (
-            <div className="lg:col-span-4 bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6 space-y-4">
+            <div className="lg:col-span-4 ia-surface p-6 space-y-4">
               <h3 className="text-sm font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
                 BI Context
               </h3>
@@ -693,7 +972,7 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
           )}
 
           {biInsights && (
-            <div className="lg:col-span-4 bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6 space-y-4">
+            <div className="lg:col-span-4 ia-surface p-6 space-y-4">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
                   BI Insights
@@ -723,7 +1002,7 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
           )}
 
           {biStrategy && (
-            <div className="lg:col-span-4 bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6 space-y-4">
+            <div className="lg:col-span-4 ia-surface p-6 space-y-4">
               <h3 className="text-sm font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
                 BI Strategy
               </h3>
@@ -753,7 +1032,7 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
       )}
 
       {benchmark && (
-        <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6 space-y-4">
+        <div className="ia-surface p-6 space-y-4">
           <div className="flex items-center justify-between gap-3">
             <h3 className="text-sm font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
               Competitive Benchmark Engine
@@ -920,7 +1199,7 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
       )}
 
       {insightSource && (
-        <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6">
+        <div className="ia-surface p-6">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-sm font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
               Insights Dashboard
@@ -967,7 +1246,7 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
 
       {/* ── Strategies ── */}
       {strategies.length > 0 && (
-        <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6">
+        <div className="ia-surface p-6">
           <div className="bg-blue-50 dark:bg-blue-900/10 border border-blue-200 dark:border-blue-800 rounded-xl p-4">
             <h3 className="text-sm font-semibold uppercase tracking-wider text-blue-600 dark:text-blue-300 mb-1">
               Strategies
@@ -1002,10 +1281,68 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
         </div>
       )}
 
+      {/* ── Pipeline Signals: Prioritization + Growth Horizons ── */}
+      {ps?.prioritization && (
+        <PrioritizationPanel
+          priorityLevel={ps.prioritization.priority_level}
+          focus={ps.prioritization.recommended_focus}
+          confidence={ps.prioritization.confidence_score}
+          cohortRiskHint={ps.prioritization.cohort_risk_hint}
+          scenarioWorst={ps.prioritization.scenario_worst_growth}
+          scenarioBest={ps.prioritization.scenario_best_growth}
+        />
+      )}
+
+      {ps?.growth && (ps.growth.short_growth != null || ps.growth.mid_growth != null || ps.growth.long_growth != null) && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <GrowthHorizonsChart
+            shortGrowth={ps.growth.short_growth}
+            midGrowth={ps.growth.mid_growth}
+            longGrowth={ps.growth.long_growth}
+            acceleration={ps.growth.trend_acceleration}
+          />
+          {ps.signal_integrity && (
+            <SignalIntegrityRadar integrity={ps.signal_integrity} />
+          )}
+        </div>
+      )}
+
+      {/* ── Pipeline Signals: Signal Conflicts ── */}
+      {ps?.signal_conflicts && (
+        <SignalConflictsPanel
+          conflictCount={ps.signal_conflicts.conflict_count}
+          totalSeverity={ps.signal_conflicts.total_severity}
+          warnings={ps.signal_conflicts.warnings}
+        />
+      )}
+
+      {/* ── Pipeline Signals: Unit Economics ── */}
+      {ps?.unit_economics && ps.unit_economics.status !== "failed" && ps.unit_economics.status !== "skipped" && (
+        <UnitEconomicsPanel
+          ltv={ps.unit_economics.ltv}
+          cac={ps.unit_economics.cac}
+          ltvCacRatio={ps.unit_economics.ltv_cac_ratio}
+          paybackMonths={ps.unit_economics.payback_months}
+          confidence={ps.unit_economics.confidence}
+        />
+      )}
+
+      {/* ── Pipeline Signals: Confidence Propagation ── */}
+      {ps && (
+        <ConfidencePropagation
+          datasetConfidence={ps.dataset_confidence ?? null}
+          riskConfidence={ps.risk?.confidence ?? 0}
+          growthConfidence={ps.growth?.confidence ?? 0}
+          forecastConfidence={ps.forecast?.confidence ?? 0}
+          cohortConfidence={ps.cohort?.confidence ?? 0}
+          overallConfidence={analyzeResult.confidence_score}
+        />
+      )}
+
       {/* ── Row 3: Revenue Trend (area) + KPI Distribution (pie) ── */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {revenueTrend.length > 0 && (
-          <div className={`bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6 ${kpiPieData.length > 0 ? "lg:col-span-8" : "lg:col-span-12"}`}>
+          <div className={`ia-surface p-6 ${kpiPieData.length > 0 ? "lg:col-span-8" : "lg:col-span-12"}`}>
             <h3 className="text-sm font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">
               Revenue Trend
             </h3>
@@ -1042,7 +1379,7 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
         )}
 
         {kpiPieData.length > 0 && (
-          <div className={`bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6 ${revenueTrend.length > 0 ? "lg:col-span-4" : "lg:col-span-12"}`}>
+          <div className={`ia-surface p-6 ${revenueTrend.length > 0 ? "lg:col-span-4" : "lg:col-span-12"}`}>
             <h3 className="text-sm font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">
               KPI Distribution
             </h3>
@@ -1076,7 +1413,7 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
 
       {/* ── Row 4: KPI Time Series (multi-line) ── */}
       {timeSeriesData.length > 0 && (
-        <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6">
+        <div className="ia-surface p-6">
           <h3 className="text-sm font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">
             KPI Trends Over Time
           </h3>
@@ -1112,7 +1449,7 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
       {(forecastSeries.data.length > 0 || scenarioData.length > 0) && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {forecastSeries.data.length > 0 && (
-            <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6">
+            <div className="ia-surface p-6">
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <h3 className="text-sm font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">
@@ -1162,7 +1499,7 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
           )}
 
           {scenarioData.length > 0 && (
-            <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6">
+            <div className="ia-surface p-6">
               <h3 className="text-sm font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">
                 Scenario Comparison
               </h3>
@@ -1189,7 +1526,7 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
 
       {/* ── Row 6: Role Contribution ── */}
       {roleContributors.length > 0 && (
-        <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6">
+        <div className="ia-surface p-6">
           <h3 className="text-sm font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">
             Role Contribution
           </h3>
@@ -1212,7 +1549,7 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
 
       {/* ── Row 7: Structured Insights ── */}
       {structuredInsights.length > 0 && (
-        <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 p-6">
+        <div className="ia-surface p-6">
           <h3 className="text-sm font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-4">
             Key Insights
           </h3>
@@ -1277,3 +1614,4 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
 };
 
 export default InsightsDashboard;
+

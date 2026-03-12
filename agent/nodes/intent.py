@@ -118,7 +118,6 @@ def intent_node(state: AgentState) -> AgentState:
     )
 
     return {
-        **state,
         "business_type": new_business_type,
         "entity_name": new_entity_name,
     }

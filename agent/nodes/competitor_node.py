@@ -250,7 +250,6 @@ def competitor_node(state: AgentState) -> AgentState:
     enabled = _env_bool("COMP_INTEL_ANALYZE_ENABLED", False)
     if not enabled:
         return {
-            **state,
             "competitive_context": {
                 **existing_context,
                 "source": "deterministic_local" if existing_context.get("available") else "disabled",
@@ -262,7 +261,6 @@ def competitor_node(state: AgentState) -> AgentState:
     entity_name = str(state.get("entity_name") or "").strip()
     if not entity_name:
         return {
-            **state,
             "competitive_context": {
                 **existing_context,
                 "available": False,
@@ -275,7 +273,6 @@ def competitor_node(state: AgentState) -> AgentState:
     peers = _normalize_peer_names(existing_context.get("peers", []), entity_name=entity_name)
     if not peers:
         return {
-            **state,
             "competitive_context": {
                 **existing_context,
                 "source": "deterministic_local" if existing_context.get("available") else "unavailable",
@@ -291,7 +288,6 @@ def competitor_node(state: AgentState) -> AgentState:
     cached = _run_async(_COMP_CONTEXT_CACHE.get(key))
     if isinstance(cached, dict):
         return {
-            **state,
             "competitive_context": {
                 **cached,
                 "cache_hit": True,
@@ -319,7 +315,7 @@ def competitor_node(state: AgentState) -> AgentState:
             cache_hit=False,
         )
         _run_async(_COMP_CONTEXT_CACHE.set(key, dict(competitive_context)))
-        return {**state, "competitive_context": competitive_context}
+        return {"competitive_context": competitive_context}
     except Exception as exc:  # noqa: BLE001
         _logger.warning("competitor_node external fetch failed: %s", exc, exc_info=True)
         fallback = {
@@ -328,4 +324,4 @@ def competitor_node(state: AgentState) -> AgentState:
             "generated_at": _now_iso(),
             "warnings": [*existing_context.get("warnings", []), "external_fetch_failed"],
         }
-        return {**state, "competitive_context": fallback}
+        return {"competitive_context": fallback}

@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from agent.nodes.node_result import failed, skipped, success
+from agent.helpers.state_slimming import slim_kpi_payload
 from agent.signal_envelope import classify_kpi_completeness_for_type
 from agent.state import AgentState
 from db.repositories.kpi_repository import KPIRepository
@@ -83,14 +84,14 @@ def agency_kpi_fetch_node(state: AgentState) -> AgentState:
                 if payload["computed_kpis"]:
                     records.append(payload)
 
-        payload: dict[str, Any] = {
-            "records": records,
-            "fetched_for": entity_name,
-            "period_start": period_start.isoformat(),
-            "period_end": period_end.isoformat(),
-            "metrics": sorted(_AGENCY_METRICS),
-        }
-        if records:
+        payload = slim_kpi_payload(
+            records,
+            fetched_for=entity_name,
+            period_start=period_start.isoformat(),
+            period_end=period_end.isoformat(),
+            metrics=sorted(_AGENCY_METRICS),
+        )
+        if payload.get("record_count", 0):
             merged_kpis = _merge_computed_kpis(records)
             status, warnings, errors, confidence = classify_kpi_completeness_for_type(
                 merged_kpis, "agency",
@@ -120,4 +121,4 @@ def agency_kpi_fetch_node(state: AgentState) -> AgentState:
             },
         )
 
-    return {**state, "agency_kpi_data": agency_kpi_data}
+    return {"agency_kpi_data": agency_kpi_data}

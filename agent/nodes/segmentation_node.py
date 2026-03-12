@@ -92,4 +92,4 @@ def segmentation_node(state: AgentState) -> AgentState:
             "error": str(exc),
         }
 
-    return {**state, "segmentation": segmentation}
+    return {"segmentation": segmentation}

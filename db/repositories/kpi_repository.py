@@ -19,8 +19,9 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from db.models.computed_kpi import ComputedKPI
+from db.repositories.entity_scope import normalize_tenant_id, resolve_entity_scope
 
-_UPSERT_CONSTRAINT = "uq_computed_kpis_entity_period"
+_UPSERT_CONSTRAINT = "uq_computed_kpis_tenant_entity_period"
 _DEFAULT_BATCH_SIZE = 500
 
 
@@ -28,8 +29,9 @@ class KPIRepository:
     """
     Repository for writing and querying ComputedKPI rows.
 
-    Upsert semantics: inserting a record whose ``(entity_name, period_start,
-    period_end)`` already exists replaces ``computed_kpis`` and refreshes
+    Upsert semantics: inserting a record whose
+    ``(tenant_id, entity_id, period_start, period_end)`` already exists
+    replaces ``computed_kpis`` and refreshes
     ``created_at`` on conflict, rather than raising a duplicate-key error.
     """
 
@@ -49,11 +51,13 @@ class KPIRepository:
         computed_kpis: dict[str, Any],
         analytics_version: int | None = None,
         dataset_hash: str | None = None,
+        tenant_id: str = "legacy",
+        entity_id: uuid.UUID | None = None,
     ) -> ComputedKPI:
         """
         Upsert a single KPI result row.
 
-        If a row with the same ``(entity_name, period_start, period_end)``
+        If a row with the same ``(tenant_id, entity_id, period_start, period_end)``
         already exists, ``computed_kpis`` is overwritten in place.
 
         Parameters
@@ -77,11 +81,21 @@ class KPIRepository:
         ComputedKPI
             The persisted ORM instance (not yet committed).
         """
+        scope = resolve_entity_scope(
+            self._session,
+            tenant_id=tenant_id,
+            entity_name=entity_name,
+            entity_id=entity_id,
+            create_if_missing=True,
+        )
+
         stmt = (
             insert(ComputedKPI)
             .values(
                 id=uuid.uuid4(),
-                entity_name=entity_name,
+                tenant_id=scope.tenant_id,
+                entity_id=scope.entity_id,
+                entity_name=scope.entity_name,
                 period_start=period_start,
                 period_end=period_end,
                 computed_kpis=computed_kpis,
@@ -114,7 +128,7 @@ class KPIRepository:
         Each element of ``rows`` must contain the keys:
         ``entity_name``, ``period_start``, ``period_end``, ``computed_kpis``.
 
-        Rows with duplicate ``(entity_name, period_start, period_end)`` within
+        Rows with duplicate ``(tenant_id, entity_name, period_start, period_end)`` within
         the same call are deduplicated in Python before hitting the database;
         the last occurrence wins.
 
@@ -134,14 +148,33 @@ class KPIRepository:
             return 0
 
         deduped = _deduplicate(rows)
+        normalized_rows: list[dict[str, Any]] = []
+        for row in deduped:
+            scope = resolve_entity_scope(
+                self._session,
+                tenant_id=row.get("tenant_id"),
+                entity_name=row.get("entity_name"),
+                entity_id=row.get("entity_id"),
+                create_if_missing=True,
+            )
+            normalized_rows.append(
+                {
+                    **row,
+                    "tenant_id": scope.tenant_id,
+                    "entity_id": scope.entity_id,
+                    "entity_name": scope.entity_name,
+                }
+            )
         size = max(1, batch_size)
         written = 0
 
-        for start in range(0, len(deduped), size):
-            chunk = deduped[start : start + size]
+        for start in range(0, len(normalized_rows), size):
+            chunk = normalized_rows[start : start + size]
             payloads = [
                 {
                     "id": uuid.uuid4(),
+                    "tenant_id": r["tenant_id"],
+                    "entity_id": r["entity_id"],
                     "entity_name": r["entity_name"],
                     "period_start": r["period_start"],
                     "period_end": r["period_end"],
@@ -197,6 +230,8 @@ class KPIRepository:
         period_start: datetime,
         period_end: datetime,
         entity_name: str | None = None,
+        tenant_id: str = "legacy",
+        entity_id: uuid.UUID | None = None,
     ) -> list[ComputedKPI]:
         """
         Return all ComputedKPI rows whose period window overlaps the given range.
@@ -213,22 +248,33 @@ class KPIRepository:
             Upper bound of the query window (inclusive).
         entity_name:
             Optional filter; when ``None``, all entities are returned.
+        tenant_id:
+            Tenant scope for all reads (defaults to ``"legacy"``).
+        entity_id:
+            Optional stable entity identifier for exact scoping.
 
         Returns
         -------
         list[ComputedKPI]
-            Ordered by ``entity_name``, then ``period_start`` ascending.
+            Ordered by ``tenant_id``, ``entity_id``, then ``period_start`` ascending.
         """
         stmt = (
             select(ComputedKPI)
             .where(
+                ComputedKPI.tenant_id == normalize_tenant_id(tenant_id),
                 ComputedKPI.period_start >= period_start,
                 ComputedKPI.period_end <= period_end,
             )
-            .order_by(ComputedKPI.entity_name, ComputedKPI.period_start)
+            .order_by(
+                ComputedKPI.tenant_id,
+                ComputedKPI.entity_id,
+                ComputedKPI.period_start,
+            )
         )
 
-        if entity_name is not None:
+        if entity_id is not None:
+            stmt = stmt.where(ComputedKPI.entity_id == entity_id)
+        elif entity_name is not None:
             stmt = stmt.where(ComputedKPI.entity_name == entity_name)
 
         return list(self._session.scalars(stmt).all())
@@ -249,10 +295,15 @@ class KPIRepository:
 
 
 def _deduplicate(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Last-write-wins deduplication keyed on (entity_name, period_start, period_end)."""
-    seen: dict[tuple[str, datetime, datetime], dict[str, Any]] = {}
+    """Last-write-wins dedup keyed on (tenant, entity, period_start, period_end)."""
+    seen: dict[tuple[str, str, datetime, datetime], dict[str, Any]] = {}
     for row in rows:
-        key = (row["entity_name"], row["period_start"], row["period_end"])
+        key = (
+            normalize_tenant_id(row.get("tenant_id")),
+            str(row["entity_name"]),
+            row["period_start"],
+            row["period_end"],
+        )
         seen[key] = row
     return list(seen.values())
 

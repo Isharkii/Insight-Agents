@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
 
 
@@ -97,6 +97,42 @@ def _extract_entity_series(
     kpi_payload: Mapping[str, Any],
     metric_candidates: Sequence[str],
 ) -> list[dict[str, Any]]:
+    compact_series = kpi_payload.get("metric_series")
+    if isinstance(compact_series, Mapping) and compact_series:
+        normalized_candidates = {
+            _normalize(name) for name in metric_candidates if _normalize(name)
+        }
+        selected_metric = ""
+        selected_values: list[float] = []
+        for metric_name, raw_values in compact_series.items():
+            normalized = _normalize(metric_name)
+            if normalized_candidates and normalized not in normalized_candidates:
+                continue
+            if not isinstance(raw_values, list):
+                continue
+            values: list[float] = []
+            for value in raw_values:
+                numeric = _coerce_float(value)
+                if numeric is not None:
+                    values.append(numeric)
+            if not values:
+                continue
+            if len(values) > len(selected_values):
+                selected_metric = str(metric_name)
+                selected_values = values
+        if selected_values:
+            start = _parse_iso_datetime(kpi_payload.get("period_start")) or datetime(2000, 1, 1, tzinfo=timezone.utc)
+            return [
+                {
+                    "timestamp": (start.replace(tzinfo=timezone.utc) + timedelta(days=idx)).isoformat(),
+                    "value": numeric,
+                    "metric_name": selected_metric,
+                    "source_type": "computed_kpi_compact",
+                    "metadata": {},
+                }
+                for idx, numeric in enumerate(selected_values)
+            ]
+
     records = kpi_payload.get("records")
     if not isinstance(records, list):
         return []

@@ -9,7 +9,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent.nodes.node_result import payload_of
+from agent.helpers.confidence_model import (
+    compute_standard_confidence,
+    propagate_reasoning_strategy_confidence,
+)
+from agent.helpers.signal_snapshots import (
+    cohort_signal_snapshot,
+    growth_signal_snapshot,
+    scenario_signal_snapshot,
+    signal_conflict_snapshot,
+    _safe_float as _snapshot_safe_float,
+)
+from agent.nodes.node_result import confidence_of, payload_of
 from agent.state import AgentState
 
 _SEVERITY_RANK: dict[str, int] = {
@@ -44,10 +55,7 @@ def _severity_from_score(risk_score: float) -> str:
 
 
 def _safe_float(value: Any) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
+    return _snapshot_safe_float(value)
 
 
 def _issue_candidates(root_cause: dict[str, Any]) -> list[str]:
@@ -74,55 +82,8 @@ def _to_focus_text(issue: str) -> str:
     return issue.replace("_", " ")
 
 
-def _segmentation_or_node_payload(
-    state: AgentState,
-    *,
-    segmentation_key: str,
-    node_key: str,
-) -> dict[str, Any]:
-    segmentation: dict[str, Any] = payload_of(state.get("segmentation")) or {}
-    if isinstance(segmentation, dict):
-        candidate = segmentation.get(segmentation_key)
-        if isinstance(candidate, dict):
-            return candidate
-    candidate = payload_of(state.get(node_key))
-    return candidate if isinstance(candidate, dict) else {}
-
-
 def _cohort_signals(state: AgentState) -> dict[str, Any]:
-    cohort = _segmentation_or_node_payload(
-        state,
-        segmentation_key="cohort_analytics",
-        node_key="cohort_data",
-    )
-    if not cohort:
-        return {
-            "status": "missing",
-            "confidence_score": 1.0,
-            "risk_hint": "low",
-            "retention_decay": 0.0,
-            "churn_acceleration": 0.0,
-            "worst_cohort": None,
-        }
-
-    signals = cohort.get("signals")
-    if not isinstance(signals, dict):
-        signals = {}
-
-    try:
-        confidence = float(cohort.get("confidence_score", 1.0))
-    except (TypeError, ValueError):
-        confidence = 1.0
-    confidence = max(0.0, min(1.0, confidence))
-
-    return {
-        "status": str(cohort.get("status") or "partial").strip().lower(),
-        "confidence_score": confidence,
-        "risk_hint": str(signals.get("risk_hint") or "low").strip().lower(),
-        "retention_decay": _safe_float(signals.get("retention_decay")),
-        "churn_acceleration": _safe_float(signals.get("churn_acceleration")),
-        "worst_cohort": signals.get("worst_cohort"),
-    }
+    return cohort_signal_snapshot(state)
 
 
 def _severity_from_cohort(snapshot: dict[str, Any]) -> str:
@@ -151,43 +112,14 @@ def _cohort_focus_text(snapshot: dict[str, Any]) -> str | None:
 
 
 def _growth_signals(state: AgentState) -> dict[str, Any]:
-    growth = _segmentation_or_node_payload(
-        state,
-        segmentation_key="growth_context",
-        node_key="growth_data",
-    )
-    if not growth:
-        return {
-            "status": "missing",
-            "confidence_score": 1.0,
-            "short_growth": 0.0,
-            "mid_growth": 0.0,
-            "long_growth": 0.0,
-            "trend_acceleration": 0.0,
-            "insufficient_history": {},
-        }
-
-    horizons = growth.get("primary_horizons")
-    if not isinstance(horizons, dict):
-        horizons = {}
-    insufficient = horizons.get("insufficient_history")
-    if not isinstance(insufficient, dict):
-        insufficient = {}
-
-    try:
-        confidence = float(growth.get("confidence_score", 1.0))
-    except (TypeError, ValueError):
-        confidence = 1.0
-    confidence = max(0.0, min(1.0, confidence))
-
+    snapshot = growth_signal_snapshot(state)
+    # Prioritization uses 0.0 defaults for None values (severity comparisons).
     return {
-        "status": str(growth.get("status") or "partial").strip().lower(),
-        "confidence_score": confidence,
-        "short_growth": _safe_float(horizons.get("short_growth")),
-        "mid_growth": _safe_float(horizons.get("mid_growth")),
-        "long_growth": _safe_float(horizons.get("long_growth")),
-        "trend_acceleration": _safe_float(horizons.get("trend_acceleration")),
-        "insufficient_history": {str(k): bool(v) for k, v in insufficient.items()},
+        **snapshot,
+        "short_growth": _safe_float(snapshot.get("short_growth")),
+        "mid_growth": _safe_float(snapshot.get("mid_growth")),
+        "long_growth": _safe_float(snapshot.get("long_growth")),
+        "trend_acceleration": _safe_float(snapshot.get("trend_acceleration")),
     }
 
 
@@ -217,53 +149,13 @@ def _growth_focus_text(snapshot: dict[str, Any]) -> str | None:
 
 
 def _scenario_signals(state: AgentState) -> dict[str, Any]:
-    segmentation: dict[str, Any] = payload_of(state.get("segmentation")) or {}
-    scenario = segmentation.get("scenario_simulation") if isinstance(segmentation, dict) else None
-    if not isinstance(scenario, dict):
-        bundled = _segmentation_or_node_payload(
-            state,
-            segmentation_key="multivariate_scenario",
-            node_key="multivariate_scenario_data",
-        )
-        if isinstance(bundled, dict):
-            candidate = bundled.get("scenario_simulation")
-            if isinstance(candidate, dict):
-                scenario = candidate
-    if not isinstance(scenario, dict):
-        return {
-            "status": "missing",
-            "base_confidence": 1.0,
-            "worst_growth": 0.0,
-            "best_growth": 0.0,
-            "worst_confidence_impact": 0.0,
-            "assumptions": {},
-        }
-
-    scenarios = scenario.get("scenarios")
-    if not isinstance(scenarios, dict):
-        scenarios = {}
-    worst = scenarios.get("worst")
-    best = scenarios.get("best")
-    if not isinstance(worst, dict):
-        worst = {}
-    if not isinstance(best, dict):
-        best = {}
-
-    metadata = scenario.get("metadata")
-    if isinstance(metadata, dict):
-        assumptions = metadata.get("assumptions")
-    else:
-        assumptions = {}
-    if not isinstance(assumptions, dict):
-        assumptions = {}
-
+    snapshot = scenario_signal_snapshot(state)
+    # Prioritization uses 0.0 defaults for None values (severity comparisons).
     return {
-        "status": str(scenario.get("status") or "partial").strip().lower(),
-        "base_confidence": max(0.0, min(1.0, _safe_float(scenario.get("base_confidence", 1.0)))),
-        "worst_growth": _safe_float(worst.get("projected_growth")),
-        "best_growth": _safe_float(best.get("projected_growth")),
-        "worst_confidence_impact": _safe_float(_as_dict(worst.get("assumptions")).get("confidence_impact")),
-        "assumptions": assumptions,
+        **snapshot,
+        "worst_growth": _safe_float(snapshot.get("worst_growth")),
+        "best_growth": _safe_float(snapshot.get("best_growth")),
+        "worst_confidence_impact": _safe_float(snapshot.get("worst_confidence_impact")),
     }
 
 
@@ -285,8 +177,9 @@ def _scenario_focus_text(snapshot: dict[str, Any]) -> str | None:
     return None
 
 
-def _as_dict(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
+
+def _signal_conflict_snapshot(state: AgentState) -> dict[str, Any]:
+    return signal_conflict_snapshot(state)
 
 
 def prioritization_node(state: AgentState) -> AgentState:
@@ -299,11 +192,13 @@ def prioritization_node(state: AgentState) -> AgentState:
             "recommended_focus": str,
         }
     """
-    risk_data: dict[str, Any] = payload_of(state.get("risk_data")) or {}
+    risk_envelope = state.get("risk_data")
+    risk_data: dict[str, Any] = payload_of(risk_envelope) or {}
     root_cause: dict[str, Any] = payload_of(state.get("root_cause")) or {}
     cohort_snapshot = _cohort_signals(state)
     growth_snapshot = _growth_signals(state)
     scenario_snapshot = _scenario_signals(state)
+    conflict_snapshot = _signal_conflict_snapshot(state)
 
     risk_score = max(0.0, min(100.0, _safe_float(risk_data.get("risk_score"))))
     root_severity = _normalize_severity(root_cause.get("severity"))
@@ -343,10 +238,65 @@ def prioritization_node(state: AgentState) -> AgentState:
             or f"monitor overall business risk ({int(round(risk_score))})"
         )
     )
+    if conflict_snapshot["conflict_count"] > 0:
+        recommended_focus = (
+            f"{recommended_focus}; resolve conflicting signals before executing strategy"
+        )
+
+    reasoning_confidence_input = _safe_float(
+        risk_data.get("reasoning_confidence_score")
+    )
+    if reasoning_confidence_input <= 0.0:
+        reasoning_confidence_input = confidence_of(risk_envelope)
+
+    strategy_model = compute_standard_confidence(
+        values=[
+            risk_score,
+            float(_SEVERITY_RANK.get(root_severity, 1)),
+            float(_SEVERITY_RANK.get(risk_severity, 1)),
+            float(_SEVERITY_RANK.get(cohort_severity, 1)),
+            float(_SEVERITY_RANK.get(growth_severity, 1)),
+            float(_SEVERITY_RANK.get(scenario_severity, 1)),
+            float(conflict_snapshot.get("conflict_count") or 0.0),
+        ],
+        signals={
+            "cohort_retention_decay": -_safe_float(cohort_snapshot.get("retention_decay")),
+            "cohort_churn_acceleration": -_safe_float(cohort_snapshot.get("churn_acceleration")),
+            "growth_short": growth_snapshot.get("short_growth"),
+            "growth_mid": growth_snapshot.get("mid_growth"),
+            "growth_long": growth_snapshot.get("long_growth"),
+            "growth_trend_acceleration": growth_snapshot.get("trend_acceleration"),
+            "scenario_worst_growth": scenario_snapshot.get("worst_growth"),
+            "scenario_best_growth": scenario_snapshot.get("best_growth"),
+            "signal_conflict_count": -_safe_float(conflict_snapshot.get("conflict_count")),
+            "signal_conflict_severity": -_safe_float(conflict_snapshot.get("total_severity")),
+        },
+        dataset_confidence=1.0,
+        upstream_confidences=[
+            reasoning_confidence_input,
+            _safe_float(cohort_snapshot.get("confidence_score")),
+            _safe_float(growth_snapshot.get("confidence_score")),
+            _safe_float(scenario_snapshot.get("base_confidence")),
+        ],
+        status="success",
+    )
+    uncertainty_penalty = min(0.20, _safe_float(conflict_snapshot.get("confidence_penalty")))
+    propagation = propagate_reasoning_strategy_confidence(
+        insight_confidence=float(strategy_model["confidence_score"]),
+        reasoning_confidence=reasoning_confidence_input,
+        strategy_penalty=(
+            (0.10 if top_severity in {"high", "critical"} else 0.0)
+            + uncertainty_penalty
+        ),
+    )
 
     prioritization = {
         "priority_level": top_severity,
         "recommended_focus": recommended_focus,
+        "reasoning_confidence_score": propagation["reasoning_confidence"],
+        "confidence_score": propagation["strategy_confidence"],
+        "confidence_breakdown": strategy_model,
+        "confidence_propagation": propagation,
         "cohort_signal_used": cohort_snapshot.get("status") in {"success", "partial"},
         "cohort_signal_confidence": cohort_snapshot.get("confidence_score"),
         "cohort_risk_hint": cohort_snapshot.get("risk_hint"),
@@ -363,6 +313,12 @@ def prioritization_node(state: AgentState) -> AgentState:
         "scenario_best_growth": scenario_snapshot.get("best_growth"),
         "scenario_worst_confidence_impact": scenario_snapshot.get("worst_confidence_impact"),
         "scenario_assumptions": scenario_snapshot.get("assumptions"),
+        "signal_conflict_status": conflict_snapshot.get("status"),
+        "signal_conflict_count": conflict_snapshot.get("conflict_count"),
+        "signal_conflict_total_severity": conflict_snapshot.get("total_severity"),
+        "signal_conflict_confidence_penalty": conflict_snapshot.get("confidence_penalty"),
+        "strategy_uncertainty_flag": conflict_snapshot.get("uncertainty_flag"),
+        "signal_conflict_warnings": conflict_snapshot.get("warnings"),
     }
 
-    return {**state, "prioritization": prioritization}
+    return {"prioritization": prioritization}

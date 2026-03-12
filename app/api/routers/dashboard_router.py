@@ -22,6 +22,11 @@ from sqlalchemy.orm import Session
 
 from agent.graph import insight_graph
 from app.failure_codes import INTERNAL_FAILURE, SCHEMA_CONFLICT, build_error_detail
+from app.security.dependencies import (
+    assert_entity_allowed_for_tenant,
+    require_security_context,
+)
+from app.security.models import SecurityContext
 from app.services.category_registry import (
     get_processing_strategy,
     primary_metric_for_business_type,
@@ -220,6 +225,7 @@ def get_dashboard(
         description="Business type/category.",
     ),
     db: Session = Depends(get_db),
+    security: SecurityContext = Depends(require_security_context),
 ) -> dict[str, Any]:
     """Return aggregated dashboard data combining KPIs, risk, forecasts, and insights.
 
@@ -227,6 +233,7 @@ def get_dashboard(
     re-running the full pipeline, making it fast enough for dashboard refresh.
     If no insight has been generated yet, the insights array will be empty.
     """
+    assert_entity_allowed_for_tenant(entity_name=entity_name, security=security)
     processing_strategy = get_processing_strategy(business_type) or business_type
 
     now = datetime.now(tz=timezone.utc)
@@ -285,6 +292,7 @@ def get_dashboard(
     if kpi_rows:
         try:
             state = insight_graph.invoke({
+                "request_id": security.request_id,
                 "user_query": f"Generate executive dashboard insight for {entity_name}",
                 "business_type": processing_strategy,
                 "entity_name": entity_name,

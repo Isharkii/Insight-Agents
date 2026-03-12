@@ -49,6 +49,17 @@
       }
     }
   },
+  "seasonality": {
+    "defaults": {
+      "candidate_periods": [3, 4, 6, 12],
+      "min_cycles_multiplier": 1.5,
+      "bartlett_z": 1.96,
+      "variance_ratio_threshold": 0.60,
+      "min_autocorrelation": 0.25,
+      "min_phase_observations": 2,
+      "zero_guard": 0.000000001
+    }
+  },
   "timeseries_factors": {
     "windows": {
       "momentum_short_window": 3,

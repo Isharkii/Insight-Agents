@@ -1,3 +1,257 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap");
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  :root {
+    --ia-bg: #f4f6f8;
+    --ia-bg-soft: #ecf0f3;
+    --ia-surface: rgba(255, 255, 255, 0.82);
+    --ia-surface-strong: #ffffff;
+    --ia-border: rgba(15, 23, 42, 0.12);
+    --ia-border-strong: rgba(15, 23, 42, 0.2);
+    --ia-text: #0f172a;
+    --ia-text-muted: #475569;
+    --ia-accent: #0f766e;
+    --ia-accent-strong: #115e59;
+    --ia-accent-soft: rgba(15, 118, 110, 0.12);
+    --ia-shadow: 0 18px 45px rgba(15, 23, 42, 0.06);
+    --ia-shadow-soft: 0 8px 18px rgba(15, 23, 42, 0.05);
+    --ia-radius: 20px;
+  }
+
+  html,
+  body {
+    min-height: 100%;
+    background:
+      radial-gradient(1200px 700px at 88% -10%, rgba(15, 118, 110, 0.1), transparent 54%),
+      radial-gradient(900px 700px at -5% 95%, rgba(37, 99, 235, 0.08), transparent 58%),
+      linear-gradient(180deg, var(--ia-bg-soft), var(--ia-bg));
+    color: var(--ia-text);
+    font-family:
+      "IBM Plex Sans",
+      "Segoe UI",
+      -apple-system,
+      BlinkMacSystemFont,
+      sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  #root {
+    min-height: 100vh;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(15, 23, 42, 0.3) transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+    background-color: rgba(15, 23, 42, 0.25);
+  }
+
+  ::selection {
+    background-color: rgba(15, 118, 110, 0.2);
+    color: var(--ia-text);
+  }
+}
+
+@layer components {
+  .ia-shell-bg {
+    position: relative;
+    min-height: 100vh;
+  }
+
+  .ia-shell-bg::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background-image:
+      linear-gradient(to right, rgba(15, 23, 42, 0.03) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(15, 23, 42, 0.03) 1px, transparent 1px);
+    background-size: 56px 56px;
+    mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.18), rgba(0, 0, 0, 0.04));
+    z-index: 0;
+  }
+
+  .ia-surface {
+    position: relative;
+    z-index: 1;
+    border: 1px solid var(--ia-border);
+    border-radius: var(--ia-radius);
+    background: var(--ia-surface);
+    box-shadow: var(--ia-shadow-soft);
+    backdrop-filter: blur(10px);
+  }
+
+  .ia-surface-strong {
+    border: 1px solid var(--ia-border-strong);
+    border-radius: var(--ia-radius);
+    background: var(--ia-surface-strong);
+    box-shadow: var(--ia-shadow);
+  }
+
+  .ia-title {
+    font-size: 1.55rem;
+    line-height: 1.2;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: var(--ia-text);
+  }
+
+  .ia-subtitle {
+    font-size: 0.87rem;
+    line-height: 1.45;
+    color: var(--ia-text-muted);
+  }
+
+  .ia-label {
+    font-size: 0.69rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    font-weight: 600;
+    color: #64748b;
+  }
+
+  .ia-input,
+  .ia-select,
+  .ia-textarea {
+    width: 100%;
+    border: 1px solid rgba(15, 23, 42, 0.18);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.9);
+    color: var(--ia-text);
+    font-size: 0.9rem;
+    transition: border-color 160ms ease, box-shadow 160ms ease;
+  }
+
+  .ia-input,
+  .ia-select {
+    height: 40px;
+    padding: 0 12px;
+  }
+
+  .ia-textarea {
+    padding: 12px 14px;
+    line-height: 1.45;
+    resize: vertical;
+  }
+
+  .ia-input:focus,
+  .ia-select:focus,
+  .ia-textarea:focus {
+    outline: none;
+    border-color: rgba(15, 118, 110, 0.62);
+    box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.14);
+  }
+
+  .ia-btn-primary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border-radius: 12px;
+    border: 1px solid transparent;
+    background: linear-gradient(135deg, var(--ia-accent), var(--ia-accent-strong));
+    color: #ffffff;
+    font-weight: 600;
+    font-size: 0.86rem;
+    letter-spacing: 0.01em;
+    transition: transform 150ms ease, filter 150ms ease, opacity 150ms ease;
+  }
+
+  .ia-btn-primary:hover {
+    filter: brightness(1.04);
+    transform: translateY(-1px);
+  }
+
+  .ia-btn-primary:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+    transform: none;
+  }
+
+  .ia-btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border-radius: 12px;
+    border: 1px solid rgba(15, 23, 42, 0.18);
+    background: rgba(255, 255, 255, 0.85);
+    color: var(--ia-text-muted);
+    font-weight: 600;
+    font-size: 0.86rem;
+    transition: border-color 160ms ease, background-color 160ms ease;
+  }
+
+  .ia-btn-secondary:hover {
+    border-color: rgba(15, 23, 42, 0.28);
+    background-color: rgba(255, 255, 255, 0.98);
+  }
+
+  .ia-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border-radius: 999px;
+    border: 1px solid rgba(15, 23, 42, 0.12);
+    background: rgba(255, 255, 255, 0.88);
+    padding: 5px 11px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: #334155;
+  }
+
+  .ia-kbd {
+    border: 1px solid rgba(15, 23, 42, 0.22);
+    border-bottom-width: 2px;
+    border-radius: 7px;
+    padding: 0 6px;
+    line-height: 1.6;
+    background: #ffffff;
+    font-family:
+      "IBM Plex Mono",
+      ui-monospace,
+      SFMono-Regular,
+      Menlo,
+      Consolas,
+      monospace;
+    font-size: 0.68rem;
+    color: #334155;
+  }
+}
+
+@layer utilities {
+  .ia-fade-up {
+    animation: ia-fade-up 340ms ease both;
+  }
+
+  @keyframes ia-fade-up {
+    from {
+      opacity: 0;
+      transform: translate3d(0, 8px, 0);
+    }
+    to {
+      opacity: 1;
+      transform: translate3d(0, 0, 0);
+    }
+  }
+}

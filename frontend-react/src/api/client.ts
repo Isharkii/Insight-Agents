@@ -87,6 +87,95 @@ export interface DiagnosticsData {
   [key: string]: unknown;
 }
 
+export interface PipelineSignalRisk {
+  status: string;
+  risk_score: number | null;
+  risk_level: string | null;
+  confidence: number;
+  breakdown: Record<string, unknown> | null;
+}
+
+export interface PipelineSignalPrioritization {
+  priority_level: string | null;
+  recommended_focus: string | null;
+  confidence_score: number | null;
+  growth_short: number | null;
+  growth_mid: number | null;
+  growth_long: number | null;
+  growth_trend_acceleration: number | null;
+  cohort_signal_used: boolean | null;
+  cohort_risk_hint: string | null;
+  scenario_signal_used: boolean | null;
+  scenario_worst_growth: number | null;
+  scenario_best_growth: number | null;
+  signal_conflict_count: number | null;
+  signal_conflict_warnings: string[] | null;
+}
+
+export interface PipelineSignalGrowth {
+  status: string;
+  confidence: number;
+  short_growth: number | null;
+  mid_growth: number | null;
+  long_growth: number | null;
+  trend_acceleration: number | null;
+  metric_series: Record<string, number[]> | null;
+}
+
+export interface PipelineSignalForecast {
+  status: string;
+  confidence: number;
+  forecasts: Record<string, unknown> | null;
+  metrics_queried: string[] | null;
+}
+
+export interface PipelineSignalCohort {
+  status: string;
+  confidence: number;
+  retention_decay: number | null;
+  churn_acceleration: number | null;
+  worst_cohort: Record<string, unknown> | null;
+  risk_hint: string | null;
+}
+
+export interface PipelineSignalConflicts {
+  status: string;
+  conflict_count: number;
+  conflicts: unknown[] | null;
+  total_severity: number | null;
+  warnings: string[] | null;
+}
+
+export interface PipelineSignalUnitEconomics {
+  status: string;
+  confidence: number;
+  ltv: number | null;
+  cac: number | null;
+  ltv_cac_ratio: number | null;
+  payback_months: number | null;
+}
+
+export interface PipelineSignalScenarios {
+  status: string;
+  confidence: number;
+  scenario_simulation: Record<string, unknown> | null;
+}
+
+export interface PipelineSignals {
+  risk?: PipelineSignalRisk;
+  prioritization?: PipelineSignalPrioritization;
+  growth?: PipelineSignalGrowth;
+  forecast?: PipelineSignalForecast;
+  cohort?: PipelineSignalCohort;
+  signal_integrity?: Record<string, unknown>;
+  signal_conflicts?: PipelineSignalConflicts;
+  unit_economics?: PipelineSignalUnitEconomics;
+  scenarios?: PipelineSignalScenarios;
+  pipeline_status?: string;
+  dataset_confidence?: number | null;
+  synthesis_blocked?: boolean | null;
+}
+
 export interface AnalyzeResult {
   insight: string;
   evidence: string;
@@ -96,6 +185,7 @@ export interface AnalyzeResult {
   confidence_score: number;
   pipeline_status: string;
   diagnostics: DiagnosticsData | null;
+  pipeline_signals: PipelineSignals | null;
 }
 
 export interface StructuredInsightOutput {
@@ -149,7 +239,16 @@ function asStructuredInsight(value: unknown): StructuredInsightOutput | null {
   return value as StructuredInsightOutput;
 }
 
+function extractPipelineSignals(value: unknown): PipelineSignals | null {
+  if (!value || typeof value !== "object") return null;
+  const payload = value as Record<string, unknown>;
+  const raw = payload.pipeline_signals;
+  if (!raw || typeof raw !== "object") return null;
+  return raw as PipelineSignals;
+}
+
 export function normalizeAnalyzeResult(value: unknown): AnalyzeResult {
+  const pipelineSignals = extractPipelineSignals(value);
   const structured = asStructuredInsight(value);
   if (structured) {
     const confidence = coerceNumber(
@@ -167,6 +266,7 @@ export function normalizeAnalyzeResult(value: unknown): AnalyzeResult {
       confidence_score: confidence,
       pipeline_status: derivePipelineStatus(confidence),
       diagnostics: null,
+      pipeline_signals: pipelineSignals,
     };
   }
 
@@ -183,6 +283,7 @@ export function normalizeAnalyzeResult(value: unknown): AnalyzeResult {
       payload.diagnostics && typeof payload.diagnostics === "object"
         ? (payload.diagnostics as DiagnosticsData)
         : null,
+    pipeline_signals: pipelineSignals,
   };
 }
 
@@ -290,10 +391,25 @@ export async function runAnalysis(params: {
   if (params.model && params.model !== "default")
     form.append("model", params.model);
 
-  const res = await fetch(buildUrl("/analyze"), {
-    method: "POST",
-    body: form,
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 110_000);
+  let res: Response;
+  try {
+    res = await fetch(buildUrl("/analyze"), {
+      method: "POST",
+      body: form,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    clearTimeout(timeoutId);
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error(
+        "Analysis timed out. Try a smaller dataset or simpler query.",
+      );
+    }
+    throw err;
+  }
+  clearTimeout(timeoutId);
   if (!res.ok) {
     let message = `HTTP ${res.status}`;
     try {

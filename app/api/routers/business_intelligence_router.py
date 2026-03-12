@@ -18,7 +18,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, List, Literal
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.business_intelligence.context_analyzer import (
@@ -40,10 +40,15 @@ from app.business_intelligence.strategy_generator import (
     StrategyGenerator,
     StrategyGeneratorError,
 )
+from app.security.dependencies import require_security_context
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api", tags=["business-intelligence"])
+router = APIRouter(
+    prefix="/api",
+    tags=["business-intelligence"],
+    dependencies=[Depends(require_security_context)],
+)
 
 
 # ---------------------------------------------------------------------------

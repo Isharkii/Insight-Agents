@@ -6,7 +6,7 @@ streamlit>=1.35,<2.0
 pandas>=2.0,<3.0
 
 # Agent graph orchestration
-langgraph>=0.2,<1.0
+langgraph>=1.0,<2.0
 
 # Cloud LLM adapter
 openai>=1.0,<2.0
