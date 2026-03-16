@@ -81,6 +81,50 @@ def _temporal_conflicts_from_leading(
     return conflicts
 
 
+def _extract_forecast_signals_direct(
+    forecast_payload: dict[str, Any],
+    signals: dict[str, float],
+) -> None:
+    """Extract slope and deviation directly from forecast data.
+
+    Fallback when normalize_forecast_signals raises (e.g. fallback forecasts
+    with non-standard structure). Iterates all metric rows and uses the first
+    non-None values found.
+    """
+    forecasts = forecast_payload.get("forecasts")
+    if not isinstance(forecasts, Mapping):
+        return
+
+    for _metric, row in forecasts.items():
+        if not isinstance(row, Mapping):
+            continue
+        data = row.get("forecast_data")
+        if not isinstance(data, Mapping):
+            continue
+
+        if "slope" not in signals:
+            slope = _safe_float(data.get("slope"))
+            if slope is not None:
+                signals["slope"] = slope
+
+        if "deviation_percentage" not in signals:
+            deviation = _safe_float(data.get("deviation_percentage"))
+            if deviation is not None:
+                signals["deviation_percentage"] = deviation
+
+        # Also extract r_squared as a confidence signal
+        r_sq = _safe_float(data.get("r_squared"))
+        if r_sq is not None and "forecast_r_squared" not in signals:
+            signals["forecast_r_squared"] = r_sq
+
+    # Extract confidence_score from confidence_breakdown if available
+    breakdown = forecast_payload.get("confidence_breakdown")
+    if isinstance(breakdown, Mapping):
+        fc = _safe_float(breakdown.get("confidence_score"))
+        if fc is not None and "forecast_confidence" not in signals:
+            signals["forecast_confidence"] = fc
+
+
 def _collect_global_signals(
     state: AgentState,
 ) -> tuple[dict[str, float], list[str], dict[str, Any]]:
@@ -110,7 +154,15 @@ def _collect_global_signals(
             raw_warnings = kpi_signals.pop("_warnings", [])
             if isinstance(raw_warnings, list):
                 warnings.extend(str(item) for item in raw_warnings if str(item).strip())
+            # Exclude defaulted (phantom-zero) signals entirely — they
+            # represent absent data, not real "no change" observations.
+            defaulted = kpi_signals.pop("_defaulted", [])
+            if not isinstance(defaulted, list):
+                defaulted = []
+            defaulted_set = set(defaulted)
             for key, value in kpi_signals.items():
+                if str(key) in defaulted_set:
+                    continue
                 numeric = _safe_float(value)
                 if numeric is not None:
                     signals[str(key)] = numeric
@@ -128,6 +180,8 @@ def _collect_global_signals(
                     signals[str(key)] = numeric
         except Exception as exc:  # noqa: BLE001
             warnings.append(f"forecast_signal_normalization_failed: {exc}")
+            # Fallback: extract slope/deviation directly from forecast data
+            _extract_forecast_signals_direct(forecast_payload, signals)
 
     growth_payload = payload_of(state.get("growth_data")) or {}
     horizons = growth_payload.get("primary_horizons")
@@ -176,6 +230,13 @@ def _collect_global_signals(
             signals.setdefault("cac_delta", cac_delta)
         if ltv_delta is not None:
             signals.setdefault("ltv_delta", ltv_delta)
+
+    # Extract growth efficiency burn risk as a synthetic signal
+    growth_efficiency = unit_payload.get("growth_efficiency")
+    if isinstance(growth_efficiency, Mapping):
+        velocity = _safe_float(growth_efficiency.get("revenue_velocity"))
+        if velocity is not None:
+            signals.setdefault("revenue_growth_delta", velocity)
 
     return signals, warnings, metadata
 

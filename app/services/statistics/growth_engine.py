@@ -134,6 +134,22 @@ def compute_growth_signals(
     long_rate = _moving_growth(series, window=cfg.long_window, zero_guard=cfg.zero_guard)
     cagr_rate = _cagr(series, periods=cfg.cagr_periods, zero_guard=cfg.zero_guard)
 
+    # Adaptive fallback: when configured windows are too large for available
+    # data, compute with smaller windows so we always return *something*.
+    adapted_windows: dict[str, int | None] = {}
+    if short_rate is None and points >= 2:
+        short_rate, adapted_windows["short"] = _adaptive_moving_growth(
+            series, window=cfg.short_window, zero_guard=cfg.zero_guard, min_window=1,
+        )
+    if mid_rate is None and points >= 3:
+        mid_rate, adapted_windows["mid"] = _adaptive_moving_growth(
+            series, window=cfg.mid_window, zero_guard=cfg.zero_guard, min_window=2,
+        )
+    if long_rate is None and points >= 4:
+        long_rate, adapted_windows["long"] = _adaptive_moving_growth(
+            series, window=cfg.long_window, zero_guard=cfg.zero_guard, min_window=3,
+        )
+
     acceleration = _acceleration(short_rate=short_rate, mid_rate=mid_rate, long_rate=long_rate)
     insufficient = {
         "short": points < cfg.min_short_history,
@@ -145,8 +161,14 @@ def compute_growth_signals(
 
     warnings: list[str] = []
     for key, is_short in insufficient.items():
-        if is_short:
+        if is_short and key not in adapted_windows:
             warnings.append(f"Insufficient history for {key} horizon growth signal.")
+    for key, actual_w in adapted_windows.items():
+        if actual_w is not None:
+            warnings.append(
+                f"{key} growth computed with adapted window={actual_w} "
+                f"(configured={getattr(cfg, f'{key}_window', '?')})."
+            )
 
     valid_count = sum(0 if flag else 1 for flag in insufficient.values())
     confidence = max(0.2, round(valid_count / max(1, len(insufficient)), 6))
@@ -244,6 +266,33 @@ def _moving_growth(
     return (current - previous) / denominator
 
 
+def _adaptive_moving_growth(
+    series: Sequence[float],
+    *,
+    window: int,
+    zero_guard: float,
+    min_window: int = 2,
+) -> tuple[float | None, int | None]:
+    """Try the configured window first; if too few points, shrink to fit.
+
+    Returns ``(growth_rate, actual_window_used)`` — the window is ``None``
+    when no computation was possible.
+    """
+    w = max(1, int(window))
+    # Try the configured window first (no degradation).
+    if len(series) >= (w + 1):
+        rate = _moving_growth(series, window=w, zero_guard=zero_guard)
+        return rate, w
+
+    # Shrink the window to fit available data.
+    available = len(series) - 1  # max window we can compute
+    if available < max(1, min_window):
+        return None, None
+
+    rate = _moving_growth(series, window=available, zero_guard=zero_guard)
+    return rate, available
+
+
 def _cagr(
     series: Sequence[float],
     *,
@@ -297,6 +346,7 @@ def _pick_primary_metric(
 
     best_name: str | None = None
     best_score = -1.0
+    best_points = -1
     for metric_name, payload in metrics_payload.items():
         if not isinstance(payload, Mapping):
             continue
@@ -308,8 +358,11 @@ def _pick_primary_metric(
             value = horizons.get(key)
             if isinstance(value, (int, float)) and math.isfinite(float(value)):
                 score += 1.0
-        if score > best_score:
+        points_used = int(payload.get("points_used") or 0)
+        # Prefer more non-null horizons; break ties by most data points.
+        if score > best_score or (score == best_score and points_used > best_points):
             best_score = score
+            best_points = points_used
             best_name = metric_name
     return best_name
 

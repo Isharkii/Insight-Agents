@@ -164,7 +164,80 @@ def _extract_growth_signals(growth_payload: dict[str, Any] | None) -> dict[str, 
         if value is not None:
             signals[key] = value
 
+    # Include numeric horizon values so the LLM can cite specific growth rates
+    horizons = growth_payload.get("primary_horizons")
+    if isinstance(horizons, dict):
+        for key in ("short_growth", "mid_growth", "long_growth",
+                     "trend_acceleration", "cagr"):
+            value = horizons.get(key)
+            if value is not None:
+                signals[key] = round(float(value), 4) if isinstance(value, (int, float)) else value
+
+    # Primary metric name so LLM knows what was measured
+    primary_metric = growth_payload.get("primary_metric")
+    if primary_metric:
+        signals["primary_metric"] = str(primary_metric)
+
     return signals
+
+
+def _extract_key_metrics(
+    metric_series: dict[str, list[float]],
+    forecast_payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Pre-compute concrete metric summaries the LLM can cite directly.
+
+    Returns a dict with actual values, deltas, and period-over-period changes
+    so the LLM doesn't need to compute anything — just reference numbers.
+    """
+    metrics: dict[str, Any] = {}
+
+    for name, values in metric_series.items():
+        if not values or len(values) < 2:
+            continue
+        latest = values[-1]
+        previous = values[-2]
+        first = values[0]
+        delta_pct = ((latest - previous) / abs(previous) * 100) if previous != 0 else 0
+        total_change_pct = ((latest - first) / abs(first) * 100) if first != 0 else 0
+        metrics[name] = {
+            "latest_value": round(latest, 2),
+            "previous_value": round(previous, 2),
+            "first_value": round(first, 2),
+            "period_change_pct": round(delta_pct, 2),
+            "total_change_pct": round(total_change_pct, 2),
+            "data_points": len(values),
+            "min": round(min(values), 2),
+            "max": round(max(values), 2),
+        }
+
+    # Add forecast-specific numbers
+    if forecast_payload:
+        forecasts = forecast_payload.get("forecasts")
+        if isinstance(forecasts, dict):
+            for metric_name, row in forecasts.items():
+                if not isinstance(row, dict):
+                    continue
+                data = row.get("forecast_data")
+                if not isinstance(data, dict):
+                    continue
+                forecast_info: dict[str, Any] = {}
+                for key in ("slope", "deviation_percentage", "r_squared",
+                            "confidence_score"):
+                    val = data.get(key)
+                    if isinstance(val, (int, float)):
+                        forecast_info[key] = round(float(val), 4)
+                regression = data.get("regression")
+                if isinstance(regression, dict):
+                    r2 = regression.get("r_squared")
+                    if isinstance(r2, (int, float)):
+                        forecast_info["r_squared"] = round(float(r2), 4)
+                if forecast_info:
+                    entry = metrics.get(str(metric_name), {})
+                    entry["forecast"] = forecast_info
+                    metrics[str(metric_name)] = entry
+
+    return metrics
 
 
 def _compute_signal_confidence(state: AgentState) -> float:
@@ -202,7 +275,10 @@ def signal_enrichment_node(state: AgentState) -> AgentState:
     metric_series = metric_series_from_kpi_payload(kpi_payload) if kpi_payload else {}
 
     # Find the primary revenue metric
-    revenue_candidates = ("revenue", "mrr", "arr", "total_revenue", "recurring_revenue")
+    revenue_candidates = (
+        "revenue", "mrr", "arr", "total_revenue", "recurring_revenue",
+        "net_revenue", "gross_revenue", "sales", "value", "timeseries_value",
+    )
     growth_trend = "unknown"
     volatility_level = "unknown"
     for candidate in revenue_candidates:
@@ -236,6 +312,30 @@ def signal_enrichment_node(state: AgentState) -> AgentState:
     growth_payload = payload_of(state.get("growth_data"))
     growth_signals = _extract_growth_signals(growth_payload)
 
+    # Key metrics with concrete numbers the LLM can cite
+    key_metrics = _extract_key_metrics(metric_series, forecast_payload)
+
+    # Unit economics signals
+    ue_payload = payload_of(state.get("unit_economics_data"))
+    unit_economics_summary: dict[str, Any] = {"status": "unavailable"}
+    if ue_payload:
+        ue_metrics = ue_payload.get("metrics")
+        if isinstance(ue_metrics, dict):
+            unit_economics_summary = {
+                "status": "available",
+                "ltv": ue_metrics.get("ltv"),
+                "cac": ue_metrics.get("cac"),
+                "ltv_cac_ratio": ue_metrics.get("ltv_cac_ratio"),
+                "churn_rate": ue_metrics.get("churn_rate"),
+                "burn_risk": (
+                    ue_payload.get("growth_efficiency", {}).get("burn_risk_indicator")
+                    if isinstance(ue_payload.get("growth_efficiency"), dict)
+                    else None
+                ),
+                "estimation_method": ue_payload.get("estimation_method", "explicit"),
+                "signal_summary": ue_payload.get("signal_summary"),
+            }
+
     # Aggregate confidence
     signal_confidence = _compute_signal_confidence(state)
 
@@ -248,18 +348,25 @@ def signal_enrichment_node(state: AgentState) -> AgentState:
     if cohort_payload:
         cohort_method = cohort_payload.get("method", "standard_cohort")
 
+    ue_method = "unknown"
+    if ue_payload:
+        ue_method = ue_payload.get("estimation_method", "explicit")
+
     enrichment: dict[str, Any] = {
         "growth_trend": growth_trend,
         "volatility_level": volatility_level,
         "forecast_direction": forecast_direction,
         "cohort_health": cohort_health,
         "primary_risk": primary_risk,
+        "unit_economics": unit_economics_summary,
         "signal_confidence": signal_confidence,
         "data_sources": {
             "forecast_source": forecast_source,
             "cohort_method": cohort_method,
+            "unit_economics_method": ue_method,
         },
         "growth_signals": growth_signals,
+        "key_metrics": key_metrics,
         "available_metrics": list(metric_series.keys()),
         "metric_count": len(metric_series),
     }

@@ -116,8 +116,15 @@ class UnifiedSignalIntegrity:
         # are "not applicable" for this dataset and must not drag down
         # the overall confidence.  They are still tracked as available for
         # diagnostic visibility.
+        #
+        # Threshold is 0.1 (not 0.0) because layers with tiny scores
+        # (e.g. forecast with r²=0.003) represent broken/degraded data —
+        # including them in the mean would unfairly suppress confidence
+        # computed from healthy layers.
+        _MIN_LAYER_SCORE_FOR_SCORING = 0.1
         scoring_layers = [
-            name for name in available_layers if layers[name].score > 0.0
+            name for name in available_layers
+            if layers[name].score >= _MIN_LAYER_SCORE_FOR_SCORING
         ]
         scoring_values = [layers[name].score for name in scoring_layers]
         kpi_gate_passed = bool(kpi_layer.score >= _KPI_MIN_GATE)

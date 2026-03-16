@@ -61,17 +61,39 @@ def propagated_confidence(
     dataset_confidence: float = 1.0,
     upstream_confidences: Sequence[float] = (),
 ) -> tuple[float, dict[str, float]]:
+    """Propagate confidence through the pipeline.
+
+    Uses a **weighted-average** approach instead of strict ``min()``.
+    The model's own confidence carries 60% weight; dataset and upstream
+    confidences contribute the remaining 40%.  This prevents a single
+    weak upstream node from crushing an otherwise strong signal.
+    """
+    model_conf = clamp01(model_confidence)
     dataset_cap = clamp01(dataset_confidence, default=1.0)
     upstream_values = [clamp01(value, default=1.0) for value in upstream_confidences]
-    upstream_cap = min(upstream_values) if upstream_values else 1.0
-    propagation_cap = min(dataset_cap, upstream_cap)
-    final = min(clamp01(model_confidence), propagation_cap)
+    upstream_cap = (
+        sum(upstream_values) / len(upstream_values)
+        if upstream_values
+        else 1.0
+    )
+
+    # Weighted blend: model 60%, dataset 20%, upstream 20%.
+    propagation_cap = 0.6 * model_conf + 0.2 * dataset_cap + 0.2 * upstream_cap
+
+    # Still respect a hard floor from truly broken upstream: if ANY upstream
+    # is below 0.15, apply a moderate penalty rather than zeroing out.
+    upstream_min = min(upstream_values) if upstream_values else 1.0
+    if upstream_min < 0.15:
+        propagation_cap = min(propagation_cap, 0.4)
+
+    final = round(max(0.0, min(1.0, propagation_cap)), 6)
     return (
-        round(final, 6),
+        final,
         {
-            "model_confidence": round(clamp01(model_confidence), 6),
+            "model_confidence": round(model_conf, 6),
             "dataset_cap": round(dataset_cap, 6),
             "upstream_cap": round(upstream_cap, 6),
+            "upstream_min": round(upstream_min, 6),
             "propagation_cap": round(propagation_cap, 6),
         },
     )
@@ -103,7 +125,9 @@ def compute_standard_confidence(
 
     normalized_status = str(status or "").strip().lower()
     if normalized_status == "insufficient_data":
-        final_conf = min(final_conf, 0.45)
+        # Penalize rather than hard-cap: reduce by 20% but allow up to 0.65.
+        # This preserves signal strength while still reflecting data gaps.
+        final_conf = min(final_conf * 0.8, 0.65)
     elif normalized_status in {"failed", "skipped"}:
         final_conf = 0.0
 

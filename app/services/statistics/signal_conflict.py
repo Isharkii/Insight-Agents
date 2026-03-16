@@ -170,6 +170,44 @@ DEFAULT_CONFLICT_RULES: list[ConflictRule] = [
             "Rising LTV with rising churn is mathematically suspect."
         ),
     ),
+
+    # ── Revenue × Forecast Slope ──────────────────────────────────────
+    ConflictRule(
+        signal_a="revenue_growth_delta",
+        signal_b="slope",
+        expected_relationship="same",
+        severity=0.6,
+        explanation=(
+            "Revenue growth direction should align with forecast slope. "
+            "Positive revenue growth with negative forecast slope suggests "
+            "the model projects reversal that contradicts recent momentum."
+        ),
+    ),
+
+    # ── Revenue × Active Customers ────────────────────────────────────
+    ConflictRule(
+        signal_a="revenue_growth_delta",
+        signal_b="active_customer_delta",
+        expected_relationship="same",
+        severity=0.7,
+        explanation=(
+            "Revenue and customer base should generally co-move. "
+            "Growing revenue with shrinking customer base may indicate "
+            "unsustainable price dependency."
+        ),
+    ),
+
+    # ── LTV × CAC ────────────────────────────────────────────────────
+    ConflictRule(
+        signal_a="ltv_delta",
+        signal_b="cac_delta",
+        expected_relationship="opposite",
+        severity=0.7,
+        explanation=(
+            "LTV and CAC moving in the same direction erodes unit economics. "
+            "Rising LTV should pair with stable or declining CAC for healthy growth."
+        ),
+    ),
 ]
 
 # ── Signal family aliases ────────────────────────────────────────────────────
@@ -458,7 +496,11 @@ def apply_conflict_penalty(
         conflict_count, uncertainty_flag
     """
     penalty = float(conflict_result.get("confidence_penalty", 0.0))
-    adjusted = max(floor, base_confidence - penalty)
+    # Proportional penalty: reduce by a fraction of base_confidence rather
+    # than a flat subtraction.  This prevents conflicts from pushing
+    # moderate-confidence scores below the synthesis gate while still
+    # applying meaningful penalties at high confidence.
+    adjusted = max(floor, base_confidence * (1.0 - penalty))
 
     reason = "no_conflicts"
     if penalty > 0:

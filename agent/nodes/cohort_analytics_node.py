@@ -116,11 +116,66 @@ def _estimate_synthetic_cohort(
     }
 
 
-def _extract_churn_rate(state: AgentState) -> float | None:
-    """Extract the most recent churn rate from KPI payload."""
+_REVENUE_METRIC_CANDIDATES = (
+    "revenue",
+    "mrr",
+    "total_revenue",
+    "net_revenue",
+    "sales",
+)
+
+
+def _estimate_implied_churn_from_revenue(
+    metric_series: dict[str, list[float]],
+) -> float | None:
+    """Estimate implied monthly churn rate from revenue decline patterns.
+
+    When no explicit churn metric exists, sustained revenue decline implies
+    customer attrition.  This uses the average negative period-over-period
+    change as a proxy.
+
+    Returns a churn rate in [0, 1] or None if revenue is not declining.
+    """
+    for candidate in _REVENUE_METRIC_CANDIDATES:
+        series = metric_series.get(candidate)
+        if not series or len(series) < 4:
+            continue
+
+        # Compute period-over-period rates of change
+        changes: list[float] = []
+        for i in range(1, len(series)):
+            prev = series[i - 1]
+            if abs(prev) < 1e-9:
+                continue
+            changes.append((series[i] - prev) / abs(prev))
+
+        if not changes:
+            continue
+
+        negative_changes = [c for c in changes if c < 0]
+        if len(negative_changes) < len(changes) * 0.4:
+            # Revenue is not predominantly declining — no implied churn
+            continue
+
+        # Use mean negative change magnitude as implied churn proxy,
+        # scaled conservatively (revenue loss != customer loss 1:1).
+        avg_decline = abs(sum(negative_changes) / len(negative_changes))
+        implied_churn = min(0.5, avg_decline * 0.7)  # conservative scale
+        if implied_churn >= 0.01:
+            return round(implied_churn, 6)
+
+    return None
+
+
+def _extract_churn_rate(state: AgentState) -> tuple[float | None, str]:
+    """Extract the most recent churn rate from KPI payload.
+
+    Returns (churn_rate, source) where source is one of:
+    'explicit', 'revenue_implied', or 'none'.
+    """
     kpi_payload = resolve_kpi_payload(state)
     if not kpi_payload:
-        return None
+        return None, "none"
 
     # Try from computed KPIs in records (most recent period)
     records = records_from_kpi_payload(kpi_payload)
@@ -137,7 +192,7 @@ def _extract_churn_rate(state: AgentState) -> float | None:
                 continue
             value = extract_numeric_metric(computed, _CHURN_METRIC_CANDIDATES)
             if value is not None and value > 0:
-                return value
+                return value, "explicit"
 
     # Try from metric series (use last value)
     metric_series = metric_series_from_kpi_payload(kpi_payload)
@@ -146,9 +201,14 @@ def _extract_churn_rate(state: AgentState) -> float | None:
         if series and len(series) > 0:
             last_value = series[-1]
             if last_value > 0:
-                return last_value
+                return last_value, "explicit"
 
-    return None
+    # Fallback: estimate implied churn from revenue decline
+    implied = _estimate_implied_churn_from_revenue(metric_series)
+    if implied is not None:
+        return implied, "revenue_implied"
+
+    return None, "none"
 
 
 def cohort_analytics_node(state: AgentState) -> AgentState:
@@ -180,7 +240,7 @@ def cohort_analytics_node(state: AgentState) -> AgentState:
 
         # ── Fallback: synthetic cohort estimation from churn data ──
         if not cohort_rows:
-            churn_rate = _extract_churn_rate(state)
+            churn_rate, churn_source = _extract_churn_rate(state)
             if churn_rate is None or churn_rate <= 0:
                 return {
                     "cohort_data": skipped(
@@ -193,26 +253,33 @@ def cohort_analytics_node(state: AgentState) -> AgentState:
                 }
 
             logger.info(
-                "No cohort rows for %s; computing synthetic cohort from churn_rate=%.4f",
+                "No cohort rows for %s; computing synthetic cohort from "
+                "churn_rate=%.4f (source=%s)",
                 entity_name,
                 churn_rate,
+                churn_source,
             )
             synthetic = _estimate_synthetic_cohort(churn_rate)
+            synthetic["churn_source"] = churn_source
 
             dataset_confidence = dataset_confidence_from_state(state)
+            # Revenue-implied churn is a weaker signal than explicit churn
+            method_penalty = (
+                -0.8 if churn_source == "revenue_implied" else -0.5
+            )
             confidence_model = compute_standard_confidence(
                 values=synthetic.get("retention_curve", []),
                 signals={
                     "retention_decay": -synthetic.get("retention_decay", 0.0),
                     "lifetime_estimate": synthetic.get("lifetime_estimate"),
                     "churn_acceleration": -abs(synthetic.get("churn_acceleration", 0.0)),
-                    "synthetic_method": -0.5,  # penalty signal for synthetic data
+                    "synthetic_method": method_penalty,
                 },
                 dataset_confidence=dataset_confidence,
                 upstream_confidences=[],
                 status="success" if synthetic.get("status") == "success" else "insufficient_data",
                 base_warnings=[
-                    "Cohort estimated synthetically from aggregate churn data; "
+                    f"Cohort estimated synthetically from {churn_source} churn data; "
                     "confidence penalty applied.",
                 ],
             )

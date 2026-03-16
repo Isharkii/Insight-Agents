@@ -103,6 +103,7 @@ services:
       - ./config:/app/config
       - ./alembic:/app/alembic
       - ./scripts:/app/scripts
+      - ./forecast:/app/forecast
     networks:
       - insight_net
 

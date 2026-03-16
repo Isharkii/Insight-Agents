@@ -64,18 +64,25 @@ def normalize_kpi_signals(
     """Normalize only KPI-derived flat signals.
 
     When *strict* is False (default), derivation failures for individual
-    signals fall back to 0.0 and are recorded as warnings.  This allows
-    downstream consumers (risk_node) to degrade gracefully instead of
-    hard-failing the entire pipeline.
+    signals are recorded as absent (0.0 for backward compat in risk_node)
+    and tracked in ``_defaulted`` so consumers can distinguish real zeros
+    from missing data.
 
     When *strict* is True the original behaviour is preserved: any
     derivation failure raises ``ValueError``.
 
-    The returned dict includes a ``_warnings`` key (list[str]) that
-    callers should inspect and propagate.
+    The returned dict includes:
+      - ``_warnings`` (list[str]): per-signal derivation failure messages.
+      - ``_defaulted`` (list[str]): signal names that were defaulted to 0.0
+        because the underlying metric was unavailable.
+
+    Callers should inspect ``_defaulted`` and exclude those signals from
+    conflict detection, risk weighting, and confidence scoring to prevent
+    phantom-zero distortion.
     """
     kpi_series = _extract_kpi_series(kpi_payload)
     warnings: list[str] = []
+    defaulted: list[str] = []
     signals: SignalDict = {}
 
     for name, derive_fn in (
@@ -89,10 +96,12 @@ def normalize_kpi_signals(
             if strict:
                 raise
             signals[name] = 0.0
+            defaulted.append(name)
             warnings.append(f"{name}: defaulted to 0.0 ({exc})")
             logger.warning("KPI signal '%s' derivation failed, defaulting to 0.0: %s", name, exc)
 
     signals["_warnings"] = warnings  # type: ignore[assignment]
+    signals["_defaulted"] = defaulted  # type: ignore[assignment]
     return signals
 
 

@@ -287,13 +287,17 @@ class InsightOutput(BaseModel):
 
     @model_validator(mode="after")
     def _validate_confidence_tone_and_conditional(self) -> "InsightOutput":
+        """Validate tone consistency with confidence level.
+
+        NOTE: The confidence < 0.5 conditional labeling is enforced
+        deterministically in two places:
+          1. validator._apply_conditional_labels (pre-schema, on raw dict)
+          2. llm_node._ensure_conditional_recommendations (post-schema)
+        This validator only checks high-confidence tone consistency.
+        Low-confidence labeling is NOT validated here because the LLM
+        should not need to know about internal labeling conventions.
+        """
         confidence = float(self.competitive_analysis.confidence)
-        recommendations = [
-            *self.strategic_recommendations.immediate_actions,
-            *self.strategic_recommendations.mid_term_moves,
-            *self.strategic_recommendations.defensive_strategies,
-            *self.strategic_recommendations.offensive_strategies,
-        ]
         analysis_text = " ".join(
             [
                 self.competitive_analysis.summary,
@@ -302,16 +306,7 @@ class InsightOutput(BaseModel):
             ]
         )
 
-        if confidence < 0.5:
-            if not any(_is_conditional(item) for item in recommendations):
-                raise ValueError(
-                    'When confidence < 0.5, recommendations must be labeled as "conditional".'
-                )
-            if not _has_any_term(analysis_text, _LOW_CONFIDENCE_TONE_TERMS):
-                raise ValueError(
-                    "Low-confidence analysis must use cautious/conditional tone."
-                )
-        elif confidence >= 0.8 and _has_any_term(
+        if confidence >= 0.8 and _has_any_term(
             analysis_text,
             ("highly uncertain", "insufficient evidence", "unable to determine"),
         ):

@@ -11,29 +11,29 @@ _SCHEMA_JSON = json.dumps(InsightOutput.model_json_schema(), indent=2)
 _EXAMPLE_OUTPUT = json.dumps(
     {
         "competitive_analysis": {
-            "summary": "Peer benchmark metrics indicate competitor-led pressure on growth and retention.",
-            "market_position": "The company is positioned as a challenger versus higher-share benchmark peers.",
-            "relative_performance": "MRR growth trails benchmark growth while churn is above peer median.",
+            "summary": "MRR growth of 4.2% trails the peer median of 7.8% by 3.6pp, while churn at 5.1% exceeds the benchmark 3.2% by 1.9pp — indicating competitor-led pressure on both acquisition and retention.",
+            "market_position": "Challenger: ranked 4th of 6 peers on composite growth-retention score (0.61 vs leader 0.84).",
+            "relative_performance": "ARPU of $142 exceeds peer median $118 (+20%), but net revenue retention of 94% lags peer median 102%, signaling monetization strength offset by expansion weakness.",
             "key_advantages": [
-                "Stronger ARPU versus benchmark median improves monetization efficiency."
+                "ARPU 20% above peer median ($142 vs $118) provides pricing power for margin defense."
             ],
             "key_vulnerabilities": [
-                "Higher churn versus competitor benchmark weakens retention durability."
+                "Churn 1.9pp above peer median erodes 2.3% of MRR monthly; at current trajectory, annual churn-driven revenue loss reaches $1.4M."
             ],
             "confidence": 0.72,
         },
         "strategic_recommendations": {
             "immediate_actions": [
-                "Address competitor churn gap by targeting at-risk segments where peer retention is stronger."
+                "Reduce churn from 5.1% toward peer median 3.2% by deploying retention triggers at the month-2 drop-off identified in cohort data — estimated $460K annual revenue recovery."
             ],
             "mid_term_moves": [
-                "Build a roadmap to close growth-rate weakness versus benchmark peers over the next two quarters."
+                "Close the 3.6pp MRR growth gap by targeting the 18% conversion-to-paid rate (vs peer 24%) with onboarding optimization over Q3-Q4."
             ],
             "defensive_strategies": [
-                "Protect accounts where competitor strength in retention metrics is highest."
+                "Lock in top-decile accounts (ARPU > $200) with annual contracts before competitors undercut on price — these 120 accounts represent 38% of MRR."
             ],
             "offensive_strategies": [
-                "Exploit competitor weakness in ARPU efficiency with differentiated packaging and upsell motions."
+                "Leverage ARPU advantage to fund targeted acquisition in the mid-market segment where peer churn data shows 8.4% dissatisfaction rate."
             ],
         },
     },
@@ -68,10 +68,23 @@ SIGNAL-FIRST REASONING:
   3. Risk Assessment — what competitive risks the signals expose
   4. Strategic Recommendations — what actions to take based on signals
 
+SPECIFICITY RULES (CRITICAL):
+- Every claim MUST cite a specific number, percentage, or delta from the provided data.
+- Every recommendation MUST include a quantified impact estimate or measurable target.
+- BANNED PHRASES (your output will be rejected if these appear):
+  "focus on improving", "consider implementing", "explore opportunities",
+  "optimize performance", "enhance capabilities", "leverage strengths",
+  "address weaknesses", "drive growth", "stabilize revenue streams",
+  "build a roadmap", "strengthen retention", "improve metrics".
+- Instead of "address churn risk", write "reduce churn from 5.1% toward 3.2%
+  by targeting month-2 drop-off in Q3 cohorts — estimated $460K recovery".
+- Reference specific cohorts, time periods, segments, or metric values.
+- If the data contains growth rates, slopes, or deltas, cite them directly.
+
 CONTENT RULES:
 - competitive_analysis must ONLY reference competitor data and metrics.
 - strategic_recommendations must explicitly reference competitor gaps, strengths, and weaknesses.
-- No generic advice.
+- No generic advice. Every sentence must contain at least one specific data point.
 - No repetition across recommendation sections.
 - Tone must match deterministic confidence.
 - If confidence < 0.5, every recommendation must be labeled as "Conditional:".
@@ -119,16 +132,28 @@ SIGNAL-FIRST REASONING:
   3. Risk Assessment — what risks the signals expose
   4. Strategic Recommendations — what actions to take based on signals
 
+SPECIFICITY RULES (CRITICAL):
+- Every claim MUST cite a specific number, percentage, or delta from the provided data.
+- Every recommendation MUST include a quantified impact estimate or measurable target.
+- BANNED PHRASES (your output will be rejected if these appear):
+  "focus on improving", "consider implementing", "explore opportunities",
+  "optimize performance", "enhance capabilities", "leverage strengths",
+  "address weaknesses", "drive growth", "stabilize revenue streams",
+  "build a roadmap", "strengthen retention", "improve metrics",
+  "focus on stabilizing", "improve performance", "focus on growth".
+- Instead of "declining growth trend — focus on stabilizing revenue", write
+  "revenue declined 8.3% QoQ ($242K to $222K) — deploy retention triggers
+  targeting the month-2 churn spike (4.7% vs 1.9% baseline) to recover $89K annually".
+- Reference specific cohorts, time periods, growth rates, slopes, or metric values.
+- If the data contains forecast slopes, deviation percentages, churn deltas,
+  or growth horizons, cite them directly with their numeric values.
+
 CONTENT RULES:
-- competitive_analysis fields should analyze the entity's own performance trajectory,
-  revenue trends, growth momentum, retention patterns, and risk exposure.
-- Use terms like "performance", "trend", "growth", "revenue", "retention",
-  "risk", "momentum", "trajectory", "decline", "volatility" in your analysis.
-- strategic_recommendations must reference specific metrics, performance dimensions,
-  or risk areas. Use terms like "growth", "revenue", "retention", "churn",
-  "risk", "trend", "improve", "reduce", "increase", "target", "address",
-  "strength", "weakness", "vulnerability", "opportunity".
-- No generic advice (e.g., "improve performance", "focus on growth").
+- competitive_analysis fields should analyze the entity's own performance trajectory
+  with specific numbers: revenue values, growth rates, churn percentages, slopes.
+- strategic_recommendations must reference specific metrics with their values
+  and include quantified targets or impact estimates.
+- No generic advice. Every sentence must contain at least one specific data point.
 - No repetition across recommendation sections.
 - Tone must match deterministic confidence.
 - If confidence < 0.5, every recommendation must be labeled as "Conditional:".
@@ -148,29 +173,29 @@ CONFIDENCE-AWARE NARRATIVE RULES:
 _EXAMPLE_OUTPUT_SELF_ANALYSIS = json.dumps(
     {
         "competitive_analysis": {
-            "summary": "Revenue growth momentum has decelerated over the past two quarters with a declining trend in recurring revenue.",
-            "market_position": "The entity shows vulnerability in retention metrics, with churn risk increasing alongside revenue volatility.",
-            "relative_performance": "MRR growth rate dropped from 8% to 3% while recurring revenue trajectory signals a potential plateau.",
+            "summary": "Revenue declined 8.3% QoQ ($242K to $222K) driven by churn acceleration from 3.1% to 4.7% — cohorts acquired in Q3 show 2.4x higher month-2 drop-off than Q1 cohorts.",
+            "market_position": "Declining trajectory with high-severity risk: forecast slope is -0.034 with deviation 12.6%, signaling continued contraction without intervention.",
+            "relative_performance": "Short-term growth at -8.3% vs mid-term -4.1% shows accelerating decline (trend acceleration -0.042). LTV/CAC ratio degraded from 3.2 to 2.6 over the period.",
             "key_advantages": [
-                "Revenue base remains stable despite growth deceleration, providing a foundation for recovery."
+                "Core customer base (cohorts Q1-Q2) retains at 92% month-over-month — decline is concentrated in recent acquisition cohorts, not the installed base."
             ],
             "key_vulnerabilities": [
-                "Declining growth momentum and rising churn risk expose revenue durability weakness."
+                "Q3 cohort churn acceleration of 12% QoQ will compound to $89K additional annual revenue loss if month-2 retention is not addressed within 60 days."
             ],
             "confidence": 0.75,
         },
         "strategic_recommendations": {
             "immediate_actions": [
-                "Address churn risk by targeting at-risk segments where retention metrics show the steepest decline."
+                "Deploy retention intervention targeting month-2 churn spike in Q3 cohorts (4.7% vs 1.9% baseline) — onboarding sequence redesign with success milestones by day 14 and day 30."
             ],
             "mid_term_moves": [
-                "Build a revenue growth recovery plan to improve recurring revenue trajectory over the next two quarters."
+                "Reverse the -0.034 forecast slope by shifting acquisition spend toward channels that produced Q1-Q2 cohort quality (92% retention) vs Q3 channels (78% retention)."
             ],
             "defensive_strategies": [
-                "Reduce churn vulnerability by strengthening retention in segments showing the highest revenue decline."
+                "Protect the $178K MRR from pre-Q3 cohorts with proactive health scoring — flag accounts with usage decline >15% for CSM outreach before renewal."
             ],
             "offensive_strategies": [
-                "Target revenue growth opportunity in segments where recurring revenue momentum is still positive."
+                "LTV/CAC of 2.6 still supports expansion: target upsell to the 34 accounts with usage above 80th percentile but on base-tier plans — estimated $12K incremental MRR."
             ],
         },
     },
@@ -233,6 +258,11 @@ class SynthesisPromptBuilder:
         # Signal enrichment goes first so the LLM sees the high-level
         # classified signals before the raw data sections.
         if signal_enrichment:
+            # Extract key_metrics to a prominent top-level section so the
+            # LLM sees concrete numbers before anything else.
+            key_metrics = signal_enrichment.get("key_metrics")
+            if isinstance(key_metrics, dict) and key_metrics:
+                data_kwargs["key_metrics_reference"] = key_metrics
             data_kwargs["signal_summary"] = signal_enrichment
         data_kwargs.update({
             "kpi_data": kpi_data,
@@ -258,7 +288,9 @@ class SynthesisPromptBuilder:
             task_instruction = (
                 "Synthesize the provided data into a single JSON object "
                 "matching the schema above. Focus strictly on competitor benchmarking "
-                "content and avoid non-competitive generic recommendations."
+                "with SPECIFIC numbers: cite growth deltas, churn gaps, ARPU "
+                "differences, and rank positions from the data. Every recommendation "
+                "must include a quantified target or impact. Generic advice will be rejected."
             )
         else:
             system_instructions = _SYSTEM_INSTRUCTIONS_SELF_ANALYSIS
@@ -266,8 +298,10 @@ class SynthesisPromptBuilder:
             task_instruction = (
                 "Synthesize the provided data into a single JSON object "
                 "matching the schema above. Focus on the entity's own performance "
-                "trends, strengths, weaknesses, and risk areas. Reference specific "
-                "metrics and avoid generic recommendations."
+                "with SPECIFIC numbers from the data: cite growth rates, revenue "
+                "values, churn percentages, forecast slopes, and cohort metrics. "
+                "Every recommendation must include a quantified target or impact. "
+                "Generic advice without numbers will be rejected."
             )
 
         return (

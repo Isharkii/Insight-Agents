@@ -222,6 +222,285 @@ def _insufficient_result(reason: str) -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Fallback: estimate unit economics from revenue trajectory
+# ---------------------------------------------------------------------------
+
+_REVENUE_CANDIDATES = (
+    "revenue", "mrr", "recurring_revenue", "total_revenue", "net_revenue", "sales",
+)
+
+
+def _estimate_implied_churn_from_revenue(
+    revenue_series: list[float],
+) -> float | None:
+    """Estimate implied monthly churn from sustained revenue decline.
+
+    Uses average negative period-over-period change as a proxy.
+    Returns churn rate in [0, 1] or None if revenue is not declining.
+    """
+    if len(revenue_series) < 4:
+        return None
+
+    changes: list[float] = []
+    for i in range(1, len(revenue_series)):
+        prev = revenue_series[i - 1]
+        if abs(prev) < _ZERO_GUARD:
+            continue
+        changes.append((revenue_series[i] - prev) / abs(prev))
+
+    if not changes:
+        return None
+
+    negative = [c for c in changes if c < 0]
+    if len(negative) < len(changes) * 0.4:
+        return None
+
+    avg_decline = abs(sum(negative) / len(negative))
+    implied = min(0.5, avg_decline * 0.7)
+    return round(implied, 6) if implied >= 0.01 else None
+
+
+def _compute_growth_efficiency(
+    revenue_series: list[float],
+    growth_series: list[float] | None,
+) -> dict[str, Any]:
+    """Compute growth efficiency metrics from revenue trajectory.
+
+    Returns revenue_velocity, growth_stability, and burn_risk_indicator.
+    """
+    n = len(revenue_series)
+    if n < 3:
+        return {}
+
+    # Revenue velocity: average period-over-period growth rate
+    changes: list[float] = []
+    for i in range(1, n):
+        prev = revenue_series[i - 1]
+        if abs(prev) < _ZERO_GUARD:
+            continue
+        changes.append((revenue_series[i] - prev) / abs(prev))
+
+    if not changes:
+        return {}
+
+    avg_growth = sum(changes) / len(changes)
+
+    # Growth stability: coefficient of variation of growth rates
+    if len(changes) >= 2:
+        mean_change = sum(changes) / len(changes)
+        variance = sum((c - mean_change) ** 2 for c in changes) / len(changes)
+        growth_cv = (variance ** 0.5) / max(abs(mean_change), _ZERO_GUARD)
+    else:
+        growth_cv = 0.0
+
+    # Growth acceleration: compare recent half vs first half
+    mid = len(changes) // 2
+    if mid > 0:
+        first_half = sum(changes[:mid]) / mid
+        second_half = sum(changes[mid:]) / max(1, len(changes) - mid)
+        acceleration = second_half - first_half
+    else:
+        acceleration = 0.0
+
+    # Burn risk: declining revenue + high volatility
+    declining_periods = sum(1 for c in changes if c < 0)
+    decline_ratio = declining_periods / len(changes)
+
+    if decline_ratio > 0.6 and growth_cv > 0.3:
+        burn_risk = "high"
+    elif decline_ratio > 0.4 or growth_cv > 0.5:
+        burn_risk = "moderate"
+    else:
+        burn_risk = "low"
+
+    return {
+        "revenue_velocity": round(avg_growth, 6),
+        "growth_stability_cv": round(growth_cv, 6),
+        "growth_acceleration": round(acceleration, 6),
+        "decline_ratio": round(decline_ratio, 6),
+        "burn_risk_indicator": burn_risk,
+        "periods_analyzed": len(changes),
+    }
+
+
+def _estimate_unit_economics_from_revenue(
+    ordered_records: Sequence[Mapping[str, Any]],
+    aliases: dict[str, tuple[str, ...]],
+    metrics: dict[str, float | None],
+    metric_series: dict[str, list[float]],
+    trends: dict[str, float | None],
+    has_trend_data: bool,
+    warnings: list[str],
+    cfg: UnitEconomicsConfig,
+) -> dict[str, Any] | None:
+    """Fallback: estimate unit economics from revenue trajectory alone.
+
+    When explicit LTV/CAC/churn metrics are unavailable, derives:
+    - implied_churn from revenue decline patterns
+    - estimated_ltv from revenue / implied_churn
+    - growth efficiency metrics
+    - burn risk indicator
+
+    Returns None if insufficient revenue data exists.
+    """
+    # Find best revenue series
+    revenue_series: list[float] | None = None
+    for candidate in _REVENUE_CANDIDATES:
+        series = metric_series.get(candidate)
+        if series and len(series) >= 3:
+            revenue_series = series
+            break
+
+    # Try extracting from records directly
+    if revenue_series is None:
+        all_revenue_aliases = aliases.get("revenue", _DEFAULT_METRIC_ALIASES.get("revenue", ()))
+        revenue_series = _extract_series(ordered_records, all_revenue_aliases)
+        if len(revenue_series) < 3:
+            return None
+
+    revenue = metrics.get("revenue")
+    growth = metrics.get("growth_rate")
+
+    # Estimate implied churn from revenue decline
+    implied_churn = _estimate_implied_churn_from_revenue(revenue_series)
+    churn_source = "revenue_implied" if implied_churn is not None else "unavailable"
+
+    # Estimate LTV from revenue and implied churn
+    estimated_ltv: float | None = None
+    if implied_churn is not None and revenue is not None and implied_churn > _ZERO_GUARD:
+        estimated_ltv = round(revenue / implied_churn, 6)
+
+    # Compute growth efficiency
+    growth_series = metric_series.get("growth_rate")
+    efficiency = _compute_growth_efficiency(revenue_series, growth_series)
+
+    # Compute payback estimate (months to recover average monthly revenue)
+    payback_estimate: float | None = None
+    if revenue is not None and len(revenue_series) >= 2:
+        avg_revenue = sum(revenue_series) / len(revenue_series)
+        if avg_revenue > _ZERO_GUARD:
+            payback_estimate = round(revenue / avg_revenue, 2)
+
+    # Build estimated metrics — merge with any existing explicit metrics
+    estimated_metrics = dict(metrics)
+    estimation_sources: dict[str, str] = {}
+
+    if estimated_metrics.get("churn_rate") is None and implied_churn is not None:
+        estimated_metrics["churn_rate"] = round(implied_churn, 6)
+        estimation_sources["churn_rate"] = "revenue_implied"
+    if estimated_metrics.get("ltv") is None and estimated_ltv is not None:
+        estimated_metrics["ltv"] = estimated_ltv
+        estimation_sources["ltv"] = "revenue_derived"
+    if payback_estimate is not None:
+        estimated_metrics["payback_months_estimate"] = payback_estimate
+        estimation_sources["payback_months_estimate"] = "revenue_derived"
+
+    # Generate signals from estimated metrics
+    signals = _evaluate_signals(
+        estimated_metrics,
+        trends,
+        config=cfg,
+        has_trend_data=has_trend_data,
+    )
+
+    # Add growth efficiency signals
+    burn_risk = efficiency.get("burn_risk_indicator")
+    if burn_risk == "high":
+        signals.append(UnitEconomicsSignal(
+            signal="burn_risk_elevated",
+            severity="critical",
+            confidence=0.7,
+            description=(
+                "Revenue trajectory signals elevated burn risk: "
+                f"decline ratio {efficiency.get('decline_ratio', 0):.0%} "
+                f"with growth CV {efficiency.get('growth_stability_cv', 0):.2f}."
+            ),
+            evidence=efficiency,
+        ))
+    elif burn_risk == "moderate":
+        signals.append(UnitEconomicsSignal(
+            signal="burn_risk_moderate",
+            severity="warning",
+            confidence=0.6,
+            description=(
+                "Revenue patterns indicate moderate burn risk. "
+                "Growth is inconsistent or partially declining."
+            ),
+            evidence=efficiency,
+        ))
+
+    velocity = efficiency.get("revenue_velocity")
+    if velocity is not None:
+        if velocity < -0.05:
+            signals.append(UnitEconomicsSignal(
+                signal="revenue_contraction",
+                severity="critical",
+                confidence=0.8,
+                description=f"Average period revenue change is {velocity:.1%}, indicating contraction.",
+                evidence={"revenue_velocity": velocity},
+            ))
+        elif velocity > 0.05:
+            signals.append(UnitEconomicsSignal(
+                signal="revenue_expansion",
+                severity="info",
+                confidence=0.8,
+                description=f"Average period revenue change is +{velocity:.1%}, indicating expansion.",
+                evidence={"revenue_velocity": velocity},
+            ))
+
+    estimation_warnings = list(warnings)
+    estimation_warnings.append(
+        "Unit economics estimated from revenue trajectory (fallback mode). "
+        "Confidence reduced."
+    )
+    if implied_churn is not None:
+        estimation_warnings.append(
+            f"Churn rate implied from revenue decline pattern: {implied_churn:.2%}."
+        )
+    if estimated_ltv is not None:
+        estimation_warnings.append(
+            f"LTV estimated from revenue / implied churn: {estimated_ltv:.2f}."
+        )
+
+    severity_rank = {"critical": 3, "warning": 2, "info": 1}
+    signal_summary = (
+        max(signals, key=lambda s: severity_rank.get(s.severity, 0)).signal
+        if signals
+        else "estimated_from_revenue"
+    )
+
+    # Confidence: lower than explicit metrics, penalized for estimation
+    available_estimated = sum(1 for v in estimated_metrics.values() if v is not None)
+    base_confidence = 0.5 if signals else 0.3
+    completeness = min(1.0, available_estimated / 5.0)
+    estimation_penalty = 0.7  # 30% penalty for estimated metrics
+    confidence = round(base_confidence * completeness * estimation_penalty, 6)
+
+    return {
+        "metrics": estimated_metrics,
+        "metric_series": metric_series,
+        "trends": trends,
+        "signals": [s.as_dict() for s in signals],
+        "signal_summary": signal_summary,
+        "confidence": confidence,
+        "available_metrics": available_estimated,
+        "estimation_method": "revenue_trajectory_fallback",
+        "estimation_sources": estimation_sources,
+        "growth_efficiency": efficiency,
+        "status": "success",
+        "warnings": estimation_warnings,
+        "config": {
+            "ltv_cac_healthy": cfg.ltv_cac_healthy,
+            "ltv_cac_marginal": cfg.ltv_cac_marginal,
+            "churn_healthy": cfg.churn_healthy,
+            "churn_critical": cfg.churn_critical,
+            "revenue_growth_healthy": cfg.revenue_growth_healthy,
+            "cac_increase_warning": cfg.cac_increase_warning,
+        },
+    }
+
+
 def _evaluate_signals(
     metrics: dict[str, float | None],
     trends: dict[str, float | None],
@@ -438,6 +717,20 @@ def analyze_unit_economics(
         if value is not None
     )
     if available_core_metrics < 2:
+        # Fallback: estimate from revenue trajectory
+        estimated = _estimate_unit_economics_from_revenue(
+            ordered_records=ordered_records,
+            aliases=aliases,
+            metrics=metrics,
+            metric_series=metric_series,
+            trends=trends,
+            has_trend_data=has_trend_data,
+            warnings=warnings,
+            cfg=cfg,
+        )
+        if estimated is not None:
+            return estimated
+
         result = _insufficient_result(
             f"Only {available_core_metrics} core metric(s) available; need at least 2.",
         )

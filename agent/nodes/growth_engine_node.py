@@ -35,7 +35,18 @@ def growth_engine_node(state: AgentState) -> AgentState:
 
         business_type = str(state.get("business_type") or "").strip().lower()
         aliases = metric_aliases_for_business_type(business_type)
-        revenue_candidates = aliases.get("recurring_revenue", ("recurring_revenue",))
+        revenue_candidates = list(aliases.get("recurring_revenue", ("recurring_revenue",)))
+        # Append common revenue-like names so the growth engine always finds
+        # a meaningful primary metric even when aliases don't cover the CSV
+        # column names.
+        _COMMON_REVENUE_NAMES = (
+            "revenue", "mrr", "arr", "total_revenue", "sales",
+            "recurring_revenue", "net_revenue", "gross_revenue",
+            "value", "timeseries_value",
+        )
+        for name in _COMMON_REVENUE_NAMES:
+            if name not in revenue_candidates:
+                revenue_candidates.append(name)
         growth_context = compute_growth_context(
             metric_series,
             preferred_metric_candidates=revenue_candidates,

@@ -148,6 +148,20 @@ def risk_node(state: AgentState) -> AgentState:
         upstream_warnings.extend(normalizer_warnings)
         upstream_confidence = min(upstream_confidence, 0.5)
 
+    # Track which signals were defaulted (phantom zeros) so we can
+    # penalize confidence proportionally rather than treating them as real.
+    defaulted_signals: list[str] = kpi_signals.pop("_defaulted", [])  # type: ignore[assignment]
+    if not isinstance(defaulted_signals, list):
+        defaulted_signals = []
+    if defaulted_signals:
+        # Apply confidence penalty: more defaulted signals = less reliable risk
+        defaulted_penalty = min(0.3, 0.1 * len(defaulted_signals))
+        upstream_confidence = max(0.1, upstream_confidence - defaulted_penalty)
+        upstream_warnings.append(
+            f"Risk scored with {len(defaulted_signals)} defaulted signal(s) "
+            f"({', '.join(defaulted_signals)}); confidence penalized by {defaulted_penalty:.2f}."
+        )
+
     forecast_state = state.get("forecast_data")
     forecast_payload: dict = payload_of(forecast_state) or {}
     forecast_status = status_of(forecast_state)

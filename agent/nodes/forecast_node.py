@@ -26,6 +26,7 @@ from agent.nodes.node_result import failed, skipped, success
 from agent.state import AgentState
 from db.session import SessionLocal
 from forecast.repository import ForecastRepository
+from forecast.robust_forecast import RobustForecast
 
 logger = logging.getLogger(__name__)
 
@@ -182,18 +183,28 @@ def _compute_fallback_forecast(
 ) -> dict[str, Any] | None:
     """Compute a deterministic fallback forecast for a single metric.
 
+    Uses the full RobustForecast pipeline (tiered model selection with
+    seasonality detection, exponential smoothing, and residual diagnostics)
+    instead of naive linear regression.
+
     Returns None if no values are available.
     """
     if not values:
         return None
 
-    if len(values) >= _MIN_REGRESSION_POINTS:
-        forecast = _linear_regression_forecast(values)
-    else:
-        forecast = _simple_trend_forecast(values)
+    model = RobustForecast()
+    result = model.forecast(values)
 
-    forecast["metric"] = metric_name
-    return forecast
+    # Normalise into the envelope shape expected downstream.
+    forecast_values = result.get("forecast") or {}
+    result["forecast_values"] = [
+        forecast_values.get(f"month_{k}")
+        for k in range(1, _FORECAST_HORIZON + 1)
+    ]
+    result["model_type"] = result.get("model", "unknown")
+    result["metric"] = metric_name
+    result["datapoints_used"] = len(values)
+    return result
 
 
 def _build_fallback_forecasts(
@@ -302,19 +313,32 @@ def forecast_fetch_node(state: AgentState) -> AgentState:
             deviation = data.get("deviation_percentage")
             if isinstance(deviation, (int, float)):
                 signal_map[f"{metric_name}_deviation"] = -abs(float(deviation))
+            # Volatility: try top-level key first, then nested data_quality
             volatility = data.get("volatility_regime")
+            if not isinstance(volatility, str):
+                dq = data.get("data_quality")
+                if isinstance(dq, dict):
+                    vol_info = dq.get("volatility")
+                    if isinstance(vol_info, dict):
+                        volatility = vol_info.get("regime")
             if isinstance(volatility, str):
                 vol_norm = volatility.strip().lower()
                 signal_map[f"{metric_name}_volatility"] = (
                     -1.0 if vol_norm == "high" else (1.0 if vol_norm == "low" else 0.0)
                 )
             # Capture model_type for signal enrichment
-            model_type = data.get("model_type")
+            model_type = data.get("model_type") or data.get("model")
             if isinstance(model_type, str):
-                signal_map[f"{metric_name}_model_type_rank"] = (
-                    1.0 if model_type == "linear_trend"
-                    else 0.5 if model_type == "simple_trend"
-                    else 0.0
+                _model_rank = {
+                    "ols_regression": 1.0,
+                    "holt_winters_additive": 0.9,
+                    "holt_linear": 0.8,
+                    "linear_trend": 0.7,
+                    "rolling_average": 0.5,
+                    "simple_trend": 0.3,
+                }
+                signal_map[f"{metric_name}_model_type_rank"] = _model_rank.get(
+                    model_type.strip().lower(), 0.0
                 )
 
         base_warnings: list[str] = []

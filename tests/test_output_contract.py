@@ -48,11 +48,15 @@ def test_insight_output_rejects_extra_fields() -> None:
         InsightOutput(**data)
 
 
-def test_low_confidence_requires_conditional_recommendations() -> None:
+def test_low_confidence_accepts_output_for_post_processing() -> None:
+    """Low-confidence conditional labeling is applied deterministically
+    after schema validation (in validator._apply_conditional_labels and
+    llm_node._ensure_conditional_recommendations), not at schema parse time.
+    The schema should accept the output so post-processing can run."""
     data = _payload()
     data["competitive_analysis"]["confidence"] = 0.4
-    with pytest.raises(ValidationError):
-        InsightOutput(**data)
+    output = InsightOutput(**data)
+    assert output.competitive_analysis.confidence == 0.4
 
 
 def test_recommendations_reject_repetition() -> None:

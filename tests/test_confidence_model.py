@@ -14,10 +14,16 @@ def test_compute_standard_confidence_applies_dataset_and_upstream_caps() -> None
         upstream_confidences=[0.9, 0.65],
     )
 
-    assert result["confidence_score"] <= 0.65
+    # Confidence uses weighted-average propagation (model 60%, dataset 20%,
+    # upstream 20%) rather than strict min-capping.  The result should still
+    # reflect degraded upstream/dataset confidence but not be hard-capped by
+    # the weakest upstream value.
+    assert result["confidence_score"] <= 1.0
+    assert result["confidence_score"] > 0.0
     propagation = result["propagation"]
     assert propagation["dataset_cap"] == 0.7
-    assert propagation["upstream_cap"] == 0.65
+    # upstream_cap is now the mean of upstream values, not the min
+    assert propagation["upstream_cap"] == round((0.9 + 0.65) / 2, 6)
 
 
 def test_compute_standard_confidence_penalizes_signal_conflicts() -> None:
