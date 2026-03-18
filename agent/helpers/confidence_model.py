@@ -60,6 +60,7 @@ def propagated_confidence(
     model_confidence: float,
     dataset_confidence: float = 1.0,
     upstream_confidences: Sequence[float] = (),
+    isolated_upstream_indices: Sequence[int] = (),
 ) -> tuple[float, dict[str, float]]:
     """Propagate confidence through the pipeline.
 
@@ -67,22 +68,37 @@ def propagated_confidence(
     The model's own confidence carries 60% weight; dataset and upstream
     confidences contribute the remaining 40%.  This prevents a single
     weak upstream node from crushing an otherwise strong signal.
+
+    Parameters
+    ----------
+    isolated_upstream_indices:
+        Indices into ``upstream_confidences`` that should be excluded from
+        propagation because those signals have been isolated (broken module,
+        R² too low, etc.).  Isolated signals must not influence healthy ones.
     """
     model_conf = clamp01(model_confidence)
     dataset_cap = clamp01(dataset_confidence, default=1.0)
-    upstream_values = [clamp01(value, default=1.0) for value in upstream_confidences]
+
+    # Filter out isolated upstream signals before averaging.
+    isolated_set = set(isolated_upstream_indices)
+    active_upstream = [
+        clamp01(value, default=1.0)
+        for i, value in enumerate(upstream_confidences)
+        if i not in isolated_set
+    ]
+
     upstream_cap = (
-        sum(upstream_values) / len(upstream_values)
-        if upstream_values
+        sum(active_upstream) / len(active_upstream)
+        if active_upstream
         else 1.0
     )
 
     # Weighted blend: model 60%, dataset 20%, upstream 20%.
     propagation_cap = 0.6 * model_conf + 0.2 * dataset_cap + 0.2 * upstream_cap
 
-    # Still respect a hard floor from truly broken upstream: if ANY upstream
-    # is below 0.15, apply a moderate penalty rather than zeroing out.
-    upstream_min = min(upstream_values) if upstream_values else 1.0
+    # Still respect a hard floor from truly broken upstream: if ANY active
+    # upstream is below 0.15, apply a moderate penalty rather than zeroing out.
+    upstream_min = min(active_upstream) if active_upstream else 1.0
     if upstream_min < 0.15:
         propagation_cap = min(propagation_cap, 0.4)
 
@@ -95,6 +111,8 @@ def propagated_confidence(
             "upstream_cap": round(upstream_cap, 6),
             "upstream_min": round(upstream_min, 6),
             "propagation_cap": round(propagation_cap, 6),
+            "isolated_count": len(isolated_set),
+            "active_upstream_count": len(active_upstream),
         },
     )
 
@@ -105,6 +123,7 @@ def compute_standard_confidence(
     signals: Mapping[str, Any] | None = None,
     dataset_confidence: float = 1.0,
     upstream_confidences: Sequence[float] = (),
+    isolated_upstream_indices: Sequence[int] = (),
     tier_cap: float | None = None,
     status: str = "success",
     base_warnings: Sequence[str] = (),
@@ -121,6 +140,7 @@ def compute_standard_confidence(
         model_confidence=model_conf,
         dataset_confidence=dataset_confidence,
         upstream_confidences=upstream_confidences,
+        isolated_upstream_indices=isolated_upstream_indices,
     )
 
     normalized_status = str(status or "").strip().lower()

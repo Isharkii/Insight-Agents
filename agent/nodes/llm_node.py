@@ -416,6 +416,12 @@ def llm_node(state: AgentState) -> AgentState:
     # Extract enriched signal summary for the prompt
     signal_enrichment = _usable_payload(state.get("signal_enrichment"))
 
+    # Extract integrity diagnostics for prompt visibility
+    _integrity = state.get("signal_integrity") or {}
+    _isolated_layers = _integrity.get("isolated_layers", [])
+    _degraded_layers = _integrity.get("degraded_layers", [])
+    _reasoning_warnings = _integrity.get("reasoning_warnings", [])
+
     prompt = _prompt_builder.build_prompt(
         kpi_data=kpi_data,
         forecast_data=forecast_data,
@@ -429,12 +435,15 @@ def llm_node(state: AgentState) -> AgentState:
         competitor_signals=competitor_signals,
         conflict_metadata=diagnostics.get("signal_conflicts"),
         signal_enrichment=signal_enrichment,
+        isolated_layers=_isolated_layers if _isolated_layers else None,
+        degraded_layers=_degraded_layers if _degraded_layers else None,
+        reasoning_warnings=_reasoning_warnings if _reasoning_warnings else None,
     )
 
     adapter = _build_adapter(model_override=state.get("llm_model_override"))
 
     try:
-        synthesis = generate_with_retry(adapter, prompt, max_retries=1)
+        synthesis = generate_with_retry(adapter, prompt, max_retries=2)
         final_payload = FinalInsightResponse.model_validate(synthesis.model_dump())
     except Exception as error:  # noqa: BLE001
         logger.error(
@@ -475,13 +484,6 @@ def llm_node(state: AgentState) -> AgentState:
     final_payload = _ensure_low_confidence_tone(
         final_payload,
         conditional_required=(enforced_confidence < 0.5),
-    )
-    final_payload = final_payload.model_copy(
-        update={
-            "competitive_analysis": final_payload.competitive_analysis.model_copy(
-                update={"confidence": enforced_confidence}
-            ),
-        }
     )
     final_response = final_payload.model_dump_json()
 

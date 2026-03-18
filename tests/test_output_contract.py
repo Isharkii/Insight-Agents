@@ -66,3 +66,22 @@ def test_recommendations_reject_repetition() -> None:
     data["strategic_recommendations"]["mid_term_moves"] = [duplicate]
     with pytest.raises(ValidationError):
         InsightOutput(**data)
+
+
+def test_failure_timeout_reason_is_reflected_in_fallback_messaging() -> None:
+    output = InsightOutput.failure(
+        "Analysis timed out after 90s. Try a smaller dataset or simpler query."
+    )
+
+    assert output.priority == "critical"
+    assert "timed out" in output.evidence.lower()
+    assert "smaller dataset" in output.recommended_action.lower()
+    assert output.recommended_action.lower().startswith("conditional:")
+
+
+def test_failure_missing_metrics_reason_is_reflected_in_action() -> None:
+    output = InsightOutput.failure("Missing competitor metrics for benchmark comparison.")
+
+    assert "missing competitor metrics" in output.insight.lower()
+    assert "metric gaps" in output.recommended_action.lower()
+    assert "revenue and retention risk" in output.impact.lower()

@@ -122,6 +122,29 @@ def _is_conditional(text: str) -> bool:
     return _normalize(text).startswith("conditional:")
 
 
+def _compact_failure_reason(reason: str, *, limit: int = 180) -> str:
+    """Normalize and bound failure reasons for safe user-facing messages."""
+    text = re.sub(r"\s+", " ", str(reason or "")).strip()
+    if not text:
+        return "no additional diagnostics were provided"
+    if len(text) <= limit:
+        return text
+    return f"{text[: limit - 3].rstrip()}..."
+
+
+def _is_timeout_reason(reason: str) -> bool:
+    normalized = _normalize(reason)
+    return any(term in normalized for term in ("timed out", "timeout", "deadline exceeded"))
+
+
+def _is_missing_metric_reason(reason: str) -> bool:
+    normalized = _normalize(reason)
+    return (
+        "metric" in normalized
+        and any(term in normalized for term in ("missing", "insufficient", "incomplete", "gap"))
+    )
+
+
 class ConfidenceAdjustment(BaseModel):
     """Machine-readable confidence penalty entry (diagnostic utility type)."""
 
@@ -322,6 +345,9 @@ class InsightOutput(BaseModel):
         pipeline_status: Literal["success", "partial", "failed"] = "failed",
     ) -> "InsightOutput":
         del pipeline_status  # Preserved for backward call compatibility.
+        reason_text = _compact_failure_reason(reason)
+        timeout_reason = _is_timeout_reason(reason_text)
+        missing_metric_reason = _is_missing_metric_reason(reason_text)
         if get_self_analysis_mode():
             return cls(
                 competitive_analysis=CompetitiveAnalysis(
@@ -359,18 +385,60 @@ class InsightOutput(BaseModel):
                     ],
                 ),
             )
+        if timeout_reason and missing_metric_reason:
+            summary = (
+                "Conditional: critical priority - competitor benchmark analysis could not be completed "
+                "because competitor metrics are incomplete and the run timed out."
+            )
+            immediate_action = (
+                "Conditional: ingest missing competitor metrics and rerun competitor gap analysis "
+                "with a smaller dataset scope."
+            )
+        elif timeout_reason:
+            summary = (
+                "Conditional: critical priority - competitor benchmark analysis timed out before "
+                "competitor metric comparisons could complete."
+            )
+            immediate_action = (
+                "Conditional: rerun competitor gap analysis on a smaller dataset and shorter timeframe "
+                "to restore benchmark coverage."
+            )
+        elif missing_metric_reason:
+            summary = (
+                "Conditional: critical priority - competitor benchmark analysis could not be completed "
+                "due to missing competitor metrics."
+            )
+            immediate_action = (
+                "Conditional: close competitor metric gaps before acting on strength/weakness assumptions."
+            )
+        else:
+            summary = (
+                "Conditional: critical priority - competitor benchmark analysis could not be completed "
+                "due to competitor data constraints."
+            )
+            immediate_action = (
+                "Conditional: resolve competitor data and metric gaps before acting on "
+                "strength/weakness assumptions."
+            )
+
+        relative_performance = (
+            "Conditional: competitor gap/strength/weakness assessment timed out "
+            f"({reason_text})."
+            if timeout_reason
+            else (
+                "Conditional: competitor gap/strength/weakness assessment blocked "
+                f"({reason_text})."
+            )
+        )
+
         return cls(
             competitive_analysis=CompetitiveAnalysis(
-                summary=(
-                    "Conditional: competitor benchmark analysis could not be completed "
-                    "due to missing competitor metrics."
-                ),
+                summary=summary,
                 market_position=(
-                    "Conditional: market position remains uncertain relative to competitors."
+                    "Conditional: market position remains uncertain relative to competitors, "
+                    "raising near-term revenue and retention risk."
                 ),
-                relative_performance=(
-                    f"Conditional: competitor gap/strength/weakness assessment blocked ({reason})."
-                ),
+                relative_performance=relative_performance,
                 key_advantages=[
                     "Conditional: no validated competitor strength advantage can be confirmed."
                 ],
@@ -381,7 +449,7 @@ class InsightOutput(BaseModel):
             ),
             strategic_recommendations=StrategicRecommendations(
                 immediate_actions=[
-                    "Conditional: close competitor metric gaps before acting on strength/weakness assumptions."
+                    immediate_action
                 ],
                 mid_term_moves=[
                     "Conditional: build benchmark coverage to validate competitor weaknesses against metric trends."

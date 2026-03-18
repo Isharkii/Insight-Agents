@@ -907,7 +907,7 @@ class CSVIngestionService:
         source_type = s["source_type"].str.lower()
         entity_name = s["entity_name"]
         category = s["category"].str.lower()
-        metric_name = s["metric_name"]
+        metric_name = s["metric_name"].str.lower()
 
         # Metric value: numpy-backed coercion via apply
         metric_value = s["metric_value"].apply(_coerce_metric_value)

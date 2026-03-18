@@ -26,14 +26,24 @@ MIN_CONFIDENCE_FOR_SYNTHESIS = 0.4
 
 
 def _collect_required_failures(state: AgentState) -> list[str]:
-    """Return names of required signals that did not succeed."""
+    """Return names of required signals that hard-failed.
+
+    Signals with ``insufficient_data`` or ``partial`` status are NOT failures —
+    they produced best-effort output and should be gated by confidence (Gate 3),
+    not by status (Gate 2).  Only truly absent or crashed signals block here.
+    """
     config = graph_node_config_for_business_type(
         str(state.get("business_type") or ""),
     )
+    # Statuses that represent a hard failure (no usable output produced).
+    _HARD_FAIL_STATUSES = {"failed", "skipped"}
+
     failures: list[str] = []
     for key in config.required:
         value = state.get(key)
-        if value is None or status_of(value) != "success":
+        if value is None:
+            failures.append(signal_name_for_state_key(key))
+        elif status_of(value) in _HARD_FAIL_STATUSES:
             failures.append(signal_name_for_state_key(key))
     return failures
 
@@ -134,15 +144,19 @@ def synthesis_gate_node(state: AgentState) -> AgentState:
     if should_block_synthesis(state):
         conflict_payload = payload_of(state.get("signal_conflicts")) or {}
         conflict_result = conflict_payload.get("conflict_result")
+        warnings = ["Synthesis blocked by deterministic pre-checks."]
+        # Surface reasoning warnings from integrity computation
+        warnings.extend(integrity.get("reasoning_warnings", []))
         return {
             "synthesis_blocked": True,
             "final_response": build_blocked_response(state),
             "signal_integrity": integrity,
             "envelope_diagnostics": {
-                "warnings": [
-                    "Synthesis blocked by deterministic pre-checks.",
-                ],
+                "warnings": warnings,
                 "missing_signal": _collect_required_failures(state),
+                "isolated_layers": integrity.get("isolated_layers", []),
+                "degraded_layers": integrity.get("degraded_layers", []),
+                "reasoning_warnings": integrity.get("reasoning_warnings", []),
                 "confidence_adjustments": integrity.get("confidence_adjustments", []),
                 "confidence_score": _compute_pre_synthesis_confidence(state),
                 "signal_conflicts": (

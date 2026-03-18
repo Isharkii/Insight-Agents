@@ -95,10 +95,13 @@ def normalize_kpi_signals(
         except ValueError as exc:
             if strict:
                 raise
-            signals[name] = 0.0
+            # Mark as unavailable (None) rather than phantom zero.
+            # Downstream consumers (risk_node, conflict detection) must
+            # check _defaulted or test for None before using these.
+            signals[name] = None  # type: ignore[assignment]
             defaulted.append(name)
-            warnings.append(f"{name}: defaulted to 0.0 ({exc})")
-            logger.warning("KPI signal '%s' derivation failed, defaulting to 0.0: %s", name, exc)
+            warnings.append(f"{name}: unavailable ({exc})")
+            logger.warning("KPI signal '%s' derivation failed, marked unavailable: %s", name, exc)
 
     signals["_warnings"] = warnings  # type: ignore[assignment]
     signals["_defaulted"] = defaulted  # type: ignore[assignment]

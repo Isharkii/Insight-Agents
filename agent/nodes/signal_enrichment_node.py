@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from agent.helpers.decision_insight_builder import build_insight_digest
 from agent.helpers.kpi_extraction import (
     metric_series_from_kpi_payload,
     resolve_kpi_payload,
@@ -352,6 +353,37 @@ def signal_enrichment_node(state: AgentState) -> AgentState:
     if ue_payload:
         ue_method = ue_payload.get("estimation_method", "explicit")
 
+    # ── Decision-Grade Insight Digest ──
+    # Replaces raw data blobs with high-signal structured summaries
+    # that the LLM can reason from directly.
+    root_cause_payload = payload_of(state.get("root_cause_data"))
+    derived_signals = state.get("derived_signals") or {}
+    role_contribution = (
+        derived_signals.get("role_contribution")
+        if isinstance(derived_signals, dict) else None
+    )
+
+    insight_digest = build_insight_digest(
+        metric_series=metric_series,
+        forecast_payload=forecast_payload,
+        root_cause_payload=root_cause_payload,
+        role_contribution_payload=role_contribution,
+        risk_payload=risk_payload,
+        growth_payload=growth_payload,
+        cohort_payload=cohort_payload,
+        kpi_status=status_of(state.get("kpi_data") or state.get("saas_kpi_data") or {}),
+        kpi_confidence=confidence_of(state.get("kpi_data") or state.get("saas_kpi_data") or {}),
+        forecast_status=status_of(state.get("forecast_data") or {}),
+        forecast_confidence=confidence_of(state.get("forecast_data") or {}),
+        cohort_status=status_of(state.get("cohort_data") or {}),
+        cohort_confidence=confidence_of(state.get("cohort_data") or {}),
+        risk_status=status_of(state.get("risk_data") or {}),
+        risk_confidence=confidence_of(state.get("risk_data") or {}),
+        growth_status=status_of(state.get("growth_data") or {}),
+        growth_confidence=confidence_of(state.get("growth_data") or {}),
+        entity_name=str(state.get("entity_name") or ""),
+    )
+
     enrichment: dict[str, Any] = {
         "growth_trend": growth_trend,
         "volatility_level": volatility_level,
@@ -369,6 +401,7 @@ def signal_enrichment_node(state: AgentState) -> AgentState:
         "key_metrics": key_metrics,
         "available_metrics": list(metric_series.keys()),
         "metric_count": len(metric_series),
+        "insight_digest": insight_digest,
     }
 
     logger.info(

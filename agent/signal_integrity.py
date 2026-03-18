@@ -2,11 +2,27 @@
 
 This module centralizes confidence math across pipeline nodes.  It replaces
 ad-hoc penalty deltas with deterministic layer scores derived from state.
+
+Architecture
+============
+
+Signal Authority Hierarchy (highest → lowest):
+    KPI > Cohort > Segmentation > Unit Economics > Forecast > Scenario
+
+Gating Modes:
+    HARD BLOCK  — pipeline failure or zero usable KPI data
+    SOFT DEGRADE — insufficient_data or low-confidence signals
+    ISOLATE     — broken modules (e.g. forecast R² < 0.1)
+
+Layers with ``gate_status == "isolate"`` are excluded from scoring AND
+confidence propagation.  Degraded layers are included at reduced weight.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
+from enum import Enum
 from math import log, sqrt
 from statistics import mean
 from typing import Any, Mapping
@@ -15,12 +31,18 @@ from agent.graph_config import KPI_KEY_BY_BUSINESS_TYPE
 from agent.nodes.node_result import payload_of, status_of
 from agent.state import AgentState
 
+logger = logging.getLogger(__name__)
+
+# ── Thresholds ──────────────────────────────────────────────────────────────
+
 _KPI_MIN_GATE = 0.3
 _KPI_FORMULA_WEIGHT = 1.0
 _KPI_BACKFILL_WEIGHT = 0.7
 _KPI_MIN_DEPTH_POINTS = 3
 
 _FORECAST_MIN_POINTS = 6
+_FORECAST_MIN_R2 = 0.2           # R² below this → forecast isolated
+_FORECAST_LOW_R2 = 0.4           # R² below this → forecast degraded
 
 _COMPETITIVE_MIN_PEERS = 2
 _COMPETITIVE_MIN_METRICS = 2
@@ -28,6 +50,21 @@ _COMPETITIVE_SOURCE_RELIABILITY = {
     "local_db": 1.0,
     "deterministic_local": 1.0,
     "external_fetch": 0.7,
+}
+# Default reliability for unrecognised competitive sources (prevents silent
+# zeroing when a new source type is introduced).
+_COMPETITIVE_DEFAULT_SOURCE_RELIABILITY = 0.5
+
+# ── Signal Authority Hierarchy ──────────────────────────────────────────────
+# Higher-authority signals carry more weight in overall scoring.  Lower
+# signals cannot inflate confidence beyond what higher signals support.
+
+_SIGNAL_AUTHORITY: dict[str, float] = {
+    "kpi":           1.0,      # ground truth – highest authority
+    "cohort":        0.8,
+    "segmentation":  0.6,
+    "competitive":   0.5,
+    "forecast":      0.4,      # model-derived – lowest authority
 }
 
 _TOTAL_LAYER_COUNT = 5.0
@@ -38,6 +75,36 @@ _LAYER_ORDER: tuple[str, ...] = (
     "cohort",
     "segmentation",
 )
+
+
+# ── Gating Modes ────────────────────────────────────────────────────────────
+
+class GateStatus(str, Enum):
+    """Signal gating classification."""
+    PASS = "pass"
+    DEGRADE = "degrade"
+    ISOLATE = "isolate"
+    BLOCK = "block"
+
+
+def gate_signal(status: str, confidence: float) -> GateStatus:
+    """Classify a signal into a gating mode.
+
+    BLOCK   — failed / explicitly blocked
+    ISOLATE — available but confidence too low to trust (< 0.2)
+    DEGRADE — insufficient_data or low confidence
+    PASS    — healthy signal
+    """
+    normalized = str(status or "").strip().lower()
+    if normalized in ("failed", "blocked"):
+        return GateStatus.BLOCK
+    if confidence < 0.2 and normalized != "success":
+        return GateStatus.ISOLATE
+    if normalized == "insufficient_data":
+        return GateStatus.DEGRADE
+    if confidence < 0.3:
+        return GateStatus.DEGRADE
+    return GateStatus.PASS
 
 
 def _clamp01(value: float) -> float:
@@ -79,6 +146,7 @@ class LayerIntegrity:
     completeness: float
     score: float
     meta: dict[str, Any]
+    gate_status: GateStatus = GateStatus.PASS
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -87,6 +155,7 @@ class LayerIntegrity:
             "source_reliability": _clamp01(self.source_reliability),
             "completeness": _clamp01(self.completeness),
             "score": _clamp01(self.score),
+            "gate_status": self.gate_status.value,
             "meta": dict(self.meta),
         }
 
@@ -111,49 +180,117 @@ class UnifiedSignalIntegrity:
         }
 
         available_layers = [name for name, layer in layers.items() if layer.available]
-        # Only include layers that contributed meaningful data in the mean.
-        # Layers with available=True but score=0 (insufficient_data / skipped)
-        # are "not applicable" for this dataset and must not drag down
-        # the overall confidence.  They are still tracked as available for
-        # diagnostic visibility.
-        #
-        # Threshold is 0.1 (not 0.0) because layers with tiny scores
-        # (e.g. forecast with r²=0.003) represent broken/degraded data —
-        # including them in the mean would unfairly suppress confidence
-        # computed from healthy layers.
-        _MIN_LAYER_SCORE_FOR_SCORING = 0.1
-        scoring_layers = [
-            name for name in available_layers
-            if layers[name].score >= _MIN_LAYER_SCORE_FOR_SCORING
-        ]
-        scoring_values = [layers[name].score for name in scoring_layers]
+
+        # ── Gating classification ───────────────────────────────────
+        # ISOLATE: broken modules excluded from scoring + propagation
+        # DEGRADE: weak modules included at reduced authority weight
+        # PASS:    healthy modules at full authority weight
+        isolated_layers: list[str] = []
+        degraded_layers: list[str] = []
+        scoring_layers: list[str] = []
+        reasoning_warnings: list[str] = []
+
+        for name in available_layers:
+            layer = layers[name]
+            gs = layer.gate_status
+            if gs == GateStatus.BLOCK or gs == GateStatus.ISOLATE:
+                isolated_layers.append(name)
+                reasoning_warnings.append(
+                    f"{name} layer isolated: {layer.meta.get('status', 'unknown')} "
+                    f"(score={layer.score:.3f}, gate={gs.value})"
+                )
+            elif gs == GateStatus.DEGRADE:
+                degraded_layers.append(name)
+                # Only include degraded layers in scoring if they have a
+                # non-trivial score — a degraded layer at score=0 has nothing
+                # to contribute and would only dilute healthy layers.
+                if layer.score >= 0.01:
+                    scoring_layers.append(name)
+                reasoning_warnings.append(
+                    f"{name} layer degraded: {layer.meta.get('status', 'unknown')} "
+                    f"(score={layer.score:.3f})"
+                )
+            elif layer.score >= 0.01:
+                scoring_layers.append(name)
+
+        # ── Authority-weighted scoring ──────────────────────────────
+        # Each layer contributes score × authority_weight.  Degraded layers
+        # have their authority halved.  Isolated layers contribute nothing.
         kpi_gate_passed = bool(kpi_layer.score >= _KPI_MIN_GATE)
 
-        if not scoring_values:
-            overall_score = 0.0
-        elif not kpi_gate_passed:
+        if not scoring_layers:
             overall_score = 0.0
         else:
-            overall_score = _clamp01(mean(scoring_values))
+            weighted_sum = 0.0
+            weight_sum = 0.0
+            for name in scoring_layers:
+                authority = _SIGNAL_AUTHORITY.get(name, 0.3)
+                if name in degraded_layers:
+                    authority *= 0.5  # halve authority for degraded
+                layer_score = layers[name].score
+                weighted_sum += layer_score * authority
+                weight_sum += authority
+            raw_score = weighted_sum / weight_sum if weight_sum > 0 else 0.0
 
+            # ── KPI continuous penalty (replaces binary cliff) ──────
+            # Instead of zeroing overall_score when KPI < 0.3, apply a
+            # smooth nonlinear penalty that preserves other-layer signal.
+            #
+            # penalty = (kpi_score / threshold)^2  when kpi_score < threshold
+            #   → score 0.29 → penalty ≈ 0.93  (near miss, mild)
+            #   → score 0.15 → penalty ≈ 0.25  (severe, but not zero)
+            #   → score 0.00 → penalty = 0.00  (total KPI failure)
+            if not kpi_gate_passed and kpi_layer.score > 0:
+                kpi_penalty = (kpi_layer.score / _KPI_MIN_GATE) ** 2
+                raw_score *= kpi_penalty
+                reasoning_warnings.append(
+                    f"KPI below gate ({kpi_layer.score:.3f} < {_KPI_MIN_GATE}): "
+                    f"applied continuous penalty factor {kpi_penalty:.3f}"
+                )
+            elif kpi_layer.score == 0 and kpi_layer.available:
+                raw_score = 0.0
+                reasoning_warnings.append(
+                    "KPI layer has zero score — overall confidence forced to 0.0"
+                )
+
+            overall_score = _clamp01(raw_score)
+
+        # ── Confidence adjustments for diagnostics ──────────────────
         confidence_adjustments: list[dict[str, Any]] = []
         if scoring_layers:
-            layer_weight = 1.0 / float(len(scoring_layers))
             for name in scoring_layers:
+                authority = _SIGNAL_AUTHORITY.get(name, 0.3)
+                if name in degraded_layers:
+                    authority *= 0.5
                 layer_score = layers[name].score
                 confidence_adjustments.append(
                     {
                         "signal": name,
-                        "delta": round((layer_score - 1.0) * layer_weight, 6),
-                        "reason": "layer_integrity_contribution",
+                        "authority_weight": round(authority, 3),
+                        "layer_score": round(layer_score, 6),
+                        "delta": round((layer_score - 1.0) * authority, 6),
+                        "reason": (
+                            "degraded_contribution" if name in degraded_layers
+                            else "layer_integrity_contribution"
+                        ),
                     }
                 )
+        for name in isolated_layers:
+            confidence_adjustments.append(
+                {
+                    "signal": name,
+                    "authority_weight": 0.0,
+                    "layer_score": round(layers[name].score, 6),
+                    "delta": 0.0,
+                    "reason": f"isolated_{layers[name].gate_status.value}",
+                }
+            )
         if not kpi_gate_passed:
             confidence_adjustments.append(
                 {
                     "signal": "kpi",
-                    "delta": -1.0,
-                    "reason": "kpi_gate_failed",
+                    "delta": round(-(1.0 - (kpi_layer.score / _KPI_MIN_GATE) ** 2), 6) if kpi_layer.score > 0 else -1.0,
+                    "reason": "kpi_gate_continuous_penalty",
                 }
             )
 
@@ -164,6 +301,9 @@ class UnifiedSignalIntegrity:
             "missing_layers": [name for name in _LAYER_ORDER if not layers[name].available],
             "available_layers": available_layers,
             "scoring_layers": scoring_layers,
+            "isolated_layers": isolated_layers,
+            "degraded_layers": degraded_layers,
+            "reasoning_warnings": reasoning_warnings,
             "confidence_adjustments": confidence_adjustments,
         }
 
@@ -377,11 +517,12 @@ class UnifiedSignalIntegrity:
                 completeness=0.0,
                 score=0.0,
                 meta={"status": "missing"},
+                gate_status=GateStatus.BLOCK,
             )
 
         envelope_status = status_of(envelope)
         payload = payload_of(envelope) or {}
-        if envelope_status in {"failed", "insufficient_data", "skipped"}:
+        if envelope_status in {"failed", "skipped"}:
             return LayerIntegrity(
                 available=True,
                 coverage_ratio=0.0,
@@ -389,6 +530,17 @@ class UnifiedSignalIntegrity:
                 completeness=0.0,
                 score=0.0,
                 meta={"status": envelope_status},
+                gate_status=GateStatus.BLOCK,
+            )
+        if envelope_status == "insufficient_data":
+            return LayerIntegrity(
+                available=True,
+                coverage_ratio=0.0,
+                source_reliability=0.0,
+                completeness=0.0,
+                score=0.0,
+                meta={"status": envelope_status},
+                gate_status=GateStatus.DEGRADE,
             )
 
         forecasts = payload.get("forecasts")
@@ -400,6 +552,7 @@ class UnifiedSignalIntegrity:
         horizons: list[int] = []
         statuses: list[str] = []
         confidence_scores: list[float] = []
+        forecast_slopes: list[float] = []
         for row in forecasts.values():
             if not isinstance(row, Mapping):
                 continue
@@ -420,6 +573,10 @@ class UnifiedSignalIntegrity:
                 if raw_r2 is not None:
                     r2_values.append(_clamp01(raw_r2))
                     r2_found = True
+                # Capture slope for direction validation
+                raw_slope = _safe_float(regression.get("slope"))
+                if raw_slope is not None:
+                    forecast_slopes.append(raw_slope)
             if not r2_found:
                 for key in ("regression_r2", "r2"):
                     raw_r2 = _safe_float(data.get(key))
@@ -451,8 +608,10 @@ class UnifiedSignalIntegrity:
                 completeness=0.0,
                 score=0.0,
                 meta={"status": "insufficient_data"},
+                gate_status=GateStatus.DEGRADE,
             )
 
+        # ── Dependency check: forecast depends on KPI depth ─────────
         points = max(input_points) if input_points else _safe_int(
             kpi_layer.meta.get("time_series_depth"),
             default=0,
@@ -467,17 +626,74 @@ class UnifiedSignalIntegrity:
                 meta={
                     "status": "insufficient_data",
                     "input_points": points,
+                    "dependency_note": f"needs >= {_FORECAST_MIN_POINTS} points, has {points}",
                 },
+                gate_status=GateStatus.DEGRADE,
             )
 
         coverage_ratio = _log_saturating(points)
-        source_reliability = (
-            _clamp01(mean(r2_values))
-            if r2_values
-            else 1.0
-        )
+        avg_r2 = _clamp01(mean(r2_values)) if r2_values else 1.0
+        source_reliability = avg_r2
         horizon = max(horizons) if horizons else 3
         completeness = _clamp01(1.0 / (1.0 + log(1.0 + float(max(0, horizon)))))
+
+        # ── Forecast R² validation (strict) ─────────────────────────
+        # R² < 0.2 → ISOLATE (unusable, zero weight)
+        # R² < 0.4 → DEGRADE (included at reduced weight)
+        if r2_values and avg_r2 < _FORECAST_MIN_R2:
+            logger.info(
+                "Forecast isolated: R²=%.4f < %.2f minimum",
+                avg_r2, _FORECAST_MIN_R2,
+            )
+            return LayerIntegrity(
+                available=True,
+                coverage_ratio=coverage_ratio,
+                source_reliability=source_reliability,
+                completeness=completeness,
+                score=_clamp01(avg_r2),  # preserve raw score for diagnostics
+                meta={
+                    "status": "isolated_low_r2",
+                    "input_points": points,
+                    "horizon_months": horizon,
+                    "regression_r2": round(avg_r2, 6),
+                    "isolation_reason": f"R²={avg_r2:.4f} < {_FORECAST_MIN_R2}",
+                },
+                gate_status=GateStatus.ISOLATE,
+            )
+
+        forecast_gate = GateStatus.PASS
+        meta_status = "success"
+
+        if r2_values and avg_r2 < _FORECAST_LOW_R2:
+            forecast_gate = GateStatus.DEGRADE
+            meta_status = "degraded_low_r2"
+            logger.info(
+                "Forecast degraded: R²=%.4f < %.2f threshold",
+                avg_r2, _FORECAST_LOW_R2,
+            )
+
+        # ── Direction contradiction check ───────────────────────────
+        # If forecast slope contradicts KPI trend direction AND R² is low,
+        # penalize the forecast further.
+        kpi_growth = state.get("growth_data")
+        kpi_growth_payload = payload_of(kpi_growth) if kpi_growth else None
+        if isinstance(kpi_growth_payload, Mapping) and forecast_slopes:
+            kpi_short = _safe_float(kpi_growth_payload.get("short_growth"))
+            avg_slope = mean(forecast_slopes)
+            if kpi_short is not None and avg_slope != 0:
+                kpi_direction = 1 if kpi_short > 0 else (-1 if kpi_short < 0 else 0)
+                forecast_direction = 1 if avg_slope > 0 else (-1 if avg_slope < 0 else 0)
+                if kpi_direction != 0 and forecast_direction != 0 and kpi_direction != forecast_direction:
+                    # Contradiction: forecast says opposite of KPI
+                    if avg_r2 < 0.5:
+                        forecast_gate = GateStatus.ISOLATE
+                        meta_status = "isolated_direction_conflict"
+                        logger.info(
+                            "Forecast isolated: direction contradicts KPI "
+                            "(forecast_slope=%.4f, kpi_short=%.4f) with low R²=%.4f",
+                            avg_slope, kpi_short, avg_r2,
+                        )
+
         # Prefer model-provided confidence when available
         if confidence_scores:
             score = _clamp01(mean(confidence_scores))
@@ -491,11 +707,13 @@ class UnifiedSignalIntegrity:
             completeness=completeness,
             score=score,
             meta={
-                "status": "success",
+                "status": meta_status,
                 "input_points": points,
                 "horizon_months": horizon,
-                "regression_r2": round(source_reliability, 6) if r2_values else None,
+                "regression_r2": round(avg_r2, 6) if r2_values else None,
+                "forecast_slopes": [round(s, 6) for s in forecast_slopes] if forecast_slopes else None,
             },
+            gate_status=forecast_gate,
         )
 
     @classmethod
@@ -527,7 +745,9 @@ class UnifiedSignalIntegrity:
                 metric_count = len([name for name in names if name])
 
         source = str(raw.get("source") or "").strip().lower()
-        source_reliability = _clamp01(_COMPETITIVE_SOURCE_RELIABILITY.get(source, 0.0))
+        source_reliability = _clamp01(
+            _COMPETITIVE_SOURCE_RELIABILITY.get(source, _COMPETITIVE_DEFAULT_SOURCE_RELIABILITY)
+        )
         benchmark_rows_count = max(0, _safe_int(raw.get("benchmark_rows_count"), default=0))
         completeness = 0.0
         if benchmark_rows_count > 0:
@@ -547,6 +767,7 @@ class UnifiedSignalIntegrity:
                     "source": source,
                     "benchmark_rows_count": benchmark_rows_count,
                 },
+                gate_status=GateStatus.DEGRADE,
             )
 
         peer_term = _log_saturating(peer_count)
@@ -613,6 +834,7 @@ class UnifiedSignalIntegrity:
                 completeness=0.0,
                 score=0.0,
                 meta={"status": "missing_keys", "cohort_count": 0},
+                gate_status=GateStatus.DEGRADE,
             )
 
         if cohort_count >= 2:
@@ -625,6 +847,7 @@ class UnifiedSignalIntegrity:
         coverage_ratio = 1.0 if keys_present else 0.0
         source_reliability = 1.0
         score = _clamp01(coverage_ratio * source_reliability * completeness)
+        cohort_gate = GateStatus.PASS if score > 0.2 else GateStatus.DEGRADE
 
         return LayerIntegrity(
             available=True,
@@ -633,6 +856,7 @@ class UnifiedSignalIntegrity:
             completeness=completeness,
             score=score,
             meta={"status": "success" if score > 0 else "insufficient_data", "cohort_count": cohort_count},
+            gate_status=cohort_gate,
         )
 
     @classmethod
@@ -689,6 +913,7 @@ class UnifiedSignalIntegrity:
                 completeness=0.0,
                 score=0.0,
                 meta={"status": "missing_keys", "segment_count": 0},
+                gate_status=GateStatus.DEGRADE,
             )
 
         if segment_count >= 2:
@@ -701,6 +926,7 @@ class UnifiedSignalIntegrity:
         coverage_ratio = 1.0 if keys_present else 0.0
         source_reliability = 1.0
         score = _clamp01(coverage_ratio * source_reliability * completeness)
+        seg_gate = GateStatus.PASS if score > 0.2 else GateStatus.DEGRADE
 
         return LayerIntegrity(
             available=True,
@@ -709,6 +935,7 @@ class UnifiedSignalIntegrity:
             completeness=completeness,
             score=score,
             meta={"status": "success" if score > 0 else "insufficient_data", "segment_count": segment_count},
+            gate_status=seg_gate,
         )
 
     @staticmethod

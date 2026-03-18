@@ -25,7 +25,11 @@ def test_unified_signal_integrity_applies_kpi_gate() -> None:
 
     assert result["layers"]["kpi"]["score"] < 0.3
     assert result["kpi_gate_passed"] is False
-    assert result["overall_score"] == 0.0
+    # Continuous penalty: KPI below gate produces a heavily penalized but
+    # non-zero score (the old binary cliff has been replaced).  The penalty
+    # is (kpi_score / threshold)² so the overall score should be very small.
+    assert result["overall_score"] < 0.1
+    assert result["overall_score"] > 0.0  # not hard-zero anymore
 
 
 def test_unified_signal_integrity_forecast_insufficient_data_scores_zero() -> None:

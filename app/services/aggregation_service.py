@@ -73,9 +73,9 @@ def _to_numeric(col: object) -> object:
 
 def _as_tuple(value: str | Sequence[str], *, fallback: tuple[str, ...]) -> tuple[str, ...]:
     if isinstance(value, str):
-        normalized = value.strip()
+        normalized = value.strip().lower()
         return (normalized,) if normalized else fallback
-    normalized = tuple(str(item).strip() for item in value if str(item).strip())
+    normalized = tuple(str(item).strip().lower() for item in value if str(item).strip())
     return normalized or fallback
 
 

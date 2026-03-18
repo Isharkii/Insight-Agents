@@ -1,8 +1,11 @@
 """Structured prompt builder for LLM synthesis."""
 
 import json
+import logging
 import os
 from typing import Dict
+
+_logger = logging.getLogger(__name__)
 
 from llm_synthesis.schema import InsightOutput
 
@@ -234,6 +237,9 @@ class SynthesisPromptBuilder:
         competitor_signals: Dict | None = None,
         conflict_metadata: Dict | None = None,
         signal_enrichment: Dict | None = None,
+        isolated_layers: list | None = None,
+        degraded_layers: list | None = None,
+        reasoning_warnings: list | None = None,
     ) -> str:
         """Build the full synthesis prompt from upstream data.
 
@@ -255,15 +261,35 @@ class SynthesisPromptBuilder:
             A fully formatted prompt string ready for LLM consumption.
         """
         data_kwargs: Dict = {}
-        # Signal enrichment goes first so the LLM sees the high-level
-        # classified signals before the raw data sections.
+        # ── Insight Digest (Decision-Grade) ──
+        # When the enrichment node produces an insight_digest, use it as
+        # the PRIMARY data source — it's compressed, structured, and
+        # LLM-optimized.  Raw payloads are still included as fallback
+        # but the digest takes visual precedence in the prompt.
+        insight_digest = None
         if signal_enrichment:
-            # Extract key_metrics to a prominent top-level section so the
-            # LLM sees concrete numbers before anything else.
+            insight_digest = signal_enrichment.get("insight_digest")
             key_metrics = signal_enrichment.get("key_metrics")
             if isinstance(key_metrics, dict) and key_metrics:
                 data_kwargs["key_metrics_reference"] = key_metrics
-            data_kwargs["signal_summary"] = signal_enrichment
+
+        if isinstance(insight_digest, dict) and insight_digest:
+            # Structured digest replaces raw blobs — no truncation risk
+            data_kwargs["insight_digest"] = insight_digest
+            # Include signal summary (lightweight classified signals)
+            if signal_enrichment:
+                # Strip the digest and key_metrics to avoid duplication
+                summary = {
+                    k: v for k, v in signal_enrichment.items()
+                    if k not in ("insight_digest", "key_metrics")
+                }
+                if summary:
+                    data_kwargs["signal_summary"] = summary
+        else:
+            # Fallback: legacy mode — raw payloads
+            if signal_enrichment:
+                data_kwargs["signal_summary"] = signal_enrichment
+
         data_kwargs.update({
             "kpi_data": kpi_data,
             "forecast_data": forecast_data,
@@ -279,7 +305,11 @@ class SynthesisPromptBuilder:
         sections = self._format_data_sections(**data_kwargs)
 
         quality_context = self._format_quality_context(
-            confidence_score, missing_signals or [],
+            confidence_score,
+            missing_signals or [],
+            isolated_layers=isolated_layers,
+            degraded_layers=degraded_layers,
+            reasoning_warnings=reasoning_warnings,
         )
 
         if has_competitor_data:
@@ -321,12 +351,34 @@ class SynthesisPromptBuilder:
     def _format_quality_context(
         confidence_score: float,
         missing_signals: list[str],
+        isolated_layers: list[str] | None = None,
+        degraded_layers: list[str] | None = None,
+        reasoning_warnings: list[str] | None = None,
     ) -> str:
-        """Build a data-quality section for the LLM prompt."""
+        """Build a data-quality section for the LLM prompt.
+
+        Includes signal integrity diagnostics so the LLM knows which
+        data sources are unavailable, isolated, or degraded.
+        """
         quality: Dict = {
             "deterministic_confidence": round(confidence_score, 4),
             "missing_signals": missing_signals or [],
         }
+        if isolated_layers:
+            quality["isolated_signals"] = isolated_layers
+            quality["isolation_note"] = (
+                "These signals were excluded from scoring due to "
+                "low quality (e.g. R² < 0.2, broken modules). "
+                "Do NOT reference forecast data if forecast is isolated."
+            )
+        if degraded_layers:
+            quality["degraded_signals"] = degraded_layers
+            quality["degradation_note"] = (
+                "These signals have reduced reliability. "
+                "Cite them with appropriate hedging language."
+            )
+        if reasoning_warnings:
+            quality["reasoning_warnings"] = reasoning_warnings
         if confidence_score >= 0.8:
             quality["tone_directive"] = "definitive"
         elif confidence_score >= 0.6:
@@ -346,18 +398,37 @@ class SynthesisPromptBuilder:
             Concatenated formatted sections.
         """
         parts = []
+        truncated_sections: list[str] = []
         for key, value in data.items():
             if value in (None, {}, []):
                 continue
             title = key.replace("_", " ").title()
             body = json.dumps(value, indent=2, default=str)
             if len(body) > _MAX_SECTION_CHARS:
-                # Truncate overly large sections to keep token usage within limits.
+                original_len = len(body)
                 body = (
                     body[: _MAX_SECTION_CHARS]
-                    + "\n... (truncated to stay under token limits)"
+                    + f"\n... [TRUNCATED: {original_len} → {_MAX_SECTION_CHARS} chars. "
+                    f"Some data in '{title}' section is missing from this prompt.]"
+                )
+                truncated_sections.append(
+                    f"{title} ({original_len} → {_MAX_SECTION_CHARS} chars)"
+                )
+                _logger.warning(
+                    "Prompt section '%s' truncated: %d → %d chars",
+                    title, original_len, _MAX_SECTION_CHARS,
                 )
             parts.append(_SECTION_TEMPLATE.format(title=title, data=body))
+        if truncated_sections:
+            warning = (
+                "**WARNING — Data Truncation**\n"
+                "The following sections were truncated to fit token limits. "
+                "Some metrics may be absent from the data below. "
+                "Do not infer values for missing data.\n"
+                + "\n".join(f"- {s}" for s in truncated_sections)
+                + "\n\n"
+            )
+            parts.insert(0, warning)
         if not parts:
             return _SECTION_TEMPLATE.format(
                 title="Available Signals",

@@ -279,11 +279,15 @@ class KPIOrchestrator:
                 "error_type": "canonical_validation_failed",
                 "missing_metrics": canonical_validation.missing_metrics,
             }
+            if canonical_validation.diagnostics:
+                payload["diagnostics"] = canonical_validation.diagnostics
             logger.warning(
-                "KPI canonical validation failed entity=%r business_type=%r missing_metrics=%s",
+                "KPI canonical validation failed entity=%r business_type=%r "
+                "missing_metrics=%s diagnostics=%s",
                 entity_name,
                 business_type,
                 payload.get("missing_metrics"),
+                canonical_validation.diagnostics,
             )
             raise KPICanonicalValidationError(payload)
 
