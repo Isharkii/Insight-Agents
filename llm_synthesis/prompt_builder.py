@@ -240,6 +240,7 @@ class SynthesisPromptBuilder:
         isolated_layers: list | None = None,
         degraded_layers: list | None = None,
         reasoning_warnings: list | None = None,
+        benchmark_intelligence: Dict | None = None,
     ) -> str:
         """Build the full synthesis prompt from upstream data.
 
@@ -302,6 +303,8 @@ class SynthesisPromptBuilder:
             data_kwargs["signal_conflicts"] = conflict_metadata
         if has_competitor_data and competitor_signals:
             data_kwargs["competitor_benchmark_signals"] = competitor_signals
+        if benchmark_intelligence:
+            data_kwargs["benchmark_intelligence"] = benchmark_intelligence
         sections = self._format_data_sections(**data_kwargs)
 
         quality_context = self._format_quality_context(
@@ -315,12 +318,23 @@ class SynthesisPromptBuilder:
         if has_competitor_data:
             system_instructions = _SYSTEM_INSTRUCTIONS_COMPETITOR
             example_output = _EXAMPLE_OUTPUT
+            _benchmark_hint = ""
+            if benchmark_intelligence:
+                _benchmark_hint = (
+                    " A 'Benchmark Intelligence' section provides deterministic "
+                    "peer rankings, composite scores, and market position — "
+                    "reference these directly (e.g. 'ranked Nth of M peers', "
+                    "'peer percentile Xth', 'composite score X.XX')."
+                )
             task_instruction = (
                 "Synthesize the provided data into a single JSON object "
                 "matching the schema above. Focus strictly on competitor benchmarking "
                 "with SPECIFIC numbers: cite growth deltas, churn gaps, ARPU "
-                "differences, and rank positions from the data. Every recommendation "
-                "must include a quantified target or impact. Generic advice will be rejected."
+                "differences, and rank positions from the data."
+                f"{_benchmark_hint} "
+                "Every recommendation must reference a competitor gap, weakness, "
+                "strength, benchmark, peer, or risk with a quantified target. "
+                "Generic advice will be rejected."
             )
         else:
             system_instructions = _SYSTEM_INSTRUCTIONS_SELF_ANALYSIS

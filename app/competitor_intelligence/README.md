@@ -12,7 +12,7 @@ Deterministic-first module for SaaS competitor benchmarking with strict structur
 - `COMP_INTEL_CACHE_TTL_SECONDS`
 - `COMP_INTEL_EXTRACTION_MODE` = `deterministic | llm_structured`
 - `COMP_INTEL_LLM_API_KEY` (required for `llm_structured`)
-- `COMP_INTEL_LLM_MODEL` (default `gpt-4o-mini`)
+- `COMP_INTEL_LLM_MODEL` (default `gpt-5.4`)
 
 ## Quick Usage
 

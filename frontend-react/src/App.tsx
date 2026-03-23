@@ -208,7 +208,6 @@ export default function App() {
       setError("Entity / Client ID is required when no CSV is uploaded.");
       return;
     }
-
     setLoading(true);
     setError(null);
     setAnalyzeResult(null);
@@ -220,8 +219,15 @@ export default function App() {
 
     const started = performance.now();
     try {
+      const biPrompt = [
+        prompt.trim(),
+        requestedEntity ? `Entity: ${requestedEntity}.` : "",
+        requestedBusinessType ? `Business type: ${requestedBusinessType}.` : "",
+        "Prioritize macro environment, risk zones, and strategy recommendations from available internal and external signals.",
+      ].filter(Boolean).join("\n");
+
       const biPromise = runBusinessIntelligence({
-        businessPrompt: prompt.trim(),
+        businessPrompt: biPrompt,
       })
         .then((payload) => {
           setBiResult(payload);
@@ -241,6 +247,7 @@ export default function App() {
           sidebar.multiEntityBehavior === "auto"
             ? undefined
             : sidebar.multiEntityBehavior,
+        selfAnalysisOnly: true,
         model: sidebar.model,
       });
       const result = run.result;
@@ -261,7 +268,7 @@ export default function App() {
           fetchDashboard(entity, btype)
             .then(setDashboardData)
             .catch(() => {}),
-          fetchReportPayload(entity, prompt.trim(), btype)
+          fetchReportPayload(entity, prompt.trim(), btype, undefined, true)
             .then(setReportPayload)
             .catch(() => {}),
           fetchExportJson("kpis", entity)
@@ -432,7 +439,7 @@ export default function App() {
               <span className="ia-kbd">Ctrl + Enter</span>
             </div>
 
-            <div className="flex flex-col gap-3 lg:flex-row">
+            <div className="flex flex-col gap-3">
               <textarea
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
@@ -446,38 +453,41 @@ export default function App() {
                   }
                 }}
               />
-              <button
-                onClick={handleRun}
-                disabled={loading}
-                className="ia-btn-primary h-[46px] px-6 lg:self-end"
-              >
-                {loading ? (
-                  <>
-                    <svg
-                      className="h-4 w-4 animate-spin"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                    >
-                      <circle
-                        className="opacity-25"
-                        cx="12"
-                        cy="12"
-                        r="10"
-                        stroke="currentColor"
-                        strokeWidth="4"
-                      />
-                      <path
-                        className="opacity-75"
-                        fill="currentColor"
-                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-                      />
-                    </svg>
-                    Analyzing
-                  </>
-                ) : (
-                  "Analyze"
-                )}
-              </button>
+
+              <div className="flex justify-end">
+                <button
+                  onClick={handleRun}
+                  disabled={loading}
+                  className="ia-btn-primary h-[46px] px-6"
+                >
+                  {loading ? (
+                    <>
+                      <svg
+                        className="h-4 w-4 animate-spin"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                      >
+                        <circle
+                          className="opacity-25"
+                          cx="12"
+                          cy="12"
+                          r="10"
+                          stroke="currentColor"
+                          strokeWidth="4"
+                        />
+                        <path
+                          className="opacity-75"
+                          fill="currentColor"
+                          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                        />
+                      </svg>
+                      Analyzing
+                    </>
+                  ) : (
+                    "Analyze"
+                  )}
+                </button>
+              </div>
             </div>
           </section>
 

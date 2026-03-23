@@ -23,6 +23,11 @@ MIN_POINTS_ROBUST = 12
 _CONFIDENCE_CAP_MINIMAL = 0.40
 _CONFIDENCE_CAP_STANDARD = 0.80
 
+# R² below this threshold means the model has no predictive power.
+# Forecast is flagged as unusable and confidence is hard-capped.
+_R2_USABILITY_THRESHOLD = 0.10
+_R2_USABILITY_CONFIDENCE_CAP = 0.15
+
 _FORECAST_HORIZON = 3
 _ROLLING_WINDOW = 3
 _ZERO_GUARD = 1e-9
@@ -150,7 +155,13 @@ def _compute_confidence(
     tier: str,
 ) -> float:
     depth = _depth_score(n)
-    fit = max(0.1, float(r_squared)) if r_squared is not None else 1.0
+    # Use actual R² — do NOT floor at 0.1.  If R² is near zero the model
+    # has no predictive power and confidence must reflect that honestly.
+    if r_squared is not None:
+        fit = max(0.0, float(r_squared))
+    else:
+        # No R² available (e.g. rolling-average tier) — neutral.
+        fit = 1.0
     stability = _stability_score(cov)
     raw = depth * fit * stability
 
@@ -160,6 +171,11 @@ def _compute_confidence(
         cap = _CONFIDENCE_CAP_STANDARD
     else:
         cap = 1.0
+
+    # Hard cap when R² is below usability threshold — the forecast is noise.
+    if r_squared is not None and r_squared < _R2_USABILITY_THRESHOLD:
+        cap = min(cap, _R2_USABILITY_CONFIDENCE_CAP)
+
     return round(max(0.0, min(cap, raw)), 6)
 
 
@@ -430,8 +446,16 @@ class RobustForecast(BaseForecastModel):
         trend = _trend_slope_assessment(slope, avg, r_squared)
         residual_diag = residual_diagnostics(residuals, max_lag=min(6, max(2, n // 3)))
 
+        # Flag whether the forecast has any predictive value.
+        forecast_usable = r_squared >= _R2_USABILITY_THRESHOLD
+
         warnings: list[str] = []
-        if r_squared < 0.3:
+        if not forecast_usable:
+            warnings.append(
+                f"Forecast unusable: R^2={r_squared:.4f} < {_R2_USABILITY_THRESHOLD} "
+                f"(no predictive power). Confidence hard-capped at {_R2_USABILITY_CONFIDENCE_CAP}."
+            )
+        elif r_squared < 0.3:
             warnings.append(
                 f"Low R^2 ({r_squared:.3f}): trend interpretation may be weak."
             )
@@ -450,6 +474,7 @@ class RobustForecast(BaseForecastModel):
             "status": "ok",
             "model": selected_model,
             "confidence_score": confidence,
+            "forecast_usable": forecast_usable,
             "input_points": n,
             "minimum_required": MIN_POINTS_INSUFFICIENT,
             "data_quality": {

@@ -37,8 +37,11 @@ def test_graph_wiring_order_matches_required_sequence() -> None:
     assert ("unit_economics", "role_analytics") in edges
     assert ("multivariate_scenario", "role_analytics") in edges
 
+    # Competitor chain: role_analytics → competitor_intelligence.
+    assert ("role_analytics", "competitor_intelligence") in edges
+
     # Fan-in to signal_conflict (aggregation).
-    assert ("role_analytics", "signal_conflict") in edges
+    assert ("competitor_intelligence", "signal_conflict") in edges
     assert ("forecast_fetch", "signal_conflict") in edges
 
     # Decision pipeline.
@@ -47,6 +50,5 @@ def test_graph_wiring_order_matches_required_sequence() -> None:
     assert ("pipeline_status", "signal_enrichment") in edges
     assert ("signal_enrichment", "synthesis_gate") in edges
 
-    # Synthesis.
-    assert ("synthesis_gate", "competitor_intelligence") in edges
-    assert ("competitor_intelligence", "llm") in edges
+    # Synthesis: synthesis_gate routes conditionally to llm or END.
+    assert ("synthesis_gate", "llm") in edges

@@ -430,7 +430,11 @@ with st.sidebar:
         help="Used when uploaded CSV contains multiple entity_name values.",
     )
     load_client_config = st.checkbox("Load Client Configuration", value=False)
-    model = st.selectbox("Model", options=["default", "gpt-4o-mini", "gpt-4o"], index=0)
+    model = st.selectbox(
+        "Model",
+        options=["default", "gpt-5.4"],
+        index=0,
+    )
 
     client_config: Optional[dict[str, Any]] = None
     client_config_note: str | None = None

@@ -143,6 +143,7 @@ export interface PipelineSignalConflicts {
   conflict_count: number;
   conflicts: unknown[] | null;
   total_severity: number | null;
+  uncertainty_flag: boolean;
   warnings: string[] | null;
 }
 
@@ -161,6 +162,59 @@ export interface PipelineSignalScenarios {
   scenario_simulation: Record<string, unknown> | null;
 }
 
+export interface PipelineSignalBenchmark {
+  status: string;
+  confidence: number;
+  ranking?: {
+    overall_rank?: number;
+    total_participants?: number;
+    overall_percentile?: number;
+    tier?: string;
+    peer_scores?: Record<string, number>;
+    skipped_metrics?: Record<string, string>;
+    metric_ranks?: Record<
+      string,
+      {
+        rank?: number;
+        percentile?: number;
+        client_value?: number;
+        field_mean?: number;
+        field_median?: number;
+      }
+    >;
+  } | null;
+  composite?: {
+    overall_score?: number;
+    base_overall_score?: number;
+    growth_score?: number;
+    level_score?: number;
+    stability_score?: number;
+    confidence_score?: number;
+    competitive_metrics?: {
+      relative_growth_index?: number | null;
+      market_share_proxy?: number | null;
+      stability_score?: number;
+      momentum_classification?: string;
+      risk_divergence_score?: number | null;
+    };
+  } | null;
+  peer_selection?: {
+    peer_candidates?: string[];
+    selected_peers?: string[];
+  } | null;
+  market_position?: string | null;
+  metric_comparison_specs?: Record<
+    string,
+    {
+      direction?: string;
+      unit?: string;
+      scale?: string;
+      aggregation?: string;
+      window_alignment?: string;
+    }
+  > | null;
+}
+
 export interface PipelineSignals {
   risk?: PipelineSignalRisk;
   prioritization?: PipelineSignalPrioritization;
@@ -171,6 +225,7 @@ export interface PipelineSignals {
   signal_conflicts?: PipelineSignalConflicts;
   unit_economics?: PipelineSignalUnitEconomics;
   scenarios?: PipelineSignalScenarios;
+  benchmark?: PipelineSignalBenchmark;
   pipeline_status?: string;
   dataset_confidence?: number | null;
   synthesis_blocked?: boolean | null;
@@ -223,10 +278,28 @@ function derivePriority(confidence: number): string {
   return "critical";
 }
 
+const _MIN_DISPLAY_CONFIDENCE = 0.15;
+
 function derivePipelineStatus(confidence: number): string {
-  if (confidence <= 0) return "failed";
+  if (confidence <= 0) return "partial";
   if (confidence < 0.8) return "partial";
   return "success";
+}
+
+function sanitizePipelineStatus(status: string): string {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (normalized === "success" || normalized === "partial") return normalized;
+  if (normalized === "failed" || normalized === "blocked") return "partial";
+  return "partial";
+}
+
+function sanitizeDisplayConfidence(confidence: number, pipelineStatus: string): number {
+  const status = sanitizePipelineStatus(pipelineStatus);
+  const value = Number.isFinite(confidence) ? confidence : 0;
+  if (value > 0) return value;
+  // Do not surface a literal 0% in degraded/failed states.
+  if (status === "partial") return _MIN_DISPLAY_CONFIDENCE;
+  return _MIN_DISPLAY_CONFIDENCE;
 }
 
 function asStructuredInsight(value: unknown): StructuredInsightOutput | null {
@@ -251,10 +324,14 @@ export function normalizeAnalyzeResult(value: unknown): AnalyzeResult {
   const pipelineSignals = extractPipelineSignals(value);
   const structured = asStructuredInsight(value);
   if (structured) {
-    const confidence = coerceNumber(
+    const rawConfidence = coerceNumber(
       structured.competitive_analysis?.confidence,
       0,
     );
+    const pipelineStatus = sanitizePipelineStatus(
+      derivePipelineStatus(rawConfidence)
+    );
+    const confidence = sanitizeDisplayConfidence(rawConfidence, pipelineStatus);
     const firstImmediate =
       structured.strategic_recommendations?.immediate_actions?.[0] ?? "";
     return {
@@ -264,21 +341,25 @@ export function normalizeAnalyzeResult(value: unknown): AnalyzeResult {
       recommended_action: firstImmediate,
       priority: derivePriority(confidence),
       confidence_score: confidence,
-      pipeline_status: derivePipelineStatus(confidence),
+      pipeline_status: pipelineStatus,
       diagnostics: null,
       pipeline_signals: pipelineSignals,
     };
   }
 
   const payload = (value || {}) as Record<string, unknown>;
+  const rawPipelineStatus = String(payload.pipeline_status ?? "partial");
+  const pipelineStatus = sanitizePipelineStatus(rawPipelineStatus);
+  const rawConfidence = coerceNumber(payload.confidence_score, 0);
+  const confidenceScore = sanitizeDisplayConfidence(rawConfidence, pipelineStatus);
   return {
     insight: String(payload.insight ?? ""),
     evidence: String(payload.evidence ?? ""),
     impact: String(payload.impact ?? ""),
     recommended_action: String(payload.recommended_action ?? ""),
     priority: String(payload.priority ?? "low"),
-    confidence_score: coerceNumber(payload.confidence_score, 0),
-    pipeline_status: String(payload.pipeline_status ?? "partial"),
+    confidence_score: confidenceScore,
+    pipeline_status: pipelineStatus,
     diagnostics:
       payload.diagnostics && typeof payload.diagnostics === "object"
         ? (payload.diagnostics as DiagnosticsData)
@@ -379,6 +460,8 @@ export async function runAnalysis(params: {
   clientId?: string;
   businessType?: string;
   multiEntityBehavior?: string;
+  competitors?: string;
+  selfAnalysisOnly?: boolean;
   model?: string;
 }): Promise<AnalyzeRunResponse> {
   const form = new FormData();
@@ -388,6 +471,8 @@ export async function runAnalysis(params: {
   if (params.businessType) form.append("business_type", params.businessType);
   if (params.multiEntityBehavior)
     form.append("multi_entity_behavior", params.multiEntityBehavior);
+  if (params.competitors) form.append("competitors", params.competitors);
+  if (params.selfAnalysisOnly) form.append("self_analysis_only", "true");
   if (params.model && params.model !== "default")
     form.append("model", params.model);
 
@@ -494,6 +579,8 @@ export async function fetchReportPayload(
   entityName: string,
   prompt: string,
   businessType?: string,
+  competitors?: string,
+  selfAnalysisOnly?: boolean,
 ): Promise<Record<string, unknown> | null> {
   const params = new URLSearchParams({
     entity_name: entityName,
@@ -501,6 +588,8 @@ export async function fetchReportPayload(
     format: "json",
   });
   if (businessType) params.set("business_type", businessType);
+  if (competitors) params.set("competitors", competitors);
+  if (selfAnalysisOnly) params.set("self_analysis_only", "true");
   try {
     return await request<Record<string, unknown>>(`/export/report?${params}`);
   } catch {

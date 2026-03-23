@@ -249,6 +249,71 @@ def scenario_signal_snapshot(state: dict[str, Any]) -> dict[str, Any]:
 # Signal conflict snapshot
 # ---------------------------------------------------------------------------
 
+def benchmark_signal_snapshot(state: dict[str, Any]) -> dict[str, Any]:
+    """Extract benchmark intelligence from state for prioritization.
+
+    Returns structured snapshot with composite scores, market position,
+    and metric-level rankings for generating benchmark-informed recommendations.
+    """
+    envelope = state.get("benchmark_data")
+    payload = payload_of(envelope) if isinstance(envelope, dict) else None
+    if not isinstance(payload, dict):
+        return {
+            "status": "missing",
+            "market_position": None,
+            "overall_score": None,
+            "growth_score": None,
+            "stability_score": None,
+            "weakest_metrics": [],
+            "strongest_metrics": [],
+            "peer_count": 0,
+        }
+
+    composite = payload.get("composite") or {}
+    market_pos = payload.get("market_position") or {}
+    ranking = payload.get("ranking") or {}
+
+    overall = _safe_float_or_none(composite.get("overall_score"))
+    growth = _safe_float_or_none(composite.get("growth_score"))
+    stability = _safe_float_or_none(composite.get("stability_score"))
+
+    # Extract metric-level rankings to identify weakest/strongest areas
+    metric_rankings = ranking.get("metric_rankings") or {}
+    scored_metrics: list[tuple[str, float]] = []
+    for metric_name, metric_info in metric_rankings.items():
+        if isinstance(metric_info, dict):
+            percentile = _safe_float_or_none(metric_info.get("percentile_rank"))
+            if percentile is not None:
+                scored_metrics.append((str(metric_name), float(percentile)))
+
+    scored_metrics.sort(key=lambda x: x[1])
+    weakest = [
+        {"metric": name, "percentile": round(pct, 2)}
+        for name, pct in scored_metrics[:3]
+        if pct < 40.0
+    ]
+    strongest = [
+        {"metric": name, "percentile": round(pct, 2)}
+        for name, pct in reversed(scored_metrics)
+        if pct >= 60.0
+    ][:3]
+
+    peer_selection = payload.get("peer_selection") or {}
+    peer_count = len(peer_selection.get("selected_peers") or [])
+
+    return {
+        "status": "success" if overall is not None else "partial",
+        "market_position": market_pos.get("position"),
+        "position_confidence": _safe_float_or_none(market_pos.get("confidence")),
+        "overall_score": overall,
+        "growth_score": growth,
+        "stability_score": stability,
+        "weakest_metrics": weakest,
+        "strongest_metrics": strongest,
+        "peer_count": peer_count,
+    }
+
+
 def signal_conflict_snapshot(state: dict[str, Any]) -> dict[str, Any]:
     """Extract signal conflict detection results from state."""
     envelope = state.get("signal_conflicts")
@@ -279,4 +344,5 @@ def signal_conflict_snapshot(state: dict[str, Any]) -> dict[str, Any]:
         ]
         if isinstance(conflict.get("warnings"), list)
         else [],
+        "_raw_conflict_result": conflict,
     }

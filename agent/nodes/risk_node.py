@@ -123,6 +123,18 @@ def risk_node(state: AgentState) -> AgentState:
         )
         return {"risk_data": risk_data}
 
+    # ── Isolation enforcement ─────────────────────────────────────
+    # Compute integrity early so isolated layers can be excluded from
+    # risk scoring.  Reused later for confidence scoring (line ~387).
+    integrity = UnifiedSignalIntegrity.compute(state)
+    _isolated_layers = set(integrity.get("isolated_layers", []))
+    _forecast_isolated = "forecast" in _isolated_layers
+    if _forecast_isolated:
+        import logging as _risk_logging
+        _risk_logging.getLogger("agent.nodes.risk").info(
+            "Forecast layer isolated — excluding forecast signals from risk scoring"
+        )
+
     # Collect upstream diagnostics from KPI envelope.
     upstream_warnings: list[str] = warnings_of(kpi_envelope)
     upstream_confidence: float = confidence_of(kpi_envelope)
@@ -177,7 +189,7 @@ def risk_node(state: AgentState) -> AgentState:
     growth_signals_used = False
     scenario_signals_used = False
     forecast_context: dict[str, Any]
-    if forecast_status == "success" and forecast_payload:
+    if forecast_status == "success" and forecast_payload and not _forecast_isolated:
         try:
             forecast_signals = normalize_forecast_signals(forecast_payload)
             slope = float(forecast_signals.get("slope", 0.0))
@@ -274,8 +286,48 @@ def risk_node(state: AgentState) -> AgentState:
             )
             session.commit()
 
+        # ── Signal coverage enforcement ─────────────────────────────
+        # Count how many analytical dimensions contributed real data.
+        # If fewer than 2 dimensions have real signal, the risk score
+        # is computed on insufficient intelligence and confidence must
+        # reflect that honestly.
+        _dimension_status: dict[str, bool] = {
+            "kpi": bool(kpi_signals.get("revenue_growth_delta") is not None
+                        or kpi_signals.get("churn_delta") is not None),
+            "forecast": bool(
+                forecast_context.get("forecast_available")
+                and forecast_context.get("status") not in (
+                    "insufficient_data", "cohort_proxy",
+                    "growth_cohort_proxy", "scenario_growth_cohort_proxy",
+                )
+            ),
+            "cohort": cohort_signals_used,
+            "growth": growth_signals_used,
+            "scenario": scenario_signals_used,
+        }
+        _real_dimensions = sum(1 for v in _dimension_status.values() if v)
+        _MIN_DIMENSIONS = 2
+        _coverage_sufficient = _real_dimensions >= _MIN_DIMENSIONS
+
+        if not _coverage_sufficient:
+            # Severe penalty: risk computed from < 2 real dimensions.
+            coverage_penalty = 0.3 + 0.1 * (_MIN_DIMENSIONS - _real_dimensions)
+            upstream_confidence = max(0.05, upstream_confidence - coverage_penalty)
+            upstream_warnings.append(
+                f"Signal coverage insufficient: only {_real_dimensions}/{len(_dimension_status)} "
+                f"analytical dimensions have real data "
+                f"({', '.join(k for k, v in _dimension_status.items() if v) or 'none'}). "
+                f"Confidence penalized by {coverage_penalty:.2f}."
+            )
+
         risk_payload: dict[str, Any] = {
             **result,
+            "signal_coverage": {
+                "dimensions": _dimension_status,
+                "real_count": _real_dimensions,
+                "minimum_required": _MIN_DIMENSIONS,
+                "sufficient": _coverage_sufficient,
+            },
             "forecast_available": bool(forecast_context.get("forecast_available")),
             "cohort_signals_used": cohort_signals_used,
             "cohort_signal_status": cohort_snapshot.get("status"),
@@ -344,7 +396,7 @@ def risk_node(state: AgentState) -> AgentState:
         if conflict_result.get("conflict_count", 0) > 0:
             risk_warnings.extend(conflict_result.get("warnings", []))
 
-        integrity = UnifiedSignalIntegrity.compute(state)
+        # integrity already computed early for isolation enforcement
         integrity_score = max(0.0, min(1.0, float(integrity.get("overall_score") or 0.0)))
 
         # Apply conflict penalty to confidence

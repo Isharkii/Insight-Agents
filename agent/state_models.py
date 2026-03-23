@@ -11,7 +11,7 @@ from typing import Any, Generic, Literal, TypeVar
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 NodeStatus = Literal["success", "insufficient_data", "skipped", "failed"]
-PipelineStatus = Literal["success", "partial", "failed"]
+PipelineStatus = Literal["success", "partial", "failed", "blocked"]
 T = TypeVar("T")
 
 
@@ -66,6 +66,7 @@ class CompetitiveContextModel(BaseModel):
     metrics: list[str] = Field(default_factory=list)
     benchmark_rows_count: int = 0
     numeric_signals: list[CompetitiveContextMetricModel] = Field(default_factory=list)
+    news_highlights: list[dict[str, Any]] = Field(default_factory=list)
     cache_hit: bool = False
     generated_at: str | None = None
     warnings: list[str] = Field(default_factory=list)
@@ -141,12 +142,16 @@ class AgentStateModel(BaseModel):
     category_formula_data: NodeEnvelope[dict[str, Any]] | None = None
     unit_economics_data: NodeEnvelope[dict[str, Any]] | None = None
     multivariate_scenario_data: NodeEnvelope[dict[str, Any]] | None = None
+    benchmark_data: NodeEnvelope[dict[str, Any]] | None = None
     signal_conflicts: NodeEnvelope[dict[str, Any]] | None = None
     signal_enrichment: NodeEnvelope[dict[str, Any]] | None = None
     competitive_context: CompetitiveContextModel | None = None
     signal_integrity: dict[str, Any] | None = None
     synthesis_blocked: bool | None = None
+    eligible_for_llm: bool | None = None
+    block_reasons: list[str] | None = None
     final_response: str | None = None
+    competitors: list[str] | None = None
     llm_model_override: str | None = None
 
     @classmethod
@@ -192,11 +197,14 @@ class AgentStatePatchModel(BaseModel):
     category_formula_data: NodeEnvelope[dict[str, Any]] | None = None
     unit_economics_data: NodeEnvelope[dict[str, Any]] | None = None
     multivariate_scenario_data: NodeEnvelope[dict[str, Any]] | None = None
+    benchmark_data: NodeEnvelope[dict[str, Any]] | None = None
     signal_conflicts: NodeEnvelope[dict[str, Any]] | None = None
     signal_enrichment: NodeEnvelope[dict[str, Any]] | None = None
     competitive_context: CompetitiveContextModel | None = None
     signal_integrity: dict[str, Any] | None = None
     synthesis_blocked: bool | None = None
+    eligible_for_llm: bool | None = None
+    block_reasons: list[str] | None = None
     final_response: str | None = None
+    competitors: list[str] | None = None
     llm_model_override: str | None = None
-

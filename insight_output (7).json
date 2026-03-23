@@ -1,0 +1,578 @@
+{
+  "insight": "Conditional: With significant uncertainty, FLOW_WORKS_558 shows a stable growth_trend and low volatility_level, supported by MRR rising 10.48% QoQ and 4.99% MoM, while LTV increased 2.16% QoQ and 0.03% MoM. Limited data also indicates a weakness in quality of growth because churn_rate increased 2.07% MoM to 0.0316 while growth_rate turned positive to 0.0499, and the risk layer flags 2 signal conflicts with total severity 1.7 and a moderate risk_score of 48.",
+  "evidence": "Conditional: Limited data indicates stronger recent operating momentum than earlier periods because growth_rate moved from -0.014 to 0.0499 MoM, yet that momentum is not fully validated because growth_rate volatility is high at 1.4771, forecast confidence is 0.1674, forecast_direction is unknown, and the rolling-average forecast holds at 0.034184 for month_1 through month_3.",
+  "impact": "Conditional: With significant uncertainty and no peer benchmark data, the entity's own trajectory appears positive on topline momentum, with short_growth, mid_growth, and long_growth all at 0.1048 and trend_acceleration at 0.0, but the position is constrained by degraded analytical layers in forecast, cohort, competitive, and segmentation and by deterministic_confidence of 0.046.",
+  "recommended_action": "Conditional: basic data-only improvement plan: resolve revenue, retention, and churn conflicts before execution.",
+  "priority": "critical",
+  "confidence_score": 0.046,
+  "pipeline_status": "partial",
+  "diagnostics": null,
+  "pipeline_signals": {
+    "risk": {
+      "status": "success",
+      "risk_score": 48,
+      "risk_level": "moderate",
+      "confidence": 0.1,
+      "breakdown": {
+        "confidence_score": 0.101273,
+        "model_confidence_score": 0,
+        "components": [
+          {
+            "component": "depth",
+            "score": 0,
+            "n": 2,
+            "min_points": 3,
+            "saturation_points": 12,
+            "sufficient": false
+          },
+          {
+            "component": "volatility",
+            "score": 1,
+            "coefficient_of_variation": 0,
+            "regime": "low",
+            "series_length": 2
+          },
+          {
+            "component": "anomaly",
+            "score": 1,
+            "anomaly_count": 0,
+            "anomaly_density": 0,
+            "anomaly_indexes": [],
+            "bounds": null,
+            "series_length": 2
+          },
+          {
+            "component": "consistency",
+            "score": 0.7,
+            "signal_count": 3,
+            "conflict_count": 2,
+            "directions": {
+              "kpi_revenue_growth_delta": "positive",
+              "kpi_churn_delta": "positive",
+              "signal_conflict_count": "negative"
+            },
+            "conflicts": [
+              {
+                "positive": "kpi_revenue_growth_delta",
+                "negative": "signal_conflict_count"
+              },
+              {
+                "positive": "kpi_churn_delta",
+                "negative": "signal_conflict_count"
+              }
+            ]
+          }
+        ],
+        "formula": "depth_gate_failed",
+        "warnings": [
+          "Risk scored with degraded KPI confidence (confidence=0.05)",
+          "conversion_delta: unavailable (Unable to derive required signal 'conversion_delta'.)",
+          "Risk scored with 1 defaulted signal(s) (conversion_delta); confidence penalized by 0.10.",
+          "Signal coverage insufficient: only 1/5 analytical dimensions have real data (kpi). Confidence penalized by 0.40.",
+          "Conflict: revenue_growth_delta (positive) vs churn_delta (positive) — expected opposite, severity 0.9. Revenue growth and churn should move in opposite directions. Rising revenue with rising churn suggests unsustainable growth driven by price increases rather than customer expansion.",
+          "Conflict: ltv_delta (positive) vs churn_delta (positive) — expected opposite, severity 0.8. LTV and churn must move in opposite directions. Rising LTV with rising churn is mathematically suspect.",
+          "Insufficient data: 2 points below minimum 3."
+        ],
+        "signals": {
+          "kpi_revenue_growth_delta": 0.104824,
+          "kpi_churn_delta": 0.0006400000000000017,
+          "kpi_conversion_delta": null,
+          "forecast_slope": null,
+          "forecast_deviation": null,
+          "forecast_churn_acceleration": null,
+          "signal_conflict_count": -2
+        },
+        "propagation": {
+          "model_confidence": 0,
+          "dataset_cap": 0.05,
+          "upstream_cap": 0.456363,
+          "upstream_min": 0.2,
+          "propagation_cap": 0.101273,
+          "isolated_count": 0,
+          "active_upstream_count": 3
+        },
+        "tier_cap": null,
+        "status": "success"
+      }
+    },
+    "prioritization": {
+      "priority_level": "low",
+      "recommended_focus": "partial insight — insufficient analytical layers for recommendations; additional data sources required",
+      "confidence_score": 0,
+      "growth_short": 0.104824,
+      "growth_mid": 0.104824,
+      "growth_long": 0.104824,
+      "growth_trend_acceleration": 0,
+      "cohort_signal_used": true,
+      "cohort_risk_hint": "low",
+      "scenario_signal_used": true,
+      "scenario_worst_growth": 0.054824,
+      "scenario_best_growth": 0.144824,
+      "signal_conflict_count": 2,
+      "signal_conflict_warnings": [
+        "Conflict: revenue_growth_delta (positive) vs churn_delta (positive) — expected opposite, severity 0.9. Revenue growth and churn should move in opposite directions. Rising revenue with rising churn suggests unsustainable growth driven by price increases rather than customer expansion.",
+        "Conflict: ltv_delta (positive) vs churn_delta (positive) — expected opposite, severity 0.8. LTV and churn must move in opposite directions. Rising LTV with rising churn is mathematically suspect."
+      ]
+    },
+    "growth": {
+      "status": "success",
+      "confidence": 0.755838,
+      "short_growth": null,
+      "mid_growth": null,
+      "long_growth": null,
+      "trend_acceleration": null,
+      "metric_series": null
+    },
+    "forecast": {
+      "status": "success",
+      "confidence": 0.298333,
+      "forecasts": {
+        "revenue": null,
+        "growth_rate": {
+          "entity_name": "FLOW_WORKS_558",
+          "metric_name": "growth_rate",
+          "period_end": "fallback",
+          "forecast_data": {
+            "tier": "minimal",
+            "status": "ok",
+            "model": "rolling_average",
+            "confidence_score": 0.167366,
+            "input_points": 4,
+            "minimum_required": 3,
+            "data_quality": {
+              "coefficient_of_variation": 1.47707,
+              "volatility": {
+                "regime": "normal",
+                "recent_vol": 4.548868,
+                "baseline_vol": 4.548868,
+                "ratio": 1
+              },
+              "rolling_average": [
+                -0.00747,
+                0.029617,
+                0.015065,
+                0.034184
+              ]
+            },
+            "regression": null,
+            "trend": {
+              "label": "inconclusive",
+              "normalised_slope": null,
+              "r_squared": null,
+              "statistically_meaningful": false
+            },
+            "forecast": {
+              "month_1": 0.034184,
+              "month_2": 0.034184,
+              "month_3": 0.034184
+            },
+            "deviation_percentage": 0,
+            "slope": null,
+            "diagnostics": {
+              "method": "rolling_average",
+              "window": 3,
+              "reason": "Only 4 points available (need 6 for regression); using rolling-average extrapolation."
+            },
+            "warnings": [
+              "Below regression threshold (6); using rolling-average extrapolation with capped confidence."
+            ],
+            "forecast_values": [
+              0.034184,
+              0.034184,
+              0.034184
+            ],
+            "model_type": "rolling_average",
+            "metric": "growth_rate",
+            "datapoints_used": 4
+          },
+          "created_at": "fallback",
+          "source": "fallback"
+        },
+        "sales": null
+      },
+      "metrics_queried": [
+        "revenue",
+        "growth_rate",
+        "sales"
+      ]
+    },
+    "cohort": {
+      "status": "success",
+      "confidence": 0.338333,
+      "retention_decay": null,
+      "churn_acceleration": null,
+      "worst_cohort": null,
+      "risk_hint": null
+    },
+    "signal_integrity": {
+      "overall_score": 0.25,
+      "kpi_gate_passed": true,
+      "kpi_depth": 4,
+      "kpi_coverage_ratio": 1,
+      "valid_layer_count": 1,
+      "forecast_usable": true,
+      "insight_quality": "partial_insight",
+      "layer_classification": {
+        "kpi": "valid",
+        "forecast": "degraded",
+        "competitive": "degraded",
+        "cohort": "degraded",
+        "segmentation": "degraded"
+      },
+      "missing_signal_report": {
+        "missing_signals": [
+          {
+            "signal": "root_cause",
+            "state_key": "root_cause",
+            "classification": "optional",
+            "status": "missing",
+            "impact": "reduced coverage"
+          }
+        ],
+        "required_missing_count": 0,
+        "optional_missing_count": 1,
+        "actions_taken": [
+          "optional signal 'root_cause' missing: coverage reduced"
+        ]
+      },
+      "kpi_coverage_report": {
+        "coverage_ratio": 1,
+        "expected_metrics": [
+          "churn_rate",
+          "growth_rate",
+          "ltv",
+          "mrr"
+        ],
+        "available_metrics": [
+          "churn_rate",
+          "growth_rate",
+          "ltv",
+          "mrr"
+        ],
+        "missing_metrics": [],
+        "sufficient": true,
+        "impact": null
+      },
+      "confidence_breakdown": {
+        "base": 0.85,
+        "penalties": {
+          "kpi_penalty_applied": false,
+          "caps_applied": [
+            {
+              "cap": "insufficient_layers",
+              "limit": 0.25,
+              "valid_layers": 1
+            }
+          ]
+        },
+        "final": 0.25
+      },
+      "layers": {
+        "kpi": {
+          "available": true,
+          "coverage_ratio": 1,
+          "source_reliability": 0.85,
+          "completeness": 1,
+          "score": 0.85,
+          "gate_status": "pass",
+          "meta": {
+            "source_key": "kpi_data",
+            "expected_metrics": 4,
+            "available_metrics": 4,
+            "time_series_depth": 4
+          }
+        },
+        "forecast": {
+          "available": true,
+          "coverage_ratio": 0,
+          "source_reliability": 0,
+          "completeness": 0,
+          "score": 0,
+          "gate_status": "degrade",
+          "meta": {
+            "status": "insufficient_data",
+            "input_points": 4,
+            "dependency_note": "needs >= 6 points, has 4"
+          }
+        },
+        "competitive": {
+          "available": true,
+          "coverage_ratio": 0,
+          "source_reliability": 1,
+          "completeness": 0,
+          "score": 0,
+          "gate_status": "degrade",
+          "meta": {
+            "status": "insufficient_data",
+            "peer_count": 0,
+            "metric_count": 4,
+            "source": "benchmark_node"
+          }
+        },
+        "cohort": {
+          "available": true,
+          "coverage_ratio": 1,
+          "source_reliability": 1,
+          "completeness": 0,
+          "score": 0,
+          "gate_status": "degrade",
+          "meta": {
+            "status": "insufficient_data",
+            "cohort_count": 0
+          }
+        },
+        "segmentation": {
+          "available": true,
+          "coverage_ratio": 1,
+          "source_reliability": 1,
+          "completeness": 0,
+          "score": 0,
+          "gate_status": "degrade",
+          "meta": {
+            "status": "insufficient_data",
+            "segment_count": 0
+          }
+        }
+      },
+      "missing_layers": [],
+      "available_layers": [
+        "kpi",
+        "forecast",
+        "competitive",
+        "cohort",
+        "segmentation"
+      ],
+      "scoring_layers": [
+        "kpi"
+      ],
+      "isolated_layers": [],
+      "degraded_layers": [
+        "forecast",
+        "competitive",
+        "cohort",
+        "segmentation"
+      ],
+      "reasoning_warnings": [
+        "forecast layer degraded: insufficient_data (score=0.000)",
+        "competitive layer degraded: insufficient_data (score=0.000)",
+        "cohort layer degraded: insufficient_data (score=0.000)",
+        "segmentation layer degraded: insufficient_data (score=0.000)",
+        "Only 1 valid layer(s): confidence capped at 0.25"
+      ],
+      "confidence_adjustments": [
+        {
+          "signal": "kpi",
+          "authority_weight": 1,
+          "layer_score": 0.85,
+          "delta": -0.15,
+          "reason": "layer_integrity_contribution"
+        }
+      ]
+    },
+    "signal_conflicts": {
+      "status": "success",
+      "conflict_count": 2,
+      "conflicts": [
+        {
+          "signal_a": "revenue_growth_delta",
+          "signal_b": "churn_delta",
+          "signal_a_value": 0.049887,
+          "signal_b_value": 0.00064,
+          "direction_a": "positive",
+          "direction_b": "positive",
+          "expected_relationship": "opposite",
+          "severity": 0.9,
+          "explanation": "Revenue growth and churn should move in opposite directions. Rising revenue with rising churn suggests unsustainable growth driven by price increases rather than customer expansion."
+        },
+        {
+          "signal_a": "ltv_delta",
+          "signal_b": "churn_delta",
+          "signal_a_value": 0.000325,
+          "signal_b_value": 0.00064,
+          "direction_a": "positive",
+          "direction_b": "positive",
+          "expected_relationship": "opposite",
+          "severity": 0.8,
+          "explanation": "LTV and churn must move in opposite directions. Rising LTV with rising churn is mathematically suspect."
+        }
+      ],
+      "total_severity": 1.7,
+      "uncertainty_flag": true,
+      "warnings": [
+        "Conflict: revenue_growth_delta (positive) vs churn_delta (positive) — expected opposite, severity 0.9. Revenue growth and churn should move in opposite directions. Rising revenue with rising churn suggests unsustainable growth driven by price increases rather than customer expansion.",
+        "Conflict: ltv_delta (positive) vs churn_delta (positive) — expected opposite, severity 0.8. LTV and churn must move in opposite directions. Rising LTV with rising churn is mathematically suspect."
+      ]
+    },
+    "unit_economics": {
+      "status": "success",
+      "confidence": 0.64533,
+      "ltv": null,
+      "cac": null,
+      "ltv_cac_ratio": null,
+      "payback_months": null
+    },
+    "scenarios": {
+      "status": "success",
+      "confidence": 0.809656,
+      "scenario_simulation": {
+        "status": "partial",
+        "primary_metric": "mrr",
+        "latest_value": 195916.63,
+        "base_confidence": 0.469088,
+        "insufficient_history": {
+          "short": false,
+          "mid": true,
+          "long": true,
+          "cagr": true,
+          "acceleration": true
+        },
+        "warnings": [],
+        "scenarios": {
+          "best": {
+            "projected_growth": 0.144824,
+            "projected_value": 228208.392623,
+            "horizon_growth": {
+              "short": 0.144824,
+              "mid": 0.144824,
+              "long": 0.144824,
+              "trend_acceleration": 0.02
+            },
+            "assumptions": {
+              "growth_delta": 0.04,
+              "level_delta": 0.02,
+              "volatility_multiplier": 0.8,
+              "confidence_impact": 0.05
+            },
+            "confidence_score": 0.419088
+          },
+          "base": {
+            "projected_growth": 0.104824,
+            "projected_value": 216453.394823,
+            "horizon_growth": {
+              "short": 0.104824,
+              "mid": 0.104824,
+              "long": 0.104824,
+              "trend_acceleration": 0
+            },
+            "assumptions": {
+              "growth_delta": 0,
+              "level_delta": 0,
+              "volatility_multiplier": 1,
+              "confidence_impact": 0
+            },
+            "confidence_score": 0.369088
+          },
+          "worst": {
+            "projected_growth": 0.054824,
+            "projected_value": 200780.064423,
+            "horizon_growth": {
+              "short": 0.054824,
+              "mid": 0.054824,
+              "long": 0.054824,
+              "trend_acceleration": -0.025
+            },
+            "assumptions": {
+              "growth_delta": -0.05,
+              "level_delta": -0.03,
+              "volatility_multiplier": 1.3,
+              "confidence_impact": -0.08
+            },
+            "confidence_score": 0.289088
+          }
+        },
+        "metadata": {
+          "assumptions": {
+            "projection_periods": 1,
+            "base_growth_selected": 0.104824,
+            "anomaly_penalty": 0,
+            "correlation_penalty": 0.2,
+            "shocks": {
+              "best": {
+                "growth_delta": 0.04,
+                "level_delta": 0.02,
+                "volatility_multiplier": 0.8,
+                "confidence_impact": 0.05
+              },
+              "base": {
+                "growth_delta": 0,
+                "level_delta": 0,
+                "volatility_multiplier": 1,
+                "confidence_impact": 0
+              },
+              "worst": {
+                "growth_delta": -0.05,
+                "level_delta": -0.03,
+                "volatility_multiplier": 1.3,
+                "confidence_impact": -0.08
+              }
+            }
+          },
+          "confidence_impact": {
+            "confidence_delta_best_vs_base": 0.05,
+            "confidence_delta_worst_vs_base": -0.08
+          }
+        }
+      }
+    },
+    "benchmark": {
+      "status": "success",
+      "confidence": 0.2,
+      "ranking": null,
+      "composite": null,
+      "peer_selection": {
+        "sourcing_rule": "same_category_same_window_excluding_client",
+        "categories": [
+          "sales",
+          "general_timeseries",
+          "generic_timeseries"
+        ],
+        "peer_candidates": [],
+        "selected_peers": [],
+        "excluded_entity": "FLOW_WORKS_558",
+        "size_band": {
+          "enabled": true,
+          "lower_multiplier": 0.5,
+          "upper_multiplier": 2
+        }
+      },
+      "market_position": null,
+      "metric_comparison_specs": {
+        "ltv": {
+          "metric": "ltv",
+          "direction": "higher_is_better",
+          "unit": "currency",
+          "scale": "raw",
+          "aggregation": "monthly_avg",
+          "window_alignment": "trailing_6m"
+        },
+        "mrr": {
+          "metric": "mrr",
+          "direction": "higher_is_better",
+          "unit": "currency",
+          "scale": "raw",
+          "aggregation": "monthly_avg",
+          "window_alignment": "trailing_6m"
+        },
+        "churn_rate": {
+          "metric": "churn_rate",
+          "direction": "lower_is_better",
+          "unit": "rate",
+          "scale": "ratio",
+          "aggregation": "monthly_avg",
+          "window_alignment": "trailing_6m"
+        },
+        "growth_rate": {
+          "metric": "growth_rate",
+          "direction": "higher_is_better",
+          "unit": "rate",
+          "scale": "ratio",
+          "aggregation": "monthly_avg",
+          "window_alignment": "trailing_6m"
+        }
+      }
+    },
+    "pipeline_status": "success",
+    "dataset_confidence": 0.991667,
+    "synthesis_blocked": null
+  }
+}

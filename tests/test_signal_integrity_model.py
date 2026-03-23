@@ -108,3 +108,50 @@ def test_unified_signal_integrity_competitive_external_fetch() -> None:
     layer = result["layers"]["competitive"]
     assert layer["source_reliability"] == 0.7
     assert layer["score"] > 0.0
+
+
+def test_unified_signal_integrity_competitive_external_fetch_uses_signal_samples() -> None:
+    state = {
+        "business_type": "saas",
+        "saas_kpi_data": success(
+            {
+                "metrics": ["mrr", "churn_rate"],
+                "records": [
+                    {
+                        "computed_kpis": {
+                            "mrr": {"value": 100.0, "source": "formula"},
+                            "churn_rate": {"value": 0.05, "source": "formula"},
+                        },
+                    },
+                    {
+                        "computed_kpis": {
+                            "mrr": {"value": 110.0, "source": "formula"},
+                            "churn_rate": {"value": 0.04, "source": "formula"},
+                        },
+                    },
+                    {
+                        "computed_kpis": {
+                            "mrr": {"value": 120.0, "source": "formula"},
+                            "churn_rate": {"value": 0.03, "source": "formula"},
+                        },
+                    },
+                ],
+            }
+        ),
+        "competitive_context": {
+            "source": "external_fetch",
+            "peer_count": 3,
+            "metrics": ["growth_rate_mentioned_pct", "listed_price_usd_mean"],
+            "benchmark_rows_count": 0,
+            "numeric_signals": [
+                {"metric_name": "growth_rate_mentioned_pct", "sample_size": 2},
+                {"metric_name": "listed_price_usd_mean", "sample_size": 7},
+            ],
+        },
+    }
+
+    result = UnifiedSignalIntegrity.compute(state)
+    layer = result["layers"]["competitive"]
+    assert layer["source_reliability"] == 0.7
+    assert layer["completeness"] > 0.0
+    assert layer["score"] > 0.0

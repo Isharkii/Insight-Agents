@@ -110,8 +110,40 @@ def test_prioritization_reflects_uncertainty_from_conflicts() -> None:
 
     assert payload["signal_conflict_count"] == 2
     assert payload["strategy_uncertainty_flag"] is True
-    assert "resolve conflicting signals" in payload["recommended_focus"]
+    # With total_severity > 1.0, uncertainty_mode activates and
+    # recommendations are withheld instead of appended.
+    assert "conflicting signals" in payload["recommended_focus"].lower()
+    assert payload.get("uncertainty_mode") is True
+    assert payload.get("decision") == "withheld"
     assert payload["confidence_score"] < payload["reasoning_confidence_score"]
+
+
+def test_prioritization_keeps_actions_for_moderate_conflicts_without_uncertainty_flag() -> None:
+    state = {
+        "risk_data": success({"risk_score": 22.0, "risk_level": "low"}),
+        "root_cause": success({}),
+        "segmentation": success({"growth_context": {"primary_horizons": {}}}),
+        "signal_conflicts": success(
+            {
+                "conflict_result": {
+                    "status": "conflicts_detected",
+                    "conflict_count": 2,
+                    "total_severity": 1.4,
+                    "confidence_penalty": 0.2,
+                    "uncertainty_flag": False,
+                    "warnings": ["Conflict: revenue_growth_delta vs churn_delta"],
+                }
+            }
+        ),
+    }
+
+    updated = prioritization_node(state)
+    payload = updated["prioritization"]
+
+    assert payload["signal_conflict_count"] == 2
+    assert payload["strategy_uncertainty_flag"] is False
+    assert payload.get("uncertainty_mode") is False
+    assert payload.get("decision") == "active"
 
 
 def test_llm_node_applies_global_conflict_penalty_in_diagnostics(monkeypatch) -> None:

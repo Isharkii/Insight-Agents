@@ -499,12 +499,16 @@ def _extract_pipeline_signals(state: dict[str, Any]) -> dict[str, Any]:
     # ── Signal conflicts ──
     conflict_envelope = state.get("signal_conflicts")
     conflict_payload = payload_of(conflict_envelope) or {}
+    # The conflict_result dict is nested inside the payload under
+    # "conflict_result" — extract fields from there.
+    conflict_result = conflict_payload.get("conflict_result") or {}
     signals["signal_conflicts"] = {
         "status": status_of(conflict_envelope),
-        "conflict_count": conflict_payload.get("conflict_count", 0),
-        "conflicts": conflict_payload.get("conflicts"),
-        "total_severity": conflict_payload.get("total_severity"),
-        "warnings": conflict_payload.get("warnings"),
+        "conflict_count": conflict_result.get("conflict_count", 0),
+        "conflicts": conflict_result.get("conflicts"),
+        "total_severity": conflict_result.get("total_severity"),
+        "uncertainty_flag": conflict_result.get("uncertainty_flag", False),
+        "warnings": conflict_result.get("warnings"),
     }
 
     # ── Unit economics ──
@@ -528,6 +532,20 @@ def _extract_pipeline_signals(state: dict[str, Any]) -> dict[str, Any]:
         "scenario_simulation": scenario_payload.get("scenario_simulation"),
     }
 
+    # ── Competitive benchmark ──
+    benchmark_envelope = state.get("benchmark_data")
+    benchmark_payload = payload_of(benchmark_envelope) or {}
+    if benchmark_payload:
+        signals["benchmark"] = {
+            "status": status_of(benchmark_envelope),
+            "confidence": confidence_of(benchmark_envelope),
+            "ranking": benchmark_payload.get("ranking"),
+            "composite": benchmark_payload.get("composite"),
+            "peer_selection": benchmark_payload.get("peer_selection"),
+            "market_position": benchmark_payload.get("market_position"),
+            "metric_comparison_specs": benchmark_payload.get("metric_comparison_specs"),
+        }
+
     # ── Pipeline status ──
     signals["pipeline_status"] = state.get("pipeline_status", "partial")
     signals["dataset_confidence"] = state.get("dataset_confidence")
@@ -544,6 +562,8 @@ def analyze(
     client_id: Optional[str] = Form(default=None),
     business_type: Optional[str] = Form(default=None),
     multi_entity_behavior: Optional[str] = Form(default=None),
+    competitors: Optional[str] = Form(default=None, description="Comma-separated competitor names for web-based benchmarking"),
+    self_analysis_only: Optional[bool] = Form(default=None, description="When true, force data-only self analysis and disable competitor benchmarking in synthesis."),
     model: Optional[str] = Form(default=None),
     db: Session = Depends(get_db),
     csv_service: CSVIngestionService = Depends(get_csv_ingestion_service),
@@ -562,6 +582,10 @@ def analyze(
     """
     model_name = str(model or "").strip()
     llm_model_override: str | None = model_name if model_name and model_name != "default" else None
+
+    # Initialise outside try so catch blocks can always reference them.
+    pipeline_signals: dict[str, Any] = {}
+    state: dict[str, Any] = {}
 
     try:
         # Step 1: Resolve business_type only (entity_name is never inferred from prompt).
@@ -829,6 +853,12 @@ def analyze(
             invoke_state["ingestion_warnings"] = ingestion_warnings
         if ingestion_provenance:
             invoke_state["ingestion_provenance"] = ingestion_provenance
+        if competitors:
+            invoke_state["competitors"] = [
+                name.strip() for name in competitors.split(",") if name.strip()
+            ]
+        if isinstance(self_analysis_only, bool):
+            invoke_state["self_analysis_only"] = self_analysis_only
 
         graph_timeout = float(os.getenv("GRAPH_INVOKE_TIMEOUT_SECONDS", "90"))
         try:
@@ -841,10 +871,15 @@ def analyze(
                 graph_timeout,
                 resolved_entity_name,
             )
-            return InsightOutput.failure(
+            result = InsightOutput.failure(
                 f"Analysis timed out after {int(graph_timeout)}s. "
                 "Try a smaller dataset or simpler query."
             ).model_dump()
+            # Try to extract any pipeline signals from partial state.
+            if state:
+                pipeline_signals = _extract_pipeline_signals(state)
+            result["pipeline_signals"] = pipeline_signals
+            return result
 
         integrity_payload = state.get("signal_integrity")
         if not isinstance(integrity_payload, dict):
@@ -868,13 +903,45 @@ def analyze(
         # Step 7: Extract and validate output
         final_response_json = state.get("final_response")
         if not isinstance(final_response_json, str):
-            raise ValueError("Pipeline did not produce final_response.")
+            # No final_response: synthesis may have been blocked or LLM failed.
+            # Return a structured failure but KEEP pipeline_signals so the
+            # frontend can still render charts, trends, and diagnostics.
+            failure_output = InsightOutput.failure(
+                "Pipeline did not produce final_response."
+            )
+            result = failure_output.model_dump()
+            result["pipeline_signals"] = pipeline_signals
+            envelope_diag = state.get("envelope_diagnostics")
+            if isinstance(envelope_diag, dict):
+                result["diagnostics"] = {
+                    "warnings": envelope_diag.get("warnings", []),
+                    "confidence_score": envelope_diag.get("confidence_score"),
+                    "missing_signal": envelope_diag.get("missing_signal", []),
+                    "confidence_adjustments": envelope_diag.get(
+                        "confidence_adjustments", []
+                    ),
+                }
+            return result
 
         payload = json.loads(final_response_json)
         output_model = InsightOutput.model_validate(payload)
 
         result = output_model.model_dump()
         result["pipeline_signals"] = pipeline_signals
+
+        # Step 8: Merge envelope_diagnostics into response (generated by
+        # synthesis_gate / llm_node but not part of InsightOutput schema).
+        envelope_diag = state.get("envelope_diagnostics")
+        if isinstance(envelope_diag, dict):
+            result["diagnostics"] = {
+                "warnings": envelope_diag.get("warnings", []),
+                "confidence_score": envelope_diag.get("confidence_score"),
+                "missing_signal": envelope_diag.get("missing_signal", []),
+                "confidence_adjustments": envelope_diag.get(
+                    "confidence_adjustments", []
+                ),
+            }
+
         return result
 
     except HTTPException:
@@ -883,7 +950,19 @@ def analyze(
         logger.exception("Analysis pipeline failed")
         failure_output = InsightOutput.failure(str(exc))
         result = failure_output.model_dump()
-        result["pipeline_signals"] = {}
+        # Preserve pipeline_signals extracted before the failure — they
+        # contain chart data (trends, growth, forecasts) the frontend needs.
+        result["pipeline_signals"] = pipeline_signals
+        envelope_diag = state.get("envelope_diagnostics")
+        if isinstance(envelope_diag, dict):
+            result["diagnostics"] = {
+                "warnings": envelope_diag.get("warnings", []),
+                "confidence_score": envelope_diag.get("confidence_score"),
+                "missing_signal": envelope_diag.get("missing_signal", []),
+                "confidence_adjustments": envelope_diag.get(
+                    "confidence_adjustments", []
+                ),
+            }
         return result
     except Exception as exc:
         logger.exception("Analysis pipeline unexpected error")
@@ -894,6 +973,5 @@ def analyze(
                 message=f"Pipeline error: {exc}",
             ),
         ) from exc
-
 
 

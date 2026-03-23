@@ -31,7 +31,10 @@ from app.services.statistics.survival_analysis import survival_from_retention_cu
 logger = logging.getLogger(__name__)
 
 # Confidence penalty applied when using synthetic cohort estimation.
-_SYNTHETIC_COHORT_PENALTY = -0.1
+# Synthetic cohorts are exponential-decay approximations from aggregate churn —
+# they carry no real cohort-level signal.  Penalty must be severe enough that
+# downstream consumers (risk, prioritization) treat this as a weak signal.
+_SYNTHETIC_COHORT_PENALTY = -0.4
 
 # Number of periods to project retention decay forward.
 _SYNTHETIC_RETENTION_PERIODS = 12

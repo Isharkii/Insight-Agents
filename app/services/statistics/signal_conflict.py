@@ -471,6 +471,37 @@ def detect_conflicts(
 
 # ── Confidence integration ───────────────────────────────────────────────────
 
+def build_uncertainty_summary(conflict_result: dict[str, Any]) -> dict[str, Any]:
+    """Build structured uncertainty explanation when conflicts are severe.
+
+    Called when ``total_severity > 1.0`` to produce a human-readable
+    conflict summary that replaces recommendations in uncertainty mode.
+    """
+    conflicts = conflict_result.get("conflicts", [])
+    affected_signals: set[str] = set()
+    for c in conflicts:
+        if isinstance(c, dict):
+            a = str(c.get("signal_a", "")).strip()
+            b = str(c.get("signal_b", "")).strip()
+            if a:
+                affected_signals.add(a)
+            if b:
+                affected_signals.add(b)
+
+    total_severity = float(conflict_result.get("total_severity", 0.0))
+    conflict_count = int(conflict_result.get("conflict_count", 0))
+
+    return {
+        "conflict_summary": (
+            f"{conflict_count} signal conflict(s) detected with total severity "
+            f"{total_severity:.2f}. Recommendations withheld until conflicts "
+            "are resolved or additional data is provided."
+        ),
+        "affected_signals": sorted(affected_signals),
+        "decision": "withheld",
+    }
+
+
 def apply_conflict_penalty(
     base_confidence: float,
     conflict_result: dict[str, Any],
@@ -496,11 +527,12 @@ def apply_conflict_penalty(
         conflict_count, uncertainty_flag
     """
     penalty = float(conflict_result.get("confidence_penalty", 0.0))
-    # Proportional penalty: reduce by a fraction of base_confidence rather
-    # than a flat subtraction.  This prevents conflicts from pushing
-    # moderate-confidence scores below the synthesis gate while still
-    # applying meaningful penalties at high confidence.
-    adjusted = max(floor, base_confidence * (1.0 - penalty))
+    # Additive penalty: subtract directly from base_confidence so that
+    # high-severity conflicts can push confidence below the synthesis
+    # gate (0.4).  The previous proportional model (base * (1 - penalty))
+    # could never reduce a 0.7 score below ~0.49 even with maximum
+    # conflicts, effectively making the conflict engine decorative.
+    adjusted = max(floor, base_confidence - penalty)
 
     reason = "no_conflicts"
     if penalty > 0:

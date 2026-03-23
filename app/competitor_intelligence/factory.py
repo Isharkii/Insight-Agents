@@ -62,7 +62,10 @@ def _build_extractor(config: CompetitorIntelligenceConfig) -> Extractor:
     api_key = os.getenv("COMP_INTEL_LLM_API_KEY", "").strip() or os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
         raise ValueError("COMP_INTEL_LLM_API_KEY or OPENAI_API_KEY is required for llm_structured extractor mode.")
-    model = str(os.getenv("COMP_INTEL_LLM_MODEL", "gpt-4o-mini") or "").strip() or "gpt-4o-mini"
+    model = (
+        str(os.getenv("COMP_INTEL_LLM_MODEL", "gpt-5.4") or "").strip()
+        or "gpt-5.4"
+    )
     client = AsyncOpenAIJsonClient(model=model, api_key=api_key)
     return LLMStructuredExtractor(
         llm_client=client,

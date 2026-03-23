@@ -92,3 +92,87 @@ def test_export_report_returns_insight_and_derived_signals(monkeypatch) -> None:
     assert payload["insight_payload"]["competitive_analysis"]["summary"] == "Synthetic competitor summary."
     assert "derived_signals" in payload
     assert "risk" in payload["derived_signals"]
+
+
+def test_export_report_forwards_competitors_to_graph(monkeypatch) -> None:
+    captured_state: dict[str, object] = {}
+
+    class _FakeGraph:
+        @staticmethod
+        def invoke(state):
+            captured_state.update(state)
+            return {
+                "final_response": json.dumps(
+                    {
+                        "competitive_analysis": {
+                            "summary": "Synthetic competitor summary.",
+                            "market_position": "Synthetic challenger market position.",
+                            "relative_performance": "Synthetic growth metric trails competitor benchmark.",
+                            "key_advantages": ["Synthetic ARPU advantage versus competitor median."],
+                            "key_vulnerabilities": ["Synthetic churn weakness versus competitor benchmark."],
+                            "confidence": 0.8,
+                        },
+                        "strategic_recommendations": {
+                            "immediate_actions": ["Address synthetic competitor churn gap immediately."],
+                            "mid_term_moves": ["Close synthetic growth gap versus competitor benchmark."],
+                            "defensive_strategies": ["Defend against synthetic competitor retention strength."],
+                            "offensive_strategies": ["Exploit synthetic competitor weakness in ARPU benchmark."],
+                        },
+                    }
+                ),
+            }
+
+    monkeypatch.setattr(bi_export_router, "insight_graph", _FakeGraph())
+    client = TestClient(_build_app())
+    response = client.get(
+        "/export/report",
+        params={
+            "entity_name": "acme",
+            "format": "json",
+            "competitors": "Slack, Notion, Asana",
+        },
+    )
+    assert response.status_code == 200
+    assert captured_state.get("competitors") == ["Slack", "Notion", "Asana"]
+
+
+def test_export_report_forwards_self_analysis_only_to_graph(monkeypatch) -> None:
+    captured_state: dict[str, object] = {}
+
+    class _FakeGraph:
+        @staticmethod
+        def invoke(state):
+            captured_state.update(state)
+            return {
+                "final_response": json.dumps(
+                    {
+                        "competitive_analysis": {
+                            "summary": "Synthetic self-analysis summary.",
+                            "market_position": "Synthetic growth market position.",
+                            "relative_performance": "Synthetic revenue and risk relative performance.",
+                            "key_advantages": ["Synthetic revenue advantage."],
+                            "key_vulnerabilities": ["Synthetic churn vulnerability."],
+                            "confidence": 0.8,
+                        },
+                        "strategic_recommendations": {
+                            "immediate_actions": ["Address synthetic risk."],
+                            "mid_term_moves": ["Improve synthetic growth."],
+                            "defensive_strategies": ["Defend synthetic retention."],
+                            "offensive_strategies": ["Pursue synthetic revenue opportunity."],
+                        },
+                    }
+                ),
+            }
+
+    monkeypatch.setattr(bi_export_router, "insight_graph", _FakeGraph())
+    client = TestClient(_build_app())
+    response = client.get(
+        "/export/report",
+        params={
+            "entity_name": "acme",
+            "format": "json",
+            "self_analysis_only": "true",
+        },
+    )
+    assert response.status_code == 200
+    assert captured_state.get("self_analysis_only") is True

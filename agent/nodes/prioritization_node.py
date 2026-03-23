@@ -14,6 +14,7 @@ from agent.helpers.confidence_model import (
     propagate_reasoning_strategy_confidence,
 )
 from agent.helpers.signal_snapshots import (
+    benchmark_signal_snapshot,
     cohort_signal_snapshot,
     growth_signal_snapshot,
     scenario_signal_snapshot,
@@ -21,7 +22,9 @@ from agent.helpers.signal_snapshots import (
     _safe_float as _snapshot_safe_float,
 )
 from agent.nodes.node_result import confidence_of, payload_of
+from agent.signal_integrity import UnifiedSignalIntegrity
 from agent.state import AgentState
+from app.services.statistics.signal_conflict import build_uncertainty_summary
 
 _SEVERITY_RANK: dict[str, int] = {
     "critical": 4,
@@ -199,6 +202,7 @@ def prioritization_node(state: AgentState) -> AgentState:
     growth_snapshot = _growth_signals(state)
     scenario_snapshot = _scenario_signals(state)
     conflict_snapshot = _signal_conflict_snapshot(state)
+    benchmark_snapshot = benchmark_signal_snapshot(state)
 
     risk_score = max(0.0, min(100.0, _safe_float(risk_data.get("risk_score"))))
     root_severity = _normalize_severity(root_cause.get("severity"))
@@ -208,6 +212,19 @@ def prioritization_node(state: AgentState) -> AgentState:
     growth_severity = _severity_from_growth(growth_snapshot)
     scenario_severity = _severity_from_scenario(scenario_snapshot)
 
+    # Derive conflict-based severity: unresolved signal conflicts
+    # represent contradictory intelligence and must escalate priority.
+    _conflict_count = int(conflict_snapshot.get("conflict_count") or 0)
+    _conflict_uncertainty = bool(conflict_snapshot.get("uncertainty_flag", False))
+    if _conflict_uncertainty or _conflict_count >= 3:
+        conflict_severity = "critical"
+    elif _conflict_count >= 2:
+        conflict_severity = "high"
+    elif _conflict_count >= 1:
+        conflict_severity = "moderate"
+    else:
+        conflict_severity = "low"
+
     severities = [
         root_severity,
         risk_severity,
@@ -215,6 +232,7 @@ def prioritization_node(state: AgentState) -> AgentState:
         cohort_severity,
         growth_severity,
         scenario_severity,
+        conflict_severity,
     ]
     top_severity = max(severities, key=lambda level: _SEVERITY_RANK[level])
 
@@ -228,20 +246,93 @@ def prioritization_node(state: AgentState) -> AgentState:
         ),
     )
 
-    recommended_focus = (
-        _to_focus_text(ranked[0])
-        if ranked
-        else (
-            _cohort_focus_text(cohort_snapshot)
-            or _growth_focus_text(growth_snapshot)
-            or _scenario_focus_text(scenario_snapshot)
-            or f"monitor overall business risk ({int(round(risk_score))})"
-        )
+    # ── Insight quality classification ─────────────────────────────
+    # Determines whether recommendations should be produced.
+    # partial_insight (< 3 valid layers) → strip recommendations
+    try:
+        _integrity = UnifiedSignalIntegrity.compute(state)
+        _insight_quality = str(_integrity.get("insight_quality", "full_insight"))
+        _layer_classification = _integrity.get("layer_classification", {})
+    except Exception:
+        _insight_quality = "full_insight"
+        _layer_classification = {}
+
+    # ── Uncertainty mode ────────────────────────────────────────────
+    # Uncertainty mode mirrors synthesis hard-gating semantics:
+    #   - high-severity conflict present + cumulative severity > 1.0, OR
+    #   - 3+ conflicts regardless of individual severity.
+    # This avoids withholding recommendations for moderate two-conflict
+    # cases where signals are noisy but still actionable.
+    _total_severity = _safe_float(conflict_snapshot.get("total_severity"))
+    uncertainty_mode = (
+        (_conflict_uncertainty and _total_severity > 1.0)
+        or _conflict_count >= 3
     )
-    if conflict_snapshot["conflict_count"] > 0:
+
+    if _insight_quality == "partial_insight":
         recommended_focus = (
-            f"{recommended_focus}; resolve conflicting signals before executing strategy"
+            "partial insight — insufficient analytical layers for "
+            "recommendations; additional data sources required"
         )
+        # Downgrade priority to low — cannot justify high priority
+        # from incomplete signal coverage
+        top_severity = "low"
+    elif uncertainty_mode:
+        recommended_focus = (
+            "conflicting signals detected — recommendations withheld "
+            "pending resolution; require additional data or resolution"
+        )
+    else:
+        recommended_focus = (
+            _to_focus_text(ranked[0])
+            if ranked
+            else (
+                _cohort_focus_text(cohort_snapshot)
+                or _growth_focus_text(growth_snapshot)
+                or _scenario_focus_text(scenario_snapshot)
+                or f"monitor overall business risk ({int(round(risk_score))})"
+            )
+        )
+        if conflict_snapshot["conflict_count"] > 0:
+            recommended_focus = (
+                f"{recommended_focus}; resolve conflicting signals before executing strategy"
+            )
+
+    # ── Benchmark-informed recommendations ────────────────────────
+    # When benchmark data is available, identify weakest/strongest
+    # metrics relative to peers and generate specific actions.
+    benchmark_recommendations: list[str] = []
+    if (
+        benchmark_snapshot.get("status") in ("success", "partial")
+        and _insight_quality != "partial_insight"
+        and not uncertainty_mode
+    ):
+        weakest = benchmark_snapshot.get("weakest_metrics") or []
+        strongest = benchmark_snapshot.get("strongest_metrics") or []
+        position = benchmark_snapshot.get("market_position")
+
+        for weak in weakest[:2]:
+            metric = str(weak.get("metric", "")).replace("_", " ")
+            pct = weak.get("percentile", 0)
+            benchmark_recommendations.append(
+                f"improve {metric} (peer percentile: {pct:.0f}%)"
+            )
+
+        for strong in strongest[:1]:
+            metric = str(strong.get("metric", "")).replace("_", " ")
+            pct = strong.get("percentile", 100)
+            benchmark_recommendations.append(
+                f"leverage {metric} advantage (peer percentile: {pct:.0f}%)"
+            )
+
+        if position == "Declining":
+            benchmark_recommendations.append(
+                "address declining market position relative to peers"
+            )
+        elif position == "Challenger":
+            benchmark_recommendations.append(
+                "sustain growth momentum to close gap with market leaders"
+            )
 
     reasoning_confidence_input = _safe_float(
         risk_data.get("reasoning_confidence_score")
@@ -290,9 +381,33 @@ def prioritization_node(state: AgentState) -> AgentState:
         ),
     )
 
+    # Build conflict summary for uncertainty mode
+    _conflict_summary = None
+    if uncertainty_mode:
+        _raw_conflict = conflict_snapshot.get("_raw_conflict_result")
+        if isinstance(_raw_conflict, dict):
+            _conflict_summary = build_uncertainty_summary(_raw_conflict)
+        else:
+            _conflict_summary = {
+                "conflict_summary": (
+                    f"{_conflict_count} signal conflict(s) with severity "
+                    f"{_total_severity:.2f}. Recommendations withheld."
+                ),
+                "affected_signals": [],
+                "decision": "withheld",
+            }
+
     prioritization = {
         "priority_level": top_severity,
         "recommended_focus": recommended_focus,
+        "insight_quality": _insight_quality,
+        "layer_classification": _layer_classification,
+        "uncertainty_mode": uncertainty_mode,
+        "decision": (
+            "withheld" if uncertainty_mode or _insight_quality == "partial_insight"
+            else "active"
+        ),
+        "conflict_summary": _conflict_summary,
         "reasoning_confidence_score": propagation["reasoning_confidence"],
         "confidence_score": propagation["strategy_confidence"],
         "confidence_breakdown": strategy_model,
@@ -319,6 +434,12 @@ def prioritization_node(state: AgentState) -> AgentState:
         "signal_conflict_confidence_penalty": conflict_snapshot.get("confidence_penalty"),
         "strategy_uncertainty_flag": conflict_snapshot.get("uncertainty_flag"),
         "signal_conflict_warnings": conflict_snapshot.get("warnings"),
+        "benchmark_used": benchmark_snapshot.get("status") in ("success", "partial"),
+        "benchmark_market_position": benchmark_snapshot.get("market_position"),
+        "benchmark_overall_score": benchmark_snapshot.get("overall_score"),
+        "benchmark_weakest_metrics": benchmark_snapshot.get("weakest_metrics", []),
+        "benchmark_strongest_metrics": benchmark_snapshot.get("strongest_metrics", []),
+        "benchmark_recommendations": benchmark_recommendations,
     }
 
     return {"prioritization": prioritization}

@@ -79,9 +79,8 @@ def build_graph():
     graph.add_conditional_edges(
         "synthesis_gate",
         route_after_synthesis_gate,
-        {"competitor_intelligence": "competitor_intelligence", "end": END},
+        {"llm": "llm", "end": END},
     )
-    graph.add_edge("competitor_intelligence", "llm")
     graph.add_edge("llm", END)
     return graph.compile()
 

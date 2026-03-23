@@ -23,8 +23,7 @@ const MULTI_ENTITY_OPTIONS = [
 
 const MODEL_OPTIONS = [
   { value: "default", label: "Default" },
-  { value: "gpt-4o-mini", label: "GPT-4o Mini" },
-  { value: "gpt-4o", label: "GPT-4o" },
+  { value: "gpt-5.4", label: "GPT-5.4" },
 ];
 
 export interface SidebarState {

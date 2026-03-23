@@ -1,0 +1,897 @@
+================================================================================
+INSIGHT AGENT — CHANGELOG
+================================================================================
+Date: 2026-03-23
+
+--------------------------------------------------------------------------------
+1. CRITICAL BUG FIX: benchmark_data missing from AgentStatePatchModel
+--------------------------------------------------------------------------------
+File: agent/state_models.py
+
+Problem:
+  The benchmark_node was added to the graph but `benchmark_data` was never
+  declared in AgentStatePatchModel or AgentStateModel (both use extra="forbid").
+  Once the benchmark node populated state with `benchmark_data`, EVERY
+  downstream node that validates input against AgentStatePatchModel failed
+  contract validation — including synthesis_gate. The observability wrapper
+  degraded synthesis_gate, returning {} instead of running it, so
+  `final_response` was never set. The frontend showed:
+    "Pipeline did not produce final_response."
+
+Fix:
+  Added `benchmark_data: NodeEnvelope[dict[str, Any]] | None = None` to both
+  AgentStateModel and AgentStatePatchModel.
+
+Impact:
+  This was the root cause of synthesis always appearing "blocked" even when
+  data was valid. All downstream nodes (risk, prioritization, pipeline_status,
+  signal_enrichment, synthesis_gate) were silently degrading.
+
+--------------------------------------------------------------------------------
+2. HARD GATING MECHANISM (Gates 5-8)
+--------------------------------------------------------------------------------
+File: agent/nodes/synthesis_gate.py
+
+Added `pre_synthesis_audit(state)` — a unit-testable function that enforces
+minimum data requirements BEFORE synthesis is allowed.
+
+Gate 5: Data Depth
+  - If KPI time-series depth < 3 data points -> block output
+  - Prevents insights from statistically meaningless samples
+
+Gate 6: Analytical Layer Count (softened by Section 7)
+  - If valid scoring layers == 0 -> hard block (no usable signal at all)
+  - If valid scoring layers 1-2 -> partial_insight (synthesis allowed, degraded)
+  - If valid scoring layers >= 3 -> full_insight
+
+Gate 7: KPI Coverage
+  - If KPI metric coverage < 50% of expected metrics -> block output
+  - Prevents insights built on incomplete metric sets
+
+Gate 8: Forecast + Alternatives (softened by Section 7)
+  - If forecast is unusable AND zero valid layers -> block
+  - If forecast is unusable BUT 1+ valid layers exist -> partial_insight (not block)
+
+Return structure when blocked:
+  {
+    "status": "blocked",
+    "reason": "depth=2; valid_layers=1",
+    "missing_requirements": [
+      "insufficient data depth (2 < 3 required)",
+      "insufficient analytical layers (1 < 3 required)"
+    ],
+    "uncertainty_mode": false,
+    "conflict_summary": null,
+    "audit_details": {
+      "kpi_depth": 2,
+      "valid_layer_count": 1,
+      "kpi_coverage_ratio": 0.25,
+      "forecast_usable": false,
+      "overall_confidence": 0.15
+    }
+  }
+
+Integration:
+  - `should_block_synthesis()` calls `pre_synthesis_audit()` as Gates 5-8
+    (after existing Gates 1-4)
+  - `build_blocked_response()` includes `missing_requirements` in the
+    failure reason text
+  - `synthesis_gate_node()` includes `missing_requirements`,
+    `uncertainty_mode`, and `conflict_summary` in envelope_diagnostics
+
+Constants added:
+  _MIN_DEPTH = 3
+  _MIN_VALID_LAYERS = 3
+  _MIN_KPI_COVERAGE = 0.5
+
+--------------------------------------------------------------------------------
+3. UNCERTAINTY MODE (Conflict Severity Gating)
+--------------------------------------------------------------------------------
+Files: app/services/statistics/signal_conflict.py
+       agent/nodes/prioritization_node.py
+       agent/helpers/signal_snapshots.py
+
+Problem:
+  The system detected signal conflicts (e.g., revenue down but forecast up)
+  but still produced confident recommendations. High-severity conflicts
+  did not suppress actionable advice.
+
+Solution:
+  When total_conflict_severity > 1.0, the system enters "uncertainty_mode":
+
+  a) signal_conflict.py — Added `build_uncertainty_summary()`:
+     Returns structured explanation:
+     {
+       "conflict_summary": "2 signal conflict(s) detected with total
+                            severity 1.60. Recommendations withheld...",
+       "affected_signals": ["churn_delta", "revenue_growth_delta"],
+       "decision": "withheld"
+     }
+
+  b) prioritization_node.py — Uncertainty mode handling:
+     - Detects uncertainty_mode when total_severity > 1.0
+     - Replaces recommended_focus with:
+       "conflicting signals detected - recommendations withheld
+        pending resolution; require additional data or resolution"
+     - Adds to output:
+       "uncertainty_mode": true,
+       "decision": "withheld",
+       "conflict_summary": { ... }
+
+  c) signal_snapshots.py — Added `_raw_conflict_result` to snapshot:
+     Passes the full conflict_result dict through so
+     build_uncertainty_summary() can extract affected signal names.
+
+Downstream respect:
+  - Prioritization: no actionable recommendations in uncertainty_mode
+  - Synthesis gate: uncertainty_mode surfaced in envelope_diagnostics
+  - Risk scoring: conflict penalty already applied (additive, from prior fix)
+
+--------------------------------------------------------------------------------
+4. ISOLATION ENFORCEMENT (Forecast Signal Filtering)
+--------------------------------------------------------------------------------
+Files: agent/nodes/signal_conflict_node.py
+       agent/nodes/risk_node.py
+
+Problem:
+  Forecast layer correctly marked as gate_status="isolate" (due to low R²)
+  but its signals (slope, deviation, etc.) still influenced:
+    - conflict detection (producing spurious conflicts)
+    - risk scoring (inflating/deflating risk based on unreliable forecast)
+    - prioritization (via cascading conflict/risk data)
+
+Solution:
+  Added strict isolation enforcement at two downstream consumption points:
+
+  a) signal_conflict_node.py:
+     - At the start of _collect_global_signals(), computes layer integrity
+     - Identifies isolated layers via integrity["isolated_layers"]
+     - If "forecast" is isolated: skips ALL forecast signal extraction
+       (slope, deviation_percentage, forecast_r_squared, forecast_confidence)
+     - Adds warning: "forecast signals excluded from conflict detection:
+       layer isolated"
+     - Logs isolation enforcement for debugging
+     - Records isolated_layers in metadata
+
+  b) risk_node.py:
+     - Moved integrity computation to early in the node (before forecast
+       signal extraction) instead of late (after risk scoring)
+     - Checks if "forecast" is in isolated_layers
+     - If isolated: treats forecast as unavailable — falls through to
+       growth/cohort/scenario proxy path
+     - Logs: "Forecast layer isolated - excluding forecast signals from
+       risk scoring"
+     - Reuses early integrity computation later (no duplicate compute)
+
+  Import added:
+     signal_conflict_node.py now imports UnifiedSignalIntegrity
+
+--------------------------------------------------------------------------------
+5. CONFIDENCE SCORING REDESIGN
+--------------------------------------------------------------------------------
+File: agent/signal_integrity.py
+
+Problem:
+  Final confidence scores were inflated (e.g., ~0.64) even when:
+    - model confidence = 0
+    - forecast unusable
+    - missing signals
+    - degraded layers
+  The old system had no caps — a single healthy layer could produce
+  misleadingly high confidence.
+
+Solution:
+  Added monotonic confidence caps after the authority-weighted scoring.
+  More missing/degraded signals -> strictly lower confidence (never inflated).
+
+  Caps applied sequentially (most restrictive wins):
+
+  Cap 1: KPI layer degraded -> confidence <= 0.35
+    - Critical layer weakness must be reflected in score
+
+  Cap 2: Forecast unusable (isolated or blocked) -> confidence <= 0.30
+    - Cannot claim high confidence without predictive signal
+
+  Cap 3: Insufficient analytical layers (< 3 valid) -> confidence <= 0.25
+    - Single-dimensional analysis cannot support strong conclusions
+
+  Transparent breakdown added to compute() return:
+  {
+    "confidence_breakdown": {
+      "base": 0.64,          // score before caps
+      "penalties": {
+        "kpi_penalty_applied": false,
+        "caps_applied": [
+          {"cap": "insufficient_layers", "limit": 0.25, "valid_layers": 1}
+        ]
+      },
+      "final": 0.25           // score after all caps
+    }
+  }
+
+  Convenience fields added to compute() return:
+    "kpi_depth": int           // time-series data points
+    "kpi_coverage_ratio": float // fraction of expected metrics present
+    "valid_layer_count": int    // number of scoring layers
+    "forecast_usable": bool     // forecast layer pass or degrade (not isolated/blocked)
+
+  Caps generate reasoning_warnings for auditability:
+    "Only 1 valid layer(s): confidence capped at 0.25"
+    "Forecast unusable (isolate): confidence capped at 0.3"
+    "KPI layer degraded: confidence capped at 0.35"
+
+  Guarantees:
+    - Monotonic: more missing -> lower score (caps only reduce, never increase)
+    - base >= final (invariant)
+    - No arbitrary boosts
+    - Breakdown always present for transparency
+
+--------------------------------------------------------------------------------
+6. TESTS
+--------------------------------------------------------------------------------
+File: tests/test_hard_gating.py (NEW — 19 tests)
+
+TestPreSynthesisAudit (8 tests):
+  - test_healthy_state_passes
+  - test_insufficient_depth_blocks
+  - test_insufficient_layers_blocks
+  - test_incomplete_kpi_coverage_blocks
+  - test_forecast_unusable_with_alternatives_degrades
+  - test_forecast_unusable_without_alternatives_blocks
+  - test_high_conflict_severity_triggers_uncertainty_mode
+  - test_low_conflict_severity_no_uncertainty
+
+TestShouldBlockSynthesis (3 tests):
+  - test_healthy_state_not_blocked
+  - test_pipeline_failed_blocks
+  - test_depth_gate_blocks
+
+TestConfidenceCaps (5 tests):
+  - test_insufficient_layers_caps_at_025
+  - test_forecast_unusable_caps_at_030
+  - test_healthy_state_no_caps
+  - test_breakdown_base_gte_final
+  - test_convenience_fields_present
+
+TestBuildUncertaintySummary (2 tests):
+  - test_produces_structured_output
+  - test_empty_conflicts
+
+TestIsolationEnforcement (1 test):
+  - test_isolated_forecast_excluded_from_integrity_scoring
+
+Updated existing tests:
+  - tests/test_partial_success_paths.py:
+    Updated expected confidence from 0.333 to 0.25 (insufficient_layers cap)
+  - tests/test_signal_conflict_node.py:
+    Updated to verify uncertainty_mode=true and decision="withheld"
+    instead of old "resolve conflicting signals" text
+
+Total: 655 tests passing (636 existing + 19 new)
+
+--------------------------------------------------------------------------------
+7. MULTI-LAYER REASONING INTEGRITY (Insight Quality Classification)
+--------------------------------------------------------------------------------
+Files: agent/signal_integrity.py
+       agent/nodes/synthesis_gate.py
+       agent/nodes/prioritization_node.py
+
+Problem:
+  The system had only two output modes: "allowed" or "blocked".  States with
+  1-2 valid analytical layers were either silently passed through (producing
+  overconfident insights) or hard-blocked (producing no output at all).
+
+Solution:
+  Added three-state insight quality classification:
+
+  a) signal_integrity.py — insight_quality field in compute():
+     - full_insight  (3+ valid layers): full recommendations allowed
+     - partial_insight (1-2 valid layers): synthesis allowed but degraded
+     - blocked (0 valid layers or KPI hard-failed): synthesis blocked
+
+     Added layer_classification dict:
+       Each of 5 layers (kpi, forecast, competitive, cohort, segmentation)
+       classified as: valid | degraded | isolated | missing | inactive
+
+  b) synthesis_gate.py — Gate 6 softened:
+     - Old: valid_layer_count < 3 → hard block
+     - New: valid_layer_count == 0 → hard block; 1-2 → partial_insight (degraded)
+
+     Gate 8 softened:
+     - Old: forecast_unusable AND valid_layers < 3 → block
+     - New: forecast_unusable AND valid_layers == 0 → block
+     - 1-2 valid layers with unusable forecast → partial_insight
+
+     Gate 3 made insight_quality-aware:
+     - partial_insight states bypass the confidence threshold check (0.4)
+       since their confidence is already capped at 0.25 by design
+
+  c) prioritization_node.py — partial_insight handling:
+     - If insight_quality == "partial_insight":
+       → recommended_focus replaced with:
+         "partial insight — insufficient analytical layers for
+          recommendations; additional data sources required"
+       → priority_level forced to "low"
+       → decision set to "withheld"
+     - Added insight_quality and layer_classification to output dict
+
+--------------------------------------------------------------------------------
+8. MISSING SIGNAL DETECTION
+--------------------------------------------------------------------------------
+File: agent/signal_integrity.py
+
+Problem:
+  Missing required signals were silently defaulting to zero values.  No
+  structured report existed to tell downstream consumers which signals were
+  absent, whether they were required or optional, and what impact their
+  absence had on confidence.
+
+Solution:
+  Added _detect_missing_signals() classmethod to UnifiedSignalIntegrity:
+
+  a) Structured missing signal report:
+     {
+       "missing_signals": [
+         {
+           "signal": "risk",
+           "state_key": "risk_data",
+           "classification": "required",
+           "status": "missing",
+           "impact": "confidence penalty"
+         },
+         {
+           "signal": "forecast",
+           "state_key": "forecast_data",
+           "classification": "optional",
+           "status": "missing",
+           "impact": "reduced coverage"
+         }
+       ],
+       "required_missing_count": 1,
+       "optional_missing_count": 1,
+       "actions_taken": [
+         "required signal 'risk' missing: confidence penalised",
+         "optional signal 'forecast' missing: coverage reduced"
+       ]
+     }
+
+  b) Signal classification:
+     Uses graph_config.py's GraphNodeConfig to classify each signal as
+     "required" or "optional" based on business type.
+
+  c) Confidence penalty for missing required signals:
+     Multiplicative penalty: factor = max(0.50, 1.0 - 0.15 * count)
+     - 1 missing → 0.85x
+     - 2 missing → 0.70x
+     - 3+ missing → 0.50x (floor)
+     Multiplicative avoids zeroing already-low scores from other caps.
+     Penalty recorded in caps_applied and reasoning_warnings.
+
+  d) Detection coverage:
+     - Checks all required + optional state keys from GraphNodeConfig
+     - Detects missing (None), failed, and skipped signals
+     - Cross-checks against layer-level availability from integrity model
+     - No silent defaults — every missing signal explicitly reported
+
+  e) Integration:
+     - missing_signal_report added to compute() return dict
+     - Surfaced in synthesis_gate_node() envelope_diagnostics
+     - Penalty applied after confidence caps (stacks correctly)
+
+--------------------------------------------------------------------------------
+9. TESTS (UPDATED)
+--------------------------------------------------------------------------------
+File: tests/test_hard_gating.py
+
+New test classes added:
+
+TestInsightQuality (8 tests):
+  - test_full_insight_with_3_layers
+  - test_partial_insight_with_1_layer
+  - test_partial_insight_with_2_layers
+  - test_blocked_with_zero_layers
+  - test_layer_classification_keys
+  - test_layer_classification_isolated
+  - test_partial_insight_not_blocked_by_should_block
+  - test_audit_insight_quality_field
+
+TestMissingSignalDetection (7 tests):
+  - test_healthy_state_no_missing_signals
+  - test_missing_required_signal_detected
+  - test_missing_optional_signal_detected
+  - test_failed_required_signal_detected
+  - test_missing_required_penalises_confidence
+  - test_report_structure
+  - test_missing_signal_does_not_silently_default_to_zero
+
+New tests replacing original gate logic:
+  - test_insufficient_layers_partial_insight
+    (Gate 6 softened: 1 valid layer = degraded, not blocked)
+  - test_forecast_unusable_without_alternatives_degrades_to_partial
+    (Gate 8 softened: 1 valid layer + forecast unusable = partial, not blocked)
+
+Total: 671 tests passing (636 existing + 35 new)
+
+--------------------------------------------------------------------------------
+FILES MODIFIED
+--------------------------------------------------------------------------------
+10. STRICT SPEC COMPLIANCE ENFORCEMENT
+--------------------------------------------------------------------------------
+Files: agent/nodes/synthesis_gate.py
+       agent/nodes/llm_node.py
+       agent/signal_integrity.py
+       agent/state.py
+       agent/state_models.py
+
+Problem:
+  a) Blocked output did not match spec format (missing pipeline_status,
+     block_reasons, eligible_for_llm fields).
+  b) partial_insight mode: LLM still generated recommendations (only
+     tagged "Conditional:" when confidence < 0.5 — not nulled).
+  c) uncertainty_mode: LLM still generated recommendations when
+     synthesis was allowed through.
+  d) No centralized layer filter — isolation enforced ad-hoc in each
+     consuming node.
+
+Solution:
+
+  a) synthesis_gate.py — Spec-compliant blocked output:
+     When blocked, output now includes:
+       "pipeline_status": "blocked",
+       "eligible_for_llm": false,
+       "block_reasons": ["pipeline_status == failed", "insufficient data depth (2 < 3)"],
+     When passed:
+       "eligible_for_llm": true
+
+  b) llm_node.py — partial_insight guard:
+     When insight_quality == "partial_insight":
+       - All 4 recommendation sections replaced with:
+         "Recommendations withheld: insufficient analytical layers"
+       - Conditional: prefix forced on all remaining text
+       - Tone forced to conditional regardless of confidence
+
+  c) llm_node.py — uncertainty_mode guard:
+     When uncertainty_mode == true:
+       - All 4 recommendation sections replaced with:
+         "Recommendations withheld: conflicting signals detected"
+       - Conditional: prefix forced
+       - These guards run BEFORE _ensure_conditional_recommendations()
+         so no downstream function can re-inject recommendations
+
+  d) signal_integrity.py — Centralized layer filter:
+     Added filter_layers_for_downstream() classmethod:
+       Returns:
+         eligible_layers: layers safe for downstream use (pass + optionally degraded)
+         isolated_layers: layers that MUST be excluded
+         degraded_layers: layers with reduced authority
+         warnings: filtering actions taken
+       Parameter allow_degraded (default True) controls whether degraded
+       layers are included.
+
+  e) state.py + state_models.py — New state fields:
+     Added eligible_for_llm (bool) and block_reasons (list[str]) to
+     AgentState, AgentStateModel, and AgentStatePatchModel.
+
+Spec Coverage Proof (all 7 block conditions):
+  1. pipeline_status == "failed"          → Gate 1 (line 208)
+  2. required signal missing/failed       → Gate 2 (line 212)
+  3. KPI depth < 3                        → Gate 5 (line 123)
+  4. KPI coverage < 50%                   → Gate 7 (line 140)
+  5. 0 valid layers                       → Gate 6 (line 133)
+  6. forecast unusable + 0 layers         → Gate 8 (line 149)
+  7. confidence < 0.40 (non-partial)      → Gate 3 (line 224)
+  8. severity >= 1.0 + uncertainty_flag   → Gate 4 (line 229)
+
+--------------------------------------------------------------------------------
+11. TESTS (UPDATED)
+--------------------------------------------------------------------------------
+File: tests/test_hard_gating.py
+
+New test classes added:
+
+TestBlockedOutputFormat (5 tests):
+  - test_blocked_state_has_spec_fields
+  - test_blocked_reasons_include_pipeline_failed
+  - test_blocked_reasons_include_depth
+  - test_passed_state_has_eligible_for_llm
+  - test_all_seven_block_conditions_enforced
+
+TestCentralizedLayerFilter (3 tests):
+  - test_healthy_state_all_eligible
+  - test_isolated_forecast_excluded
+  - test_degraded_excluded_when_not_allowed
+
+Total: 679 tests passing (636 existing + 43 new in test_hard_gating.py)
+
+--------------------------------------------------------------------------------
+FILES MODIFIED
+--------------------------------------------------------------------------------
+agent/state_models.py                          — Added benchmark_data, eligible_for_llm,
+                                                 block_reasons fields
+agent/state.py                                 — Added eligible_for_llm, block_reasons fields
+agent/signal_integrity.py                      — Confidence caps, breakdown, convenience fields,
+                                                 insight_quality, layer_classification,
+                                                 missing signal detection, confidence penalty,
+                                                 centralized filter_layers_for_downstream()
+agent/nodes/synthesis_gate.py                  — pre_synthesis_audit(), Gates 5-8 (softened),
+                                                 uncertainty_mode, insight_quality-aware Gate 3,
+                                                 spec-compliant blocked output format,
+                                                 missing_signal_report in diagnostics
+agent/nodes/llm_node.py                        — partial_insight + uncertainty_mode guards:
+                                                 null recommendations, force conditional tone
+agent/nodes/signal_conflict_node.py            — Isolation enforcement for forecast signals
+agent/nodes/risk_node.py                       — Isolation enforcement, early integrity computation
+agent/nodes/prioritization_node.py             — Uncertainty mode + insight_quality handling
+agent/helpers/signal_snapshots.py              — Added _raw_conflict_result to snapshot
+app/services/statistics/signal_conflict.py     — build_uncertainty_summary()
+tests/test_hard_gating.py                      — NEW: 60 unit tests (hard gating, caps,
+                                                 uncertainty, isolation, insight quality,
+                                                 missing signal detection, spec compliance,
+                                                 centralized layer filter)
+tests/test_partial_success_paths.py            — Updated expected confidence value
+tests/test_signal_conflict_node.py             — Updated for uncertainty_mode assertions
+
+
+--------------------------------------------------------------------------------
+12. FINAL CONFIDENCE CAP ENFORCEMENT WITH TRACE
+--------------------------------------------------------------------------------
+Files: agent/signal_integrity.py, agent/nodes/llm_node.py
+
+Problem:
+  Confidence caps existed in signal_integrity.py but no FINAL safety-net
+  enforcement ran after all downstream adjustments (external_fetch penalty,
+  conflict penalty).  No guarantee that caps couldn't be exceeded by late
+  modifications.  Trace format didn't match spec.
+
+Changes:
+  a) Added enforce_final_confidence_caps() classmethod to UnifiedSignalIntegrity
+     — Re-applies all 3 caps (kpi_degraded ≤0.35, forecast_unusable ≤0.30,
+       insufficient_layers ≤0.25) as a last-pass safety net
+     — Returns spec-format trace: {raw_confidence, applied_caps, final_confidence}
+
+  b) Integrated into llm_node AFTER all other confidence adjustments
+     — Called as the very last step before producing final_response
+     — If caps fire, updates both the payload confidence and diagnostics
+     — Logs warning when enforcement adjusts confidence
+
+  c) Constants extracted to class-level for testability:
+     _CAP_KPI_DEGRADED = 0.35, _CAP_FORECAST_UNUSABLE = 0.30,
+     _CAP_INSUFFICIENT_LAYERS = 0.25
+
+Contract:
+  No downstream module may modify confidence after enforce_final_confidence_caps.
+
+
+--------------------------------------------------------------------------------
+13. KPI COVERAGE VALIDATION MODULE
+--------------------------------------------------------------------------------
+Files: agent/signal_integrity.py, agent/nodes/synthesis_gate.py
+
+Problem:
+  KPI coverage ratio was computed internally but not surfaced as a structured
+  validation report.  No explicit coverage validation module existed.
+
+Changes:
+  a) Added validate_kpi_coverage() classmethod to UnifiedSignalIntegrity
+     — Computes: coverage_ratio = available_metrics / expected_metrics
+     — Resolves expected/available metric NAMES (not just counts)
+     — Returns structured report:
+       {coverage_ratio, expected_metrics, available_metrics, missing_metrics,
+        sufficient, impact}
+     — When coverage_ratio < 0.5: sufficient=False, impact="insufficient KPI reliability"
+
+  b) Integrated into compute() return dict as "kpi_coverage_report"
+
+  c) Surfaced in synthesis_gate blocked diagnostics output
+
+Integration with gating:
+  Gate 7 in synthesis_gate already blocks when kpi_coverage < 0.5
+  (line 140-145, _MIN_KPI_COVERAGE = 0.5).  The new module provides the
+  structured report that Gate 7's block reason references.
+
+
+--------------------------------------------------------------------------------
+14. BENCHMARK-BASED RECOMMENDATION LOGIC
+--------------------------------------------------------------------------------
+Files: agent/helpers/signal_snapshots.py, agent/nodes/prioritization_node.py
+
+Problem:
+  Prioritization node generated recommendations from risk/root-cause data
+  but did not use benchmark intelligence.  Recommendations were generic
+  rather than peer-referenced.
+
+Changes:
+  a) Added benchmark_signal_snapshot() to signal_snapshots.py
+     — Extracts composite scores, market position, peer count
+     — Identifies weakest metrics (percentile < 40%) and strongest (>= 60%)
+       from metric-level rankings
+     — Returns structured snapshot for prioritization consumption
+
+  b) Integrated into prioritization_node:
+     — Generates benchmark_recommendations[] with peer-referenced actions:
+       * "improve {metric} (peer percentile: X%)" for weakest metrics
+       * "leverage {metric} advantage (peer percentile: X%)" for strongest
+       * Position-specific: "address declining position" / "sustain growth momentum"
+     — Recommendations withheld in uncertainty_mode or partial_insight
+     — Added to output: benchmark_used, benchmark_market_position,
+       benchmark_overall_score, benchmark_weakest_metrics,
+       benchmark_strongest_metrics, benchmark_recommendations
+
+
+--------------------------------------------------------------------------------
+15. UPDATED TEST COUNTS
+--------------------------------------------------------------------------------
+Total tests: 696 (up from 679)
+
+New tests added to tests/test_hard_gating.py (60 total, up from 43):
+
+  TestFinalConfidenceCaps (7 tests):
+    - test_no_caps_when_healthy
+    - test_kpi_degraded_cap
+    - test_forecast_unusable_cap
+    - test_insufficient_layers_cap
+    - test_multiple_caps_most_restrictive_wins
+    - test_already_below_cap_no_change
+    - test_trace_format_matches_spec
+
+  TestKPICoverageValidation (6 tests):
+    - test_full_coverage_sufficient
+    - test_below_50_pct_blocks
+    - test_exactly_50_pct_passes
+    - test_no_kpi_data_zero_coverage
+    - test_coverage_report_in_integrity_compute
+    - test_coverage_blocks_synthesis
+
+  TestBenchmarkRecommendations (4 tests):
+    - test_benchmark_snapshot_missing
+    - test_benchmark_snapshot_extracts_position
+    - test_prioritization_includes_benchmark_recommendations
+    - test_benchmark_recommendations_withheld_in_uncertainty
+
+
+--------------------------------------------------------------------------------
+16. BENCHMARK-TO-LLM CONNECTIVITY FIX
+--------------------------------------------------------------------------------
+Files: agent/nodes/llm_node.py
+       llm_synthesis/prompt_builder.py
+       agent/nodes/synthesis_gate.py
+
+Problem:
+  benchmark_data (deterministic rankings, composite scores, market position
+  from benchmark_node) was never passed to the LLM prompt.  The LLM only
+  received numeric_signals from competitive_context (populated by
+  role_analytics_node / competitor_node) — a separate, decoupled data stream.
+  This meant deterministic benchmark intelligence was invisible to synthesis.
+
+  Additionally, benchmark_data could succeed while competitive_context remained
+  unavailable (decoupled streams), causing the LLM to run in self-analysis
+  mode despite valid peer data being available.
+
+Solution:
+
+  a) llm_node.py — Extract benchmark_data directly:
+     - Reads benchmark_data envelope, extracts composite, market_position,
+       ranking, and peer_selection from payload
+     - Builds benchmark_intelligence dict with composite_scores,
+       market_position, ranking, peer_count, source
+     - When benchmark_data has 2+ peers but competitive_context is
+       unavailable, bridges to competitor mode (sets has_competitors=True,
+       self_analysis_mode=False) with warning log
+     - Passes benchmark_intelligence to prompt builder
+
+  b) prompt_builder.py — New benchmark_intelligence parameter:
+     - Added benchmark_intelligence parameter to build_prompt()
+     - When present, included as "Benchmark Intelligence" data section
+       in the LLM prompt alongside competitor_benchmark_signals
+
+  c) Diagnostics — benchmark_status in envelope_diagnostics:
+     - llm_node: diagnostics["benchmark_status"] includes:
+       available, source, peer_count, market_position,
+       surfaced_to_llm, competitive_context_available
+     - synthesis_gate: blocked diagnostics includes benchmark_status:
+       available, status, competitive_context_available
+
+  d) Data flow now covers both streams:
+     - benchmark_data → llm_node → prompt (rankings, composite, position)
+     - competitive_context → llm_node → prompt (numeric_signals)
+     - Both reach the LLM; neither silently drops
+
+Verified: 696 tests passing (no new tests needed — existing coverage sufficient)
+
+
+--------------------------------------------------------------------------------
+17. FIX: LLM VALIDATION FAILURE ON CONSTRAINED BENCHMARK DATA
+--------------------------------------------------------------------------------
+Files: agent/nodes/llm_node.py
+       llm_synthesis/schema.py
+       llm_synthesis/prompt_builder.py
+
+Problem:
+  When competitive data was constrained (partial benchmark, thin peers), the
+  LLM generated generic recommendations that failed the StrategicRecommendations
+  specificity validator ("Each recommendation must reference specific context").
+  After 3 retries, the system fell back to failure() which produced:
+    "competitor benchmark analysis could not be completed due to competitor
+     data constraints"
+  This happened because:
+  a) The bridge from benchmark_data to competitor mode activated on thin data
+     (2+ peers was enough), switching to competitor prompt even when the LLM
+     didn't have enough specifics to write valid recommendations.
+  b) _ACCEPTED_RECOMMENDATION_TERMS didn't include benchmark-specific terms
+     (benchmark, peer, percentile, position) so benchmark-referenced
+     recommendations failed validation.
+  c) _public_failure_reason stripped the actual validation error details,
+     so failure() couldn't route to the correct template.
+
+Fix:
+  a) Hardened benchmark bridge criteria (llm_node.py):
+     - Old: peer_count >= 2 → switch to competitor mode
+     - New: requires ranking AND composite AND 2+ peers to switch
+     - Thin benchmark stays as supplementary context in self-analysis mode
+       rather than triggering competitor mode where validation would fail
+
+  b) Added benchmark terms to _ACCEPTED_RECOMMENDATION_TERMS (schema.py):
+     - Added: "benchmark", "peer", "percentile", "position"
+     - LLM-generated recommendations referencing peer rankings and
+       benchmark positions now pass specificity validation
+
+  c) Improved _public_failure_reason (llm_node.py):
+     - Includes actual validation errors from last attempt in reason text
+     - Enables failure() to detect "must reference specific context" and
+       route to the missing-metric template instead of generic fallback
+
+  d) Improved _is_missing_metric_reason (schema.py):
+     - Also matches "must reference specific context" validation errors
+     - Routes to the more useful missing-metric failure template
+
+  e) Enhanced competitor task instruction (prompt_builder.py):
+     - When benchmark_intelligence is present, adds explicit instruction
+       to reference rankings, composite scores, and market position
+     - Tells LLM to use "ranked Nth of M peers", "peer percentile Xth"
+     - Mentions benchmark/peer/risk as required recommendation terms
+
+Verified: 696 tests passing
+
+────────────────────────────────────────────────────────────────────────────────
+18. FIX: PIPELINE RESTRUCTURE — MOVE COMPETITOR_INTELLIGENCE BEFORE SYNTHESIS GATE
+────────────────────────────────────────────────────────────────────────────────
+
+Problem:
+  competitor_intelligence ran in Phase 5 (after synthesis_gate). When
+  user-provided competitors triggered web fetches via Brave API, the data
+  never reached confidence scoring because synthesis_gate already blocked
+  at confidence 0.05 < 0.4 — before competitor_node ever executed.
+
+Root cause:
+  The pipeline was:
+    synthesis_gate → [conditional] → competitor_intelligence → llm → END
+  So competitor web data could never contribute to confidence or signal
+  layers evaluated in the decision pipeline.
+
+Fix — pipeline restructure:
+  Moved competitor_intelligence from Phase 5 (post-gate) to the aggregation
+  phase (pre-gate), chained after role_analytics:
+
+  Old flow:
+    role_analytics ──────────────────→ signal_conflict
+    synthesis_gate → competitor_intelligence → llm → END
+
+  New flow:
+    role_analytics → competitor_intelligence ─→ signal_conflict
+    synthesis_gate → [conditional] → llm → END
+
+FILES MODIFIED:
+  a) agent/node_registry.py:
+     - Added COMPETITOR_CHAIN: [("role_analytics", "competitor_intelligence")]
+     - Updated AGGREGATION_FAN_IN: ["competitor_intelligence", "forecast_fetch"]
+       (was ["role_analytics", "forecast_fetch"])
+     - INSIGHT_PIPELINE_SEQUENCE now includes COMPETITOR_CHAIN edges
+
+  b) agent/routing.py:
+     - route_after_synthesis_gate returns "llm" (was "competitor_intelligence")
+
+  c) agent/graph.py:
+     - Conditional edges from synthesis_gate: {"llm": "llm", "end": END}
+       (was {"competitor_intelligence": "competitor_intelligence", "end": END})
+     - Removed graph.add_edge("competitor_intelligence", "llm")
+
+  d) tests/test_graph_wiring_integration.py:
+     - Updated assertions to match new pipeline structure:
+       • ("role_analytics", "competitor_intelligence") — new edge
+       • ("competitor_intelligence", "signal_conflict") — new edge
+       • ("synthesis_gate", "llm") — replaces old competitor_intelligence edge
+
+Verified: 696 tests passing
+
+────────────────────────────────────────────────────────────────────────────────
+19. FIX: SYNTHESIS BLOCKED AT 0.05 — TWO ROOT CAUSES
+────────────────────────────────────────────────────────────────────────────────
+
+Problem:
+  Despite pipeline restructure (Section 18), synthesis still blocked at
+  confidence 0.05 < 0.4.  Two root causes identified:
+
+Root cause A — Competitor node disabled by default:
+  competitor_node checks COMP_INTEL_ANALYZE_ENABLED env var (default: False).
+  Even when user provides competitor names in frontend AND Brave API is
+  configured, the node immediately returns source="disabled" without
+  fetching any web data.  Competitive layer stays empty.
+
+Fix A — Auto-enable when user provides competitors:
+  competitor_node now checks state["competitors"] (user-provided list).
+  If the list is non-empty, the node enables itself automatically,
+  bypassing the COMP_INTEL_ANALYZE_ENABLED requirement.
+
+Root cause B — Hard gates too aggressive for sparse data:
+  Gates 5 and 7 in pre_synthesis_audit treated ALL threshold violations
+  as hard blocks (status="blocked"), even when the user had SOME data:
+  - depth=2 (< 3 ideal) → blocked (zero output)
+  - coverage=25% (< 50% ideal) → blocked (zero output)
+
+  This created a dead zone: users with limited but real data could never
+  get any output, even with degraded/hedged tone.
+
+Fix B — Differentiate hard blocks from soft blocks:
+  - depth == 0 or coverage == 0% → hard block (genuinely no data)
+  - depth 1-2 or coverage > 0% but < 50% → soft block (degraded synthesis)
+  - Soft blocks return status="degraded" with insight_quality="partial_insight"
+  - partial_insight bypasses the confidence threshold check (Gate 3)
+  - Synthesis proceeds with hedged tone, not blocked entirely
+
+FILES MODIFIED:
+  a) agent/nodes/competitor_node.py:
+     - Added has_user_competitors check from state["competitors"]
+     - enabled = env_var OR has_user_competitors
+
+  b) agent/nodes/synthesis_gate.py:
+     - Split missing_requirements into hard_blocks and soft_blocks
+     - depth == 0 → hard_blocks; depth 1-2 → soft_blocks
+     - coverage == 0% → hard_blocks; coverage > 0% < 50% → soft_blocks
+     - Only hard_blocks produce status="blocked"
+     - Soft blocks produce status="degraded", insight_quality="partial_insight"
+
+  c) tests/test_hard_gating.py:
+     - Updated 6 tests to reflect soft-block behavior
+     - Added 3 new tests for zero-depth/zero-coverage hard blocks
+     - Total: 699 tests passing
+
+Verified: 699 tests passing
+
+
+## Section 20: Gate 4 conflict blocking bypass for partial_insight + report endpoint competitors
+
+### Problem
+Synthesis remained blocked despite Gates 1-3 and 5-8 passing. Root cause: Gate 4 
+(`_has_blocking_conflicts`) blocks when `conflict_count >= 3`, which is easily 
+triggered by real SaaS data with 10+ signal conflict rules. The soft-block changes 
+(Section 19) bypassed Gate 3 for partial_insight but forgot Gate 4.
+
+Additionally, `/export/report` endpoint invoked the graph WITHOUT competitors, 
+causing the competitor_node to return disabled data and the report enrichment 
+to produce a blocked response.
+
+### Root Cause
+- Gate 4 checked `conflict_count >= 3` unconditionally, even for partial_insight 
+  states that already carry hedged tone
+- With 10 conflict rules (revenue×churn, revenue×conversion, etc.), a dataset 
+  with revenue+churn+conversion moving in conflicting directions hits 3+ easily
+- `/export/report` did not accept or forward a `competitors` query parameter
+
+### Fix
+1. `synthesis_gate.py`: Gate 4 now checks `if not is_partial and _has_blocking_conflicts(state)` 
+   — partial_insight states bypass conflict blocking (same pattern as Gate 3)
+2. `synthesis_gate.py`: Added diagnostic logging to `should_block_synthesis` showing 
+   which gate triggered (visible in container logs)
+3. `bi_export_router.py`: Added `competitors` query parameter to `/export/report`, 
+   forwarded to `insight_graph.invoke()`
+4. `client.ts`: `fetchReportPayload` now accepts and passes `competitors` parameter
+5. `App.tsx`: Passes `competitors` to `fetchReportPayload` call
+
+### Files Changed
+- agent/nodes/synthesis_gate.py (Gate 4 bypass + diagnostic logging)
+- app/api/routers/bi_export_router.py (competitors param on /export/report)
+- frontend-react/src/api/client.ts (fetchReportPayload competitors param)
+- frontend-react/src/App.tsx (pass competitors to report enrichment)
+- tests/test_hard_gating.py (+1 test: test_partial_insight_not_blocked_by_conflicts)
+
+Verified: 700 tests passing

@@ -27,7 +27,11 @@ from math import log, sqrt
 from statistics import mean
 from typing import Any, Mapping
 
-from agent.graph_config import KPI_KEY_BY_BUSINESS_TYPE
+from agent.graph_config import (
+    KPI_KEY_BY_BUSINESS_TYPE,
+    graph_node_config_for_business_type,
+    signal_name_for_state_key,
+)
 from agent.nodes.node_result import payload_of, status_of
 from agent.state import AgentState
 
@@ -41,8 +45,8 @@ _KPI_BACKFILL_WEIGHT = 0.7
 _KPI_MIN_DEPTH_POINTS = 3
 
 _FORECAST_MIN_POINTS = 6
-_FORECAST_MIN_R2 = 0.2           # R² below this → forecast isolated
-_FORECAST_LOW_R2 = 0.4           # R² below this → forecast degraded
+_FORECAST_MIN_R2 = 0.10          # R² below this → forecast isolated (no predictive power)
+_FORECAST_LOW_R2 = 0.30          # R² below this → forecast degraded (weak fit)
 
 _COMPETITIVE_MIN_PEERS = 2
 _COMPETITIVE_MIN_METRICS = 2
@@ -255,6 +259,88 @@ class UnifiedSignalIntegrity:
 
             overall_score = _clamp01(raw_score)
 
+        # ── Confidence caps (monotonic degradation) ──────────────────
+        # More missing/degraded signals → strictly lower confidence.
+        # Caps are applied sequentially; the most restrictive wins.
+        base_score = overall_score
+        caps_applied: list[dict[str, Any]] = []
+
+        valid_layer_count = len(scoring_layers)
+        kpi_depth = _safe_int(kpi_layer.meta.get("time_series_depth"), default=0)
+        kpi_coverage = kpi_layer.coverage_ratio
+        forecast_usable = forecast_layer.gate_status in (
+            GateStatus.PASS, GateStatus.DEGRADE,
+        )
+
+        # Cap: critical layer (KPI) degraded → ≤ 0.35
+        if kpi_layer.gate_status == GateStatus.DEGRADE:
+            cap = 0.35
+            if overall_score > cap:
+                caps_applied.append({
+                    "cap": "kpi_degraded", "limit": cap,
+                })
+                overall_score = cap
+                reasoning_warnings.append(
+                    f"KPI layer degraded: confidence capped at {cap}"
+                )
+
+        # Cap: forecast unusable (isolated/blocked) → ≤ 0.30
+        if not forecast_usable:
+            cap = 0.30
+            if overall_score > cap:
+                caps_applied.append({
+                    "cap": "forecast_unusable", "limit": cap,
+                    "gate_status": forecast_layer.gate_status.value,
+                })
+                overall_score = cap
+                reasoning_warnings.append(
+                    f"Forecast unusable ({forecast_layer.gate_status.value}): "
+                    f"confidence capped at {cap}"
+                )
+
+        # Cap: insufficient analytical layers (< 3) → ≤ 0.25
+        if valid_layer_count < 3:
+            cap = 0.25
+            if overall_score > cap:
+                caps_applied.append({
+                    "cap": "insufficient_layers", "limit": cap,
+                    "valid_layers": valid_layer_count,
+                })
+                overall_score = cap
+                reasoning_warnings.append(
+                    f"Only {valid_layer_count} valid layer(s): "
+                    f"confidence capped at {cap}"
+                )
+
+        overall_score = _clamp01(overall_score)
+
+        # ── Insight quality classification ────────────────────────────
+        # Determines output state BEFORE synthesis:
+        #   full_insight    — 3+ valid layers, KPI gate passed
+        #   partial_insight — 1-2 valid layers (recommendations stripped)
+        #   blocked         — 0 valid layers or KPI hard-failed
+        if valid_layer_count == 0 or (kpi_layer.available and kpi_layer.score == 0):
+            insight_quality = "blocked"
+        elif valid_layer_count < 3:
+            insight_quality = "partial_insight"
+        else:
+            insight_quality = "full_insight"
+
+        # ── Layer classification vector ───────────────────────────────
+        layer_classification: dict[str, str] = {}
+        for name in _LAYER_ORDER:
+            layer = layers[name]
+            if not layer.available:
+                layer_classification[name] = "missing"
+            elif name in isolated_layers:
+                layer_classification[name] = "isolated"
+            elif name in degraded_layers:
+                layer_classification[name] = "degraded"
+            elif name in scoring_layers:
+                layer_classification[name] = "valid"
+            else:
+                layer_classification[name] = "inactive"
+
         # ── Confidence adjustments for diagnostics ──────────────────
         confidence_adjustments: list[dict[str, Any]] = []
         if scoring_layers:
@@ -294,9 +380,54 @@ class UnifiedSignalIntegrity:
                 }
             )
 
+        # ── KPI coverage validation ──────────────────────────────────
+        kpi_coverage_report = cls.validate_kpi_coverage(state)
+
+        # ── Missing signal detection ─────────────────────────────────
+        missing_signal_report = cls._detect_missing_signals(state, layers)
+        missing_required_count = sum(
+            1 for s in missing_signal_report["missing_signals"]
+            if s["classification"] == "required"
+        )
+
+        # Confidence penalty for missing required signals:
+        # Each missing required signal reduces confidence by 15% multiplicatively
+        # (max 3 → factor 0.614).  Multiplicative avoids zeroing already-low scores.
+        if missing_required_count > 0:
+            factor = max(0.50, 1.0 - 0.15 * missing_required_count)
+            pre_penalty = overall_score
+            overall_score = _clamp01(overall_score * factor)
+            caps_applied.append({
+                "cap": "missing_required_signals",
+                "limit": round(overall_score, 6),
+                "missing_count": missing_required_count,
+                "factor": round(factor, 6),
+            })
+            reasoning_warnings.append(
+                f"{missing_required_count} missing required signal(s): "
+                f"confidence reduced by factor {factor:.2f} "
+                f"({pre_penalty:.3f} → {overall_score:.3f})"
+            )
+
         return {
             "overall_score": round(overall_score, 6),
             "kpi_gate_passed": kpi_gate_passed,
+            "kpi_depth": kpi_depth,
+            "kpi_coverage_ratio": round(kpi_coverage, 6),
+            "valid_layer_count": valid_layer_count,
+            "forecast_usable": forecast_usable,
+            "insight_quality": insight_quality,
+            "layer_classification": layer_classification,
+            "missing_signal_report": missing_signal_report,
+            "kpi_coverage_report": kpi_coverage_report,
+            "confidence_breakdown": {
+                "base": round(base_score, 6),
+                "penalties": {
+                    "kpi_penalty_applied": not kpi_gate_passed,
+                    "caps_applied": caps_applied,
+                },
+                "final": round(overall_score, 6),
+            },
             "layers": {name: layer.as_dict() for name, layer in layers.items()},
             "missing_layers": [name for name in _LAYER_ORDER if not layers[name].available],
             "available_layers": available_layers,
@@ -305,6 +436,288 @@ class UnifiedSignalIntegrity:
             "degraded_layers": degraded_layers,
             "reasoning_warnings": reasoning_warnings,
             "confidence_adjustments": confidence_adjustments,
+        }
+
+    # ── Confidence cap constants ──────────────────────────────────
+    _CAP_KPI_DEGRADED = 0.35
+    _CAP_FORECAST_UNUSABLE = 0.30
+    _CAP_INSUFFICIENT_LAYERS = 0.25
+
+    @classmethod
+    def enforce_final_confidence_caps(
+        cls,
+        confidence: float,
+        integrity: dict[str, Any],
+    ) -> dict[str, Any]:
+        """FINAL confidence enforcement — no downstream module may modify after.
+
+        Re-applies all caps as a safety net and returns a spec-format trace::
+
+            {
+                "raw_confidence": float,
+                "applied_caps": [...],
+                "final_confidence": float,
+            }
+        """
+        raw = float(confidence)
+        capped = raw
+        applied_caps: list[dict[str, Any]] = []
+
+        layer_classification = integrity.get("layer_classification", {})
+        valid_layer_count = int(integrity.get("valid_layer_count", 0))
+        forecast_usable = bool(integrity.get("forecast_usable", True))
+
+        kpi_status = layer_classification.get("kpi", "missing")
+
+        # Cap 1: KPI degraded → ≤ 0.35
+        if kpi_status == "degraded" and capped > cls._CAP_KPI_DEGRADED:
+            applied_caps.append({
+                "cap": "kpi_degraded",
+                "limit": cls._CAP_KPI_DEGRADED,
+                "before": round(capped, 6),
+            })
+            capped = cls._CAP_KPI_DEGRADED
+
+        # Cap 2: forecast unusable → ≤ 0.30
+        if not forecast_usable and capped > cls._CAP_FORECAST_UNUSABLE:
+            applied_caps.append({
+                "cap": "forecast_unusable",
+                "limit": cls._CAP_FORECAST_UNUSABLE,
+                "before": round(capped, 6),
+            })
+            capped = cls._CAP_FORECAST_UNUSABLE
+
+        # Cap 3: insufficient layers (< 3) → ≤ 0.25
+        if valid_layer_count < 3 and capped > cls._CAP_INSUFFICIENT_LAYERS:
+            applied_caps.append({
+                "cap": "insufficient_layers",
+                "limit": cls._CAP_INSUFFICIENT_LAYERS,
+                "valid_layers": valid_layer_count,
+                "before": round(capped, 6),
+            })
+            capped = cls._CAP_INSUFFICIENT_LAYERS
+
+        capped = max(0.0, min(1.0, capped))
+
+        return {
+            "raw_confidence": round(raw, 6),
+            "applied_caps": applied_caps,
+            "final_confidence": round(capped, 6),
+        }
+
+    # ── KPI coverage validation ──────────────────────────────────
+    _MIN_KPI_COVERAGE_RATIO = 0.5
+
+    @classmethod
+    def validate_kpi_coverage(
+        cls,
+        state: AgentState,
+    ) -> dict[str, Any]:
+        """Validate KPI metric coverage against expected metrics.
+
+        Returns structured report::
+
+            {
+                "coverage_ratio": float,
+                "expected_metrics": [...],
+                "available_metrics": [...],
+                "missing_metrics": [...],
+                "sufficient": bool,
+                "impact": str | None,
+            }
+
+        When ``coverage_ratio < 0.5``, synthesis MUST be blocked.
+        """
+        kpi_layer = cls._kpi_layer(state)
+        meta = kpi_layer.meta
+
+        expected_count = int(meta.get("expected_metrics", 0))
+        available_count = int(meta.get("available_metrics", 0))
+        coverage_ratio = kpi_layer.coverage_ratio
+
+        # Resolve expected/available metric names for the report
+        payload, _ = cls._resolve_kpi_payload(state)
+        expected_names: list[str] = []
+        available_names: list[str] = []
+
+        if payload:
+            expected_raw = payload.get("metrics")
+            compact_series = payload.get("metric_series")
+            records = payload.get("records")
+
+            # Build expected list
+            if isinstance(expected_raw, list):
+                expected_names = [str(m).strip() for m in expected_raw if str(m).strip()]
+            elif isinstance(compact_series, Mapping):
+                expected_names = sorted(str(k).strip() for k in compact_series if str(k).strip())
+            elif isinstance(records, list):
+                discovered: set[str] = set()
+                for record in records:
+                    if isinstance(record, Mapping):
+                        computed = record.get("computed_kpis")
+                        if isinstance(computed, Mapping):
+                            for name in computed:
+                                text = str(name).strip()
+                                if text:
+                                    discovered.add(text)
+                expected_names = sorted(discovered)
+
+            # Build available list (metrics with actual data)
+            if isinstance(compact_series, Mapping):
+                for name in expected_names:
+                    series = compact_series.get(name)
+                    if isinstance(series, list) and any(
+                        _safe_float(v, default=None) is not None for v in series
+                    ):
+                        available_names.append(name)
+            elif isinstance(records, list):
+                present: set[str] = set()
+                for record in records:
+                    if not isinstance(record, Mapping):
+                        continue
+                    computed = record.get("computed_kpis")
+                    if not isinstance(computed, Mapping):
+                        continue
+                    for name in expected_names:
+                        entry = computed.get(name)
+                        if entry is not None:
+                            if isinstance(entry, Mapping):
+                                if entry.get("error") is None and entry.get("value") is not None:
+                                    present.add(name)
+                            else:
+                                present.add(name)
+                available_names = sorted(present)
+
+        missing_names = [m for m in expected_names if m not in available_names]
+        sufficient = coverage_ratio >= cls._MIN_KPI_COVERAGE_RATIO
+
+        return {
+            "coverage_ratio": round(coverage_ratio, 6),
+            "expected_metrics": expected_names,
+            "available_metrics": available_names,
+            "missing_metrics": missing_names,
+            "sufficient": sufficient,
+            "impact": (
+                "insufficient KPI reliability"
+                if not sufficient
+                else None
+            ),
+        }
+
+    @classmethod
+    def _detect_missing_signals(
+        cls,
+        state: AgentState,
+        layers: dict[str, "LayerIntegrity"],
+    ) -> dict[str, Any]:
+        """Detect missing required and optional signals.
+
+        Returns structured report::
+
+            {
+                "missing_signals": [
+                    {
+                        "signal": "forecast",
+                        "state_key": "forecast_data",
+                        "classification": "required" | "optional",
+                        "status": "missing" | "failed" | "skipped",
+                        "impact": "confidence penalty" | "reduced coverage",
+                    },
+                    ...
+                ],
+                "required_missing_count": int,
+                "optional_missing_count": int,
+                "actions_taken": [...],
+            }
+        """
+        _HARD_FAIL = {"failed", "skipped"}
+
+        business_type = str(state.get("business_type") or "")
+        config = graph_node_config_for_business_type(business_type)
+
+        missing_signals: list[dict[str, Any]] = []
+        actions_taken: list[str] = []
+
+        all_keys = list(dict.fromkeys((*config.required, *config.optional)))
+        for key in all_keys:
+            is_required = key in config.required
+            classification = "required" if is_required else "optional"
+            signal = signal_name_for_state_key(key)
+            value = state.get(key)
+
+            if value is None:
+                missing_signals.append({
+                    "signal": signal,
+                    "state_key": key,
+                    "classification": classification,
+                    "status": "missing",
+                    "impact": (
+                        "confidence penalty"
+                        if is_required
+                        else "reduced coverage"
+                    ),
+                })
+                if is_required:
+                    actions_taken.append(
+                        f"required signal '{signal}' missing: "
+                        f"confidence penalised"
+                    )
+                else:
+                    actions_taken.append(
+                        f"optional signal '{signal}' missing: "
+                        f"coverage reduced"
+                    )
+                continue
+
+            status = status_of(value)
+            if status in _HARD_FAIL:
+                missing_signals.append({
+                    "signal": signal,
+                    "state_key": key,
+                    "classification": classification,
+                    "status": status,
+                    "impact": (
+                        "confidence penalty"
+                        if is_required
+                        else "reduced coverage"
+                    ),
+                })
+                if is_required:
+                    actions_taken.append(
+                        f"required signal '{signal}' {status}: "
+                        f"confidence penalised"
+                    )
+
+        # Also check layer-level missing (layers not backed by a state key
+        # but detected as unavailable by the integrity model).
+        for name, layer in layers.items():
+            if not layer.available:
+                # Already captured by state key check above? Skip duplicates.
+                already = any(s["signal"] == name for s in missing_signals)
+                if not already:
+                    missing_signals.append({
+                        "signal": name,
+                        "state_key": None,
+                        "classification": "optional",
+                        "status": "missing",
+                        "impact": "reduced coverage",
+                    })
+
+        required_missing = sum(
+            1 for s in missing_signals if s["classification"] == "required"
+        )
+        optional_missing = sum(
+            1 for s in missing_signals if s["classification"] == "optional"
+        )
+
+        if not missing_signals:
+            actions_taken.append("all signals present")
+
+        return {
+            "missing_signals": missing_signals,
+            "required_missing_count": required_missing,
+            "optional_missing_count": optional_missing,
+            "actions_taken": actions_taken,
         }
 
     @classmethod
@@ -328,6 +741,54 @@ class UnifiedSignalIntegrity:
             "Cohort_score": round(_layer_score("cohort"), 6),
             "Segmentation_score": round(_layer_score("segmentation"), 6),
             "Unified_integrity_score": round(overall, 6),
+        }
+
+    @classmethod
+    def filter_layers_for_downstream(
+        cls,
+        state: AgentState,
+        *,
+        allow_degraded: bool = True,
+    ) -> dict[str, Any]:
+        """Centralized layer filter for downstream consumers.
+
+        Returns a dict with:
+            eligible_layers: list of layer names safe for downstream use
+            isolated_layers: list of layer names that MUST be excluded
+            layer_classification: full classification dict
+            warnings: list of filtering actions taken
+
+        Downstream nodes (conflict detection, risk scoring, prioritization,
+        recommendations) MUST use this filter instead of reading raw layer
+        outputs directly.
+        """
+        integrity = cls.compute(state)
+        classification = integrity.get("layer_classification", {})
+        isolated = integrity.get("isolated_layers", [])
+        degraded = integrity.get("degraded_layers", [])
+
+        eligible: list[str] = []
+        warnings: list[str] = []
+
+        for name, status in classification.items():
+            if status == "valid":
+                eligible.append(name)
+            elif status == "degraded" and allow_degraded:
+                eligible.append(name)
+                warnings.append(
+                    f"{name} layer degraded: included with reduced authority"
+                )
+            elif status in ("isolated", "missing", "inactive"):
+                warnings.append(
+                    f"{name} layer {status}: excluded from downstream"
+                )
+
+        return {
+            "eligible_layers": eligible,
+            "isolated_layers": list(isolated),
+            "degraded_layers": list(degraded),
+            "layer_classification": classification,
+            "warnings": warnings,
         }
 
     @classmethod
@@ -718,8 +1179,34 @@ class UnifiedSignalIntegrity:
 
     @classmethod
     def _competitive_layer(cls, state: AgentState) -> LayerIntegrity:
+        # ── Prefer local benchmark_data over external competitive_context ──
+        # benchmark_data comes from the deterministic peer benchmark service
+        # (local DB, validated ranking, composite scoring).  competitive_context
+        # comes from external intelligence fetching (web scraping, APIs).
+        benchmark_envelope = state.get("benchmark_data")
+        benchmark_payload = payload_of(benchmark_envelope) if benchmark_envelope else None
+        benchmark_status = status_of(benchmark_envelope) if benchmark_envelope else None
+
+        if isinstance(benchmark_payload, Mapping) and benchmark_status == "success":
+            return cls._competitive_layer_from_benchmark(benchmark_payload)
+
+        # Fall back to external competitive_context
         raw = state.get("competitive_context")
         if not isinstance(raw, Mapping):
+            # Check if benchmark envelope exists but is partial/failed
+            if benchmark_envelope is not None:
+                return LayerIntegrity(
+                    available=True,
+                    coverage_ratio=0.0,
+                    source_reliability=1.0,
+                    completeness=0.0,
+                    score=0.0,
+                    meta={
+                        "status": benchmark_status or "missing",
+                        "source": "benchmark_node",
+                    },
+                    gate_status=GateStatus.DEGRADE,
+                )
             return LayerIntegrity(
                 available=False,
                 coverage_ratio=0.0,
@@ -749,9 +1236,29 @@ class UnifiedSignalIntegrity:
             _COMPETITIVE_SOURCE_RELIABILITY.get(source, _COMPETITIVE_DEFAULT_SOURCE_RELIABILITY)
         )
         benchmark_rows_count = max(0, _safe_int(raw.get("benchmark_rows_count"), default=0))
+        numeric_signals = raw.get("numeric_signals")
+        sample_sizes: list[int] = []
+        if isinstance(numeric_signals, list):
+            for item in numeric_signals:
+                if not isinstance(item, Mapping):
+                    continue
+                sample_size = _safe_int(item.get("sample_size"), default=0)
+                if sample_size > 0:
+                    sample_sizes.append(sample_size)
+
         completeness = 0.0
         if benchmark_rows_count > 0:
             completeness = _clamp01(log(1.0 + benchmark_rows_count) / log(2.0 + benchmark_rows_count))
+        elif sample_sizes:
+            # External benchmark sources may have no canonical benchmark rows
+            # but still provide structured sample-backed numeric aggregates.
+            # Treat that as degraded completeness instead of hard zero.
+            total_samples = sum(sample_sizes)
+            sample_term = _clamp01(
+                log(1.0 + total_samples) / log(25.0 + total_samples)
+            )
+            signal_term = _log_saturating(len(sample_sizes) + 1)
+            completeness = _clamp01(sqrt(sample_term * signal_term))
 
         if peer_count < _COMPETITIVE_MIN_PEERS or metric_count < _COMPETITIVE_MIN_METRICS:
             return LayerIntegrity(
@@ -766,6 +1273,7 @@ class UnifiedSignalIntegrity:
                     "metric_count": metric_count,
                     "source": source,
                     "benchmark_rows_count": benchmark_rows_count,
+                    "sample_sizes": sample_sizes,
                 },
                 gate_status=GateStatus.DEGRADE,
             )
@@ -787,6 +1295,78 @@ class UnifiedSignalIntegrity:
                 "metric_count": metric_count,
                 "source": source,
                 "benchmark_rows_count": benchmark_rows_count,
+                "sample_sizes": sample_sizes,
+            },
+        )
+
+    @classmethod
+    def _competitive_layer_from_benchmark(
+        cls, payload: Mapping[str, Any],
+    ) -> LayerIntegrity:
+        """Build competitive layer integrity from local benchmark_data."""
+        peer_selection = payload.get("peer_selection") or {}
+        selected_peers = peer_selection.get("selected_peers") or []
+        peer_count = len(selected_peers)
+
+        composite = payload.get("composite") or {}
+        ranking = payload.get("ranking") or {}
+        metric_specs = payload.get("metric_comparison_specs") or {}
+        metric_count = len(metric_specs)
+
+        # Local DB benchmarks have maximum source reliability
+        source_reliability = 1.0
+
+        if peer_count < _COMPETITIVE_MIN_PEERS or metric_count < _COMPETITIVE_MIN_METRICS:
+            return LayerIntegrity(
+                available=True,
+                coverage_ratio=0.0,
+                source_reliability=source_reliability,
+                completeness=0.0,
+                score=0.0,
+                meta={
+                    "status": "insufficient_data",
+                    "peer_count": peer_count,
+                    "metric_count": metric_count,
+                    "source": "benchmark_node",
+                },
+                gate_status=GateStatus.DEGRADE,
+            )
+
+        peer_term = _log_saturating(peer_count)
+        metric_term = _log_saturating(metric_count)
+        coverage_ratio = _clamp01(sqrt(peer_term * metric_term))
+
+        # Completeness from ranking depth
+        has_ranking = bool(ranking.get("metric_ranks"))
+        has_composite = bool(composite.get("overall_score"))
+        has_position = bool(payload.get("market_position"))
+        completeness = _clamp01(
+            (0.4 if has_ranking else 0.0)
+            + (0.4 if has_composite else 0.0)
+            + (0.2 if has_position else 0.0)
+        )
+
+        score = _clamp01(coverage_ratio * source_reliability * completeness)
+
+        return LayerIntegrity(
+            available=True,
+            coverage_ratio=coverage_ratio,
+            source_reliability=source_reliability,
+            completeness=completeness,
+            score=score,
+            meta={
+                "status": "success",
+                "peer_count": peer_count,
+                "metric_count": metric_count,
+                "source": "benchmark_node",
+                "has_ranking": has_ranking,
+                "has_composite": has_composite,
+                "has_market_position": has_position,
+                "market_position": (
+                    payload.get("market_position", {}).get("position")
+                    if isinstance(payload.get("market_position"), Mapping)
+                    else None
+                ),
             },
         )
 

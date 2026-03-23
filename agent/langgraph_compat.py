@@ -57,6 +57,9 @@ except Exception:  # pragma: no cover - exercised in environments without langgr
             current_state = dict(state)
             max_steps = max(64, len(self._nodes) * 8)
             steps = 0
+            # Track which nodes actually executed so downstream nodes
+            # whose only predecessors were skipped are also skipped.
+            executed_nodes: set[str] = {START}
 
             # Build layered execution plan: nodes at the same depth can
             # run in parallel (fan-out).
@@ -68,7 +71,7 @@ except Exception:  # pragma: no cover - exercised in environments without langgr
                     name
                     for name in layer
                     if name not in (START, END)
-                    and self._should_execute(name, current_state)
+                    and self._should_execute(name, current_state, executed_nodes)
                 ]
                 if not runnable:
                     continue
@@ -83,6 +86,7 @@ except Exception:  # pragma: no cover - exercised in environments without langgr
                     if not isinstance(result, dict):
                         raise TypeError(f"Node `{name}` must return a dict state")
                     current_state.update(result)
+                    executed_nodes.add(name)
                     steps += 1
                 else:
                     # Multiple nodes at the same depth — run in parallel.
@@ -103,6 +107,7 @@ except Exception:  # pragma: no cover - exercised in environments without langgr
                                     f"Node `{name}` must return a dict state"
                                 )
                             current_state.update(result)
+                            executed_nodes.add(name)
                             steps += 1
 
                 if steps > max_steps:
@@ -188,28 +193,43 @@ except Exception:  # pragma: no cover - exercised in environments without langgr
 
             return order
 
-        def _should_execute(self, node_name: str, state: dict[str, Any]) -> bool:
-            """Check if a node should execute based on conditional routing."""
-            # Find all edges that target this node.
-            for edge in self._edges:
-                if edge.target != node_name:
-                    continue
+        def _should_execute(
+            self,
+            node_name: str,
+            state: dict[str, Any],
+            executed_nodes: set[str],
+        ) -> bool:
+            """Check if a node should execute based on conditional routing
+            and whether at least one predecessor actually ran."""
+            # Collect all incoming edges for this node.
+            incoming_edges = [e for e in self._edges if e.target == node_name]
+            if not incoming_edges:
+                # No incoming edges (other than START) — always execute.
+                return True
 
+            has_any_active_predecessor = False
+
+            for edge in incoming_edges:
                 source = edge.source
                 conditional = self._conditionals.get(source)
-                if conditional is None:
-                    # Non-conditional edge — always execute.
-                    continue
+                if conditional is not None:
+                    # Conditional edge: check if the route leads to this node.
+                    chooser, mapping = conditional
+                    route = chooser(state)
+                    resolved_target = mapping.get(route)
+                    if resolved_target != node_name:
+                        # The conditional chose a different branch — skip.
+                        return False
+                    # Conditional routed here — this is an active predecessor.
+                    if source in executed_nodes:
+                        has_any_active_predecessor = True
+                else:
+                    # Static edge — active only if the source actually ran.
+                    if source in executed_nodes:
+                        has_any_active_predecessor = True
 
-                # Conditional edge: check if the route leads to this node.
-                chooser, mapping = conditional
-                route = chooser(state)
-                resolved_target = mapping.get(route)
-                if resolved_target != node_name:
-                    # The conditional chose a different branch — skip.
-                    return False
-
-            return True
+            # Only execute if at least one predecessor actually ran.
+            return has_any_active_predecessor
 
     class StateGraph:
         def __init__(self, _state_type: Any) -> None:

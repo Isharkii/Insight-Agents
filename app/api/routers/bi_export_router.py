@@ -250,6 +250,14 @@ def export_report(
         alias="format",
         description='Output format: "json" or "md".',
     ),
+    competitors: str | None = Query(
+        default=None,
+        description="Comma-separated competitor names for benchmarking.",
+    ),
+    self_analysis_only: bool = Query(
+        default=False,
+        description="When true, force data-only self analysis and disable competitor benchmarking in synthesis.",
+    ),
     db: Session = Depends(get_db),
     security: SecurityContext = Depends(require_security_context),
 ) -> JSONResponse | PlainTextResponse:
@@ -265,14 +273,19 @@ def export_report(
 
     try:
         resolved = get_processing_strategy(business_type) or "general_timeseries"
-        state = insight_graph.invoke(
-            {
-                "request_id": security.request_id,
-                "user_query": prompt,
-                "business_type": resolved,
-                "entity_name": entity_name,
-            }
-        )
+        invoke_state: dict[str, Any] = {
+            "request_id": security.request_id,
+            "user_query": prompt,
+            "business_type": resolved,
+            "entity_name": entity_name,
+        }
+        if competitors:
+            invoke_state["competitors"] = [
+                name.strip() for name in competitors.split(",") if name.strip()
+            ]
+        if self_analysis_only:
+            invoke_state["self_analysis_only"] = True
+        state = insight_graph.invoke(invoke_state)
         response_raw = state.get("final_response")
         if not isinstance(response_raw, str):
             raise ValueError("Graph did not return final_response.")

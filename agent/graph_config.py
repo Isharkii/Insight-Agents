@@ -38,6 +38,7 @@ NODE_CONFIG_BY_BUSINESS_TYPE: dict[str, GraphNodeConfig] = {
             "forecast_data",
             "signal_conflicts",
             "root_cause",
+            "benchmark_data",
         ),
     ),
     "ecommerce": GraphNodeConfig(
@@ -53,6 +54,7 @@ NODE_CONFIG_BY_BUSINESS_TYPE: dict[str, GraphNodeConfig] = {
             "forecast_data",
             "signal_conflicts",
             "root_cause",
+            "benchmark_data",
         ),
     ),
     "agency": GraphNodeConfig(
@@ -68,6 +70,7 @@ NODE_CONFIG_BY_BUSINESS_TYPE: dict[str, GraphNodeConfig] = {
             "forecast_data",
             "signal_conflicts",
             "root_cause",
+            "benchmark_data",
         ),
     ),
     "general_timeseries": GraphNodeConfig(
@@ -84,6 +87,7 @@ NODE_CONFIG_BY_BUSINESS_TYPE: dict[str, GraphNodeConfig] = {
             "forecast_data",
             "signal_conflicts",
             "root_cause",
+            "benchmark_data",
         ),
     ),
     "generic_timeseries": GraphNodeConfig(
@@ -100,6 +104,7 @@ NODE_CONFIG_BY_BUSINESS_TYPE: dict[str, GraphNodeConfig] = {
             "forecast_data",
             "signal_conflicts",
             "root_cause",
+            "benchmark_data",
         ),
     ),
 }
@@ -127,6 +132,7 @@ def graph_node_config_for_business_type(business_type: str | None) -> GraphNodeC
             "forecast_data",
             "signal_conflicts",
             "root_cause",
+            "benchmark_data",
         ),
     )
 

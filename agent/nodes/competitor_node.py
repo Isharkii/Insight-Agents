@@ -35,6 +35,28 @@ _COMP_CONTEXT_CACHE: AsyncTTLCache[dict[str, Any]] = AsyncTTLCache(
     ttl_seconds=_DEFAULT_COMP_INTEL_TTL_SECONDS,
     max_size=_COMP_INTEL_CACHE_MAX_SIZE,
 )
+_NEGATIVE_NEWS_KEYWORDS: tuple[str, ...] = (
+    "lawsuit",
+    "sued",
+    "legal",
+    "fine",
+    "penalty",
+    "antitrust",
+    "breach",
+    "vulnerability",
+    "incident",
+    "outage",
+    "downtime",
+    "layoff",
+    "job cut",
+    "decline",
+    "loss",
+    "missed",
+    "investigation",
+    "regulatory",
+    "churn",
+    "bankruptcy",
+)
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -110,6 +132,70 @@ def _safe_float(value: Any) -> float | None:
     return float(numeric)
 
 
+def _negative_news_score(text: str) -> int:
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return 0
+    return sum(1 for token in _NEGATIVE_NEWS_KEYWORDS if token in normalized)
+
+
+def _news_highlights_from_response(response: Any, *, max_items: int = 8) -> list[dict[str, Any]]:
+    highlights: list[dict[str, Any]] = []
+
+    for profile in getattr(response, "competitor_profiles", []):
+        competitor = str(getattr(profile, "competitor_name", "")).strip()
+        if not competitor:
+            continue
+        for doc in getattr(profile, "search_documents", []):
+            title = str(getattr(doc, "title", "") or "").strip()
+            snippet = str(getattr(doc, "snippet", "") or "").strip()
+            if not title and not snippet:
+                continue
+            text = f"{title} {snippet}".strip()
+            published_at = getattr(doc, "published_at", None)
+            published_iso = (
+                published_at.isoformat()
+                if hasattr(published_at, "isoformat")
+                else None
+            )
+            sort_ts = (
+                float(published_at.timestamp())
+                if hasattr(published_at, "timestamp")
+                else 0.0
+            )
+            highlights.append(
+                {
+                    "competitor": competitor,
+                    "title": title,
+                    "snippet": snippet[:320],
+                    "url": str(getattr(doc, "url", "") or ""),
+                    "published_at": published_iso,
+                    "criticality_score": _negative_news_score(text),
+                    "_sort_ts": sort_ts,
+                }
+            )
+
+    highlights.sort(
+        key=lambda item: (
+            -int(item.get("criticality_score", 0) or 0),
+            -float(item.get("_sort_ts", 0.0) or 0.0),
+        )
+    )
+    output: list[dict[str, Any]] = []
+    for item in highlights[:max(0, max_items)]:
+        output.append(
+            {
+                "competitor": str(item.get("competitor") or "").strip(),
+                "title": str(item.get("title") or "").strip(),
+                "snippet": str(item.get("snippet") or "").strip(),
+                "url": str(item.get("url") or "").strip(),
+                "published_at": item.get("published_at"),
+                "criticality_score": int(item.get("criticality_score", 0) or 0),
+            }
+        )
+    return output
+
+
 def _normalize_existing_context(state: AgentState) -> CompetitiveContext:
     raw = state.get("competitive_context")
     if not isinstance(raw, dict):
@@ -121,6 +207,7 @@ def _normalize_existing_context(state: AgentState) -> CompetitiveContext:
             "metrics": [],
             "benchmark_rows_count": 0,
             "numeric_signals": [],
+            "news_highlights": [],
             "cache_hit": False,
             "generated_at": _now_iso(),
             "warnings": [],
@@ -149,6 +236,11 @@ def _normalize_existing_context(state: AgentState) -> CompetitiveContext:
     else:
         numeric_signals = [item for item in numeric_signals if isinstance(item, dict)]
 
+    raw_news = raw.get("news_highlights")
+    if not isinstance(raw_news, list):
+        raw_news = []
+    news_highlights = [item for item in raw_news if isinstance(item, dict)]
+
     raw_warnings = raw.get("warnings", [])
     if not isinstance(raw_warnings, list):
         raw_warnings = []
@@ -161,6 +253,7 @@ def _normalize_existing_context(state: AgentState) -> CompetitiveContext:
         "metrics": sorted(set(metrics)),
         "benchmark_rows_count": max(0, benchmark_rows),
         "numeric_signals": numeric_signals,
+        "news_highlights": news_highlights,
         "cache_hit": bool(raw.get("cache_hit", False)),
         "generated_at": str(raw.get("generated_at") or _now_iso()),
         "warnings": [str(item) for item in raw_warnings if str(item).strip()],
@@ -228,6 +321,7 @@ def _context_from_external(
         entity_name=str(state.get("entity_name") or ""),
     )
     warnings = [str(item) for item in getattr(response, "warnings", []) if str(item).strip()]
+    news_highlights = _news_highlights_from_response(response)
 
     available = bool(metrics)
     return {
@@ -238,6 +332,7 @@ def _context_from_external(
         "metrics": sorted(set(metric_names)),
         "benchmark_rows_count": int(existing.get("benchmark_rows_count", 0) or 0),
         "numeric_signals": metrics,
+        "news_highlights": news_highlights,
         "cache_hit": cache_hit,
         "generated_at": _now_iso(),
         "warnings": warnings,
@@ -247,7 +342,13 @@ def _context_from_external(
 def competitor_node(state: AgentState) -> AgentState:
     """Populate ``state["competitive_context"]`` using numeric-only intelligence."""
     existing_context = _normalize_existing_context(state)
-    enabled = _env_bool("COMP_INTEL_ANALYZE_ENABLED", False)
+
+    # Auto-enable when user explicitly provides competitor names via frontend,
+    # even if COMP_INTEL_ANALYZE_ENABLED is not set in the environment.
+    user_competitors = state.get("competitors") or []
+    has_user_competitors = isinstance(user_competitors, list) and len(user_competitors) > 0
+
+    enabled = _env_bool("COMP_INTEL_ANALYZE_ENABLED", False) or has_user_competitors
     if not enabled:
         return {
             "competitive_context": {
@@ -271,6 +372,17 @@ def competitor_node(state: AgentState) -> AgentState:
         }
 
     peers = _normalize_peer_names(existing_context.get("peers", []), entity_name=entity_name)
+
+    # Fallback: if no peers from DB, use user-provided competitor names
+    if not peers:
+        user_competitors = state.get("competitors") or []
+        if isinstance(user_competitors, list) and user_competitors:
+            peers = _normalize_peer_names(user_competitors, entity_name=entity_name)
+            _logger.info(
+                "No DB peers found — using %d user-provided competitors: %s",
+                len(peers), peers,
+            )
+
     if not peers:
         return {
             "competitive_context": {

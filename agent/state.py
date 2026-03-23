@@ -5,7 +5,7 @@ LangGraph agent state schema for the Insight Agent.
 Supports multiple business model KPI namespaces.
 """
 
-from typing import Annotated, Literal, Optional
+from typing import Annotated, Any, Literal, Optional
 from typing_extensions import TypedDict
 
 
@@ -42,6 +42,7 @@ class CompetitiveContext(TypedDict, total=False):
     metrics: list[str]
     benchmark_rows_count: int
     numeric_signals: list[CompetitiveContextMetric]
+    news_highlights: list[dict[str, Any]]
     cache_hit: bool
     generated_at: str
     warnings: list[str]
@@ -76,10 +77,14 @@ class AgentState(TypedDict):
     category_formula_data: Optional[dict]
     unit_economics_data: Optional[dict]
     multivariate_scenario_data: Optional[dict]
+    benchmark_data: Optional[dict]
     signal_conflicts: Optional[dict]
     signal_enrichment: Optional[dict]
     competitive_context: Annotated[Optional[CompetitiveContext], _last_writer_wins]
     signal_integrity: Annotated[Optional[dict], _last_writer_wins]
     synthesis_blocked: Annotated[Optional[bool], _last_writer_wins]
+    eligible_for_llm: Annotated[Optional[bool], _last_writer_wins]
+    block_reasons: Annotated[Optional[list], _last_writer_wins]
     final_response: Annotated[Optional[str], _last_writer_wins]
+    competitors: Optional[list[str]]
     llm_model_override: Optional[str]

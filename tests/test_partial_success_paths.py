@@ -139,8 +139,10 @@ def test_llm_node_uses_unified_signal_integrity_for_confidence(monkeypatch) -> N
     # Only layers with score > 0 contribute to the mean.
     # KPI layer score ~0.333333 is the sole scoring layer here
     # (competitive has score=0 due to 0 peers, excluded from mean).
-    # external_fetch penalty of -0.15 brings final confidence to ~0.183333.
-    expected_base = 0.333333
+    # With only 1 valid layer (< 3 required), the confidence cap
+    # reduces the base from 0.333 to 0.25.
+    # external_fetch penalty of -0.15 brings final confidence to ~0.10.
+    expected_base = 0.25
     external_penalty = -0.15
     expected_final = max(0.0, round(expected_base + external_penalty, 6))
     assert diagnostics.get("signal_integrity_scores", {}).get("Unified_integrity_score") == pytest.approx(
@@ -149,3 +151,152 @@ def test_llm_node_uses_unified_signal_integrity_for_confidence(monkeypatch) -> N
     assert "external_fetch_confidence_penalty" in reasons
     assert diagnostics.get("confidence_score") == pytest.approx(expected_final, abs=1e-6)
     assert payload["competitive_analysis"]["confidence"] == pytest.approx(expected_final, abs=1e-6)
+
+
+@pytest.mark.parametrize(
+    "prioritization",
+    [
+        {"insight_quality": "partial_insight", "uncertainty_mode": False},
+        {"insight_quality": "full_insight", "uncertainty_mode": True},
+    ],
+)
+def test_llm_node_degraded_modes_emit_schema_valid_withheld_recommendations(
+    monkeypatch,
+    prioritization: dict[str, object],
+) -> None:
+    monkeypatch.setattr("agent.nodes.llm_node.load_env_files", lambda: None)
+    monkeypatch.setattr("agent.nodes.llm_node._build_adapter", lambda **_kw: object())
+    monkeypatch.setattr(
+        "agent.nodes.llm_node.generate_with_retry",
+        lambda *_args, **_kwargs: _synthetic_llm_output(),
+    )
+
+    state = {
+        "business_type": "saas",
+        "entity_name": "acme",
+        "saas_kpi_data": success({"records": [{"computed_kpis": {"mrr": {"value": 100.0}}}]}),
+        "risk_data": success({"risk_score": 42.0}),
+        "forecast_data": skipped("forecast_unavailable"),
+        "root_cause": skipped("root_cause_unavailable"),
+        "segmentation": success({"cohort_analytics": {"status": "success"}}),
+        "prioritization": prioritization,
+    }
+
+    result = llm_node(state)
+    payload = json.loads(result["final_response"])
+
+    # Regression guard: analyze/export routers re-validate final_response.
+    validated = InsightOutput.model_validate(payload)
+    strategic = validated.strategic_recommendations
+    items = [
+        strategic.immediate_actions[0],
+        strategic.mid_term_moves[0],
+        strategic.defensive_strategies[0],
+        strategic.offensive_strategies[0],
+    ]
+
+    # Must stay unique across sections and carry explicit context terms.
+    assert len(items) == len(set(items))
+    context_terms = (
+        "competitor",
+        "gap",
+        "strength",
+        "weakness",
+        "growth",
+        "revenue",
+        "retention",
+        "risk",
+    )
+    for item in items:
+        lower = item.lower()
+        assert lower.startswith("conditional:")
+        assert any(term in lower for term in context_terms)
+
+
+def test_llm_node_degraded_mode_uses_critical_news_fallback(monkeypatch) -> None:
+    monkeypatch.setattr("agent.nodes.llm_node.load_env_files", lambda: None)
+    monkeypatch.setattr("agent.nodes.llm_node._build_adapter", lambda **_kw: object())
+    monkeypatch.setattr(
+        "agent.nodes.llm_node.generate_with_retry",
+        lambda *_args, **_kwargs: _synthetic_llm_output(),
+    )
+
+    state = {
+        "business_type": "saas",
+        "entity_name": "acme",
+        "saas_kpi_data": success({"records": [{"computed_kpis": {"mrr": {"value": 100.0}}}]}),
+        "risk_data": success({"risk_score": 42.0}),
+        "competitive_context": {
+            "available": True,
+            "source": "external_fetch",
+            "peer_count": 3,
+            "peers": ["Slack", "Notion", "Asana"],
+            "metrics": ["listed_price_usd_mean"],
+            "benchmark_rows_count": 0,
+            "numeric_signals": [],
+            "news_highlights": [
+                {
+                    "competitor": "Slack",
+                    "title": "Slack reports major outage and security incident",
+                    "snippet": "Downtime and security disclosures increased enterprise risk concerns.",
+                    "published_at": "2026-03-20T00:00:00+00:00",
+                    "url": "https://example.com/slack-incident",
+                    "criticality_score": 3,
+                }
+            ],
+        },
+        "prioritization": {"insight_quality": "full_insight", "uncertainty_mode": True},
+    }
+
+    result = llm_node(state)
+    payload = json.loads(result["final_response"])
+    validated = InsightOutput.model_validate(payload)
+
+    immediate = validated.strategic_recommendations.immediate_actions[0].lower()
+    assert "most critical competitor news signal" in immediate
+    assert "slack" in immediate
+
+
+def test_llm_node_self_analysis_only_ignores_competitor_context(monkeypatch) -> None:
+    monkeypatch.setattr("agent.nodes.llm_node.load_env_files", lambda: None)
+    monkeypatch.setattr("agent.nodes.llm_node._build_adapter", lambda **_kw: object())
+    monkeypatch.setattr(
+        "agent.nodes.llm_node.generate_with_retry",
+        lambda *_args, **_kwargs: _synthetic_llm_output(),
+    )
+
+    state = {
+        "business_type": "saas",
+        "entity_name": "acme",
+        "self_analysis_only": True,
+        "saas_kpi_data": success({"records": [{"computed_kpis": {"mrr": {"value": 100.0}}}]}),
+        "risk_data": success({"risk_score": 42.0}),
+        "competitive_context": {
+            "available": True,
+            "source": "external_fetch",
+            "peer_count": 3,
+            "peers": ["Slack", "Notion", "Asana"],
+            "metrics": ["listed_price_usd_mean"],
+            "benchmark_rows_count": 0,
+            "numeric_signals": [],
+            "news_highlights": [
+                {
+                    "competitor": "Slack",
+                    "title": "Slack reports outage",
+                    "snippet": "Downtime risk event.",
+                    "published_at": "2026-03-20T00:00:00+00:00",
+                    "url": "https://example.com/slack-outage",
+                    "criticality_score": 3,
+                }
+            ],
+        },
+        "prioritization": {"insight_quality": "full_insight", "uncertainty_mode": True},
+    }
+
+    result = llm_node(state)
+    payload = json.loads(result["final_response"])
+    validated = InsightOutput.model_validate(payload)
+    immediate = validated.strategic_recommendations.immediate_actions[0].lower()
+
+    assert "data-only improvement plan" in immediate
+    assert "competitor news signal" not in immediate

@@ -39,11 +39,13 @@ _OUTPUT_KEY_BY_NODE: dict[str, str] = {
     "multivariate_scenario": "multivariate_scenario_data",
     "role_analytics": "segmentation",
     "forecast_fetch": "forecast_data",
+    "benchmark": "benchmark_data",
     "signal_conflict": "signal_conflicts",
     "risk": "risk_data",
     "prioritization": "prioritization",
     "pipeline_status": "pipeline_status",
     "signal_enrichment": "signal_enrichment",
+    "synthesis_gate": "final_response",
     "competitor_intelligence": "competitive_context",
     "llm": "final_response",
 }
@@ -61,6 +63,7 @@ class NodeSpec:
 def _lazy_import_nodes() -> dict[str, NodeFn]:
     """Import all node functions lazily to avoid circular imports."""
     from agent.nodes.agency_kpi_node import agency_kpi_fetch_node
+    from agent.nodes.benchmark_node import benchmark_node
     from agent.nodes.business_router import business_router_node
     from agent.nodes.category_formula_node import category_formula_node
     from agent.nodes.cohort_analytics_node import cohort_analytics_node
@@ -104,6 +107,7 @@ def _lazy_import_nodes() -> dict[str, NodeFn]:
         "ecommerce_kpi_fetch": ecommerce_kpi_fetch_node,
         "agency_kpi_fetch": agency_kpi_fetch_node,
         "growth_engine": growth_engine_node,
+        "benchmark": benchmark_node,
         "timeseries_factors": timeseries_factors_node,
         "cohort_analytics": cohort_analytics_node,
         "category_formulas": category_formula_node,
@@ -168,6 +172,7 @@ ENRICHMENT_FAN_OUT: list[tuple[str, str]] = [
     ("growth_engine", "category_formulas"),
     ("growth_engine", "multivariate_scenario"),
     ("growth_engine", "forecast_fetch"),
+    ("growth_engine", "benchmark"),
 ]
 
 # Linear chains within the enrichment phase.
@@ -181,11 +186,19 @@ ENRICHMENT_FAN_IN_TO_ROLE: list[str] = [
     "cohort_analytics",
     "unit_economics",
     "multivariate_scenario",
+    "benchmark",
+]
+
+# competitor_intelligence depends on role_analytics (for peer names)
+# and must complete before signal_conflict so competitive data reaches
+# the synthesis gate and confidence scoring.
+COMPETITOR_CHAIN: list[tuple[str, str]] = [
+    ("role_analytics", "competitor_intelligence"),
 ]
 
 # All nodes that must complete before signal_conflict.
 AGGREGATION_FAN_IN: list[str] = [
-    "role_analytics",
+    "competitor_intelligence",
     "forecast_fetch",
 ]
 
@@ -214,6 +227,7 @@ INSIGHT_PIPELINE_SEQUENCE: list[tuple[str, str]] = [
     *ENRICHMENT_FAN_OUT,
     *ENRICHMENT_CHAINS,
     *[(node, "role_analytics") for node in ENRICHMENT_FAN_IN_TO_ROLE],
+    *COMPETITOR_CHAIN,
     *[(node, "signal_conflict") for node in AGGREGATION_FAN_IN],
     *DECISION_PIPELINE,
 ]

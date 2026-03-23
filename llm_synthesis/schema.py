@@ -48,7 +48,10 @@ _METRIC_TERMS = (
     "recurring_revenue",
     "revenue",
 )
-_EXPLICIT_RECOMMENDATION_TERMS = ("competitor", "gap", "strength", "weakness")
+_EXPLICIT_RECOMMENDATION_TERMS = (
+    "competitor", "gap", "strength", "weakness",
+    "benchmark", "peer", "percentile", "position",
+)
 _SELF_ANALYSIS_RECOMMENDATION_TERMS = (
     "growth",
     "revenue",
@@ -139,10 +142,16 @@ def _is_timeout_reason(reason: str) -> bool:
 
 def _is_missing_metric_reason(reason: str) -> bool:
     normalized = _normalize(reason)
-    return (
+    if (
         "metric" in normalized
         and any(term in normalized for term in ("missing", "insufficient", "incomplete", "gap"))
-    )
+    ):
+        return True
+    # Also matches when the LLM couldn't produce specific recommendations
+    # due to insufficient data context
+    if "must reference specific context" in normalized:
+        return True
+    return False
 
 
 class ConfidenceAdjustment(BaseModel):
@@ -352,7 +361,7 @@ class InsightOutput(BaseModel):
             return cls(
                 competitive_analysis=CompetitiveAnalysis(
                     summary=(
-                        "Conditional: performance trend analysis could not be completed "
+                        "Conditional: performance trend insight is limited "
                         "due to insufficient metric coverage."
                     ),
                     market_position=(
@@ -360,7 +369,7 @@ class InsightOutput(BaseModel):
                         "due to limited revenue and retention data."
                     ),
                     relative_performance=(
-                        f"Conditional: performance vulnerability assessment blocked ({reason})."
+                        f"Conditional: performance vulnerability assessment is limited ({reason_text})."
                     ),
                     key_advantages=[
                         "Conditional: no validated revenue strength can be confirmed with current data."
@@ -387,7 +396,7 @@ class InsightOutput(BaseModel):
             )
         if timeout_reason and missing_metric_reason:
             summary = (
-                "Conditional: critical priority - competitor benchmark analysis could not be completed "
+                "Conditional: critical priority - competitor benchmark insight is limited "
                 "because competitor metrics are incomplete and the run timed out."
             )
             immediate_action = (
@@ -396,7 +405,7 @@ class InsightOutput(BaseModel):
             )
         elif timeout_reason:
             summary = (
-                "Conditional: critical priority - competitor benchmark analysis timed out before "
+                "Conditional: critical priority - competitor benchmark insight timed out before "
                 "competitor metric comparisons could complete."
             )
             immediate_action = (
@@ -405,7 +414,7 @@ class InsightOutput(BaseModel):
             )
         elif missing_metric_reason:
             summary = (
-                "Conditional: critical priority - competitor benchmark analysis could not be completed "
+                "Conditional: critical priority - competitor benchmark insight is limited "
                 "due to missing competitor metrics."
             )
             immediate_action = (
@@ -413,7 +422,7 @@ class InsightOutput(BaseModel):
             )
         else:
             summary = (
-                "Conditional: critical priority - competitor benchmark analysis could not be completed "
+                "Conditional: critical priority - competitor benchmark insight is limited "
                 "due to competitor data constraints."
             )
             immediate_action = (
@@ -422,11 +431,11 @@ class InsightOutput(BaseModel):
             )
 
         relative_performance = (
-            "Conditional: competitor gap/strength/weakness assessment timed out "
+            "Conditional: competitor gap/strength/weakness assessment is limited "
             f"({reason_text})."
             if timeout_reason
             else (
-                "Conditional: competitor gap/strength/weakness assessment blocked "
+                "Conditional: competitor gap/strength/weakness assessment is limited "
                 f"({reason_text})."
             )
         )

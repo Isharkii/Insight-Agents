@@ -57,14 +57,32 @@ class OpenAIJsonClient:
 
         def _run() -> str:
             client = OpenAI(api_key=self._api_key)
-            response = client.chat.completions.create(
-                model=self._model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0,
-                top_p=1,
-                max_tokens=900,
-                response_format={"type": "json_object"},
-            )
+            base_kwargs = {
+                "model": self._model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0,
+                "top_p": 1,
+                "response_format": {"type": "json_object"},
+            }
+            try:
+                response = client.chat.completions.create(
+                    **base_kwargs,
+                    max_completion_tokens=900,
+                )
+            except TypeError:
+                response = client.chat.completions.create(
+                    **base_kwargs,
+                    max_tokens=900,
+                )
+            except Exception as exc:  # noqa: BLE001
+                message = str(exc).lower()
+                if "unsupported parameter" in message and "max_completion_tokens" in message:
+                    response = client.chat.completions.create(
+                        **base_kwargs,
+                        max_tokens=900,
+                    )
+                else:
+                    raise
             return response.choices[0].message.content or "{}"
 
         try:

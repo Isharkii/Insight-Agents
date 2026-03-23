@@ -37,7 +37,11 @@ def route_by_business_type(state: AgentState) -> str:
 
 
 def route_after_synthesis_gate(state: AgentState) -> str:
-    """Route to LLM pipeline or short-circuit to END when synthesis is blocked."""
+    """Route to LLM or short-circuit to END when synthesis is blocked.
+
+    competitor_intelligence now runs BEFORE synthesis_gate (in the
+    aggregation phase), so the post-gate route goes directly to llm.
+    """
     if state.get("synthesis_blocked"):
         return "end"
-    return "competitor_intelligence"
+    return "llm"

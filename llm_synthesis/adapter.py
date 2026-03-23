@@ -34,7 +34,7 @@ class OpenAILLMAdapter(BaseLLMAdapter):
 
     def __init__(
         self,
-        model: str = "gpt-4o",
+        model: str = "gpt-5.4",
         max_tokens: int = 2048,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
@@ -63,7 +63,7 @@ class OpenAILLMAdapter(BaseLLMAdapter):
             client_kwargs["base_url"] = base_url
 
         self._client = OpenAI(**client_kwargs)
-        self._model = str(model or "").strip() or "gpt-4o"
+        self._model = str(model or "").strip() or "gpt-5.4"
         self._max_tokens = max_tokens
 
     def generate(self, prompt: str) -> str:
@@ -75,15 +75,35 @@ class OpenAILLMAdapter(BaseLLMAdapter):
         Returns:
             Raw string content from the model response.
         """
-        response = self._client.chat.completions.create(
-            model=self._model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-            top_p=1,
-            max_tokens=self._max_tokens,
-            stream=False,
-            seed=42,
-        )
+        base_kwargs = {
+            "model": self._model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0,
+            "top_p": 1,
+            "stream": False,
+            "seed": 42,
+        }
+        try:
+            # GPT-5.x chat models require max_completion_tokens.
+            response = self._client.chat.completions.create(
+                **base_kwargs,
+                max_completion_tokens=self._max_tokens,
+            )
+        except TypeError:
+            # Backward compatibility for older SDKs/models.
+            response = self._client.chat.completions.create(
+                **base_kwargs,
+                max_tokens=self._max_tokens,
+            )
+        except Exception as exc:  # noqa: BLE001
+            message = str(exc).lower()
+            if "unsupported parameter" in message and "max_completion_tokens" in message:
+                response = self._client.chat.completions.create(
+                    **base_kwargs,
+                    max_tokens=self._max_tokens,
+                )
+            else:
+                raise
         return response.choices[0].message.content or ""
 
 

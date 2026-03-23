@@ -12,6 +12,7 @@ from typing import Any, Mapping
 
 from agent.helpers.kpi_extraction import metric_series_from_kpi_payload, resolve_kpi_payload
 from agent.nodes.node_result import confidence_of, payload_of, status_of, success
+from agent.signal_integrity import UnifiedSignalIntegrity
 from agent.signal_normalizer import normalize_forecast_signals, normalize_kpi_signals
 from agent.state import AgentState
 from app.services.statistics.leading_indicators import detect_leading_indicators
@@ -132,6 +133,25 @@ def _collect_global_signals(
     warnings: list[str] = []
     metadata: dict[str, Any] = {"leading_indicators": {}, "temporal_conflicts": []}
 
+    # ── Isolation enforcement ─────────────────────────────────────
+    # Compute layer integrity to identify isolated signals.
+    # Isolated layers must NOT contribute signals to conflict detection —
+    # otherwise an isolated forecast (low R²) can generate spurious conflicts
+    # that cascade into risk scoring and prioritization.
+    try:
+        _integrity = UnifiedSignalIntegrity.compute(state)
+        _isolated = set(_integrity.get("isolated_layers", []))
+    except Exception:
+        _isolated = set()
+
+    if _isolated:
+        import logging as _iso_logging
+        _iso_logging.getLogger("agent.nodes.signal_conflict").info(
+            "Isolation enforcement: excluding signals from layers: %s",
+            ", ".join(sorted(_isolated)),
+        )
+        metadata["isolated_layers"] = sorted(_isolated)
+
     kpi_payload = resolve_kpi_payload(state)
     if isinstance(kpi_payload, Mapping) and kpi_payload:
         metric_series = metric_series_from_kpi_payload(kpi_payload)
@@ -169,19 +189,30 @@ def _collect_global_signals(
         except Exception as exc:  # noqa: BLE001
             warnings.append(f"kpi_signal_normalization_failed: {exc}")
 
-    forecast_envelope = state.get("forecast_data")
-    if status_of(forecast_envelope) == "success":
-        forecast_payload = payload_of(forecast_envelope) or {}
-        try:
-            forecast_signals = normalize_forecast_signals(forecast_payload)
-            for key, value in forecast_signals.items():
-                numeric = _safe_float(value)
-                if numeric is not None:
-                    signals[str(key)] = numeric
-        except Exception as exc:  # noqa: BLE001
-            warnings.append(f"forecast_signal_normalization_failed: {exc}")
-            # Fallback: extract slope/deviation directly from forecast data
+    # ── Forecast signals (skip if layer is isolated) ─────────────
+    if "forecast" in _isolated:
+        warnings.append(
+            "forecast signals excluded from conflict detection: layer isolated"
+        )
+    else:
+        forecast_envelope = state.get("forecast_data")
+        if status_of(forecast_envelope) == "success":
+            forecast_payload = payload_of(forecast_envelope) or {}
+            # Always extract slope and deviation independently first — these
+            # are the primary signals for conflict detection.  The bundled
+            # normalize_forecast_signals() derives churn_acceleration which
+            # frequently throws (no churn forecast row), killing all three
+            # signals.  By extracting the two critical signals up-front we
+            # guarantee they reach the conflict engine.
             _extract_forecast_signals_direct(forecast_payload, signals)
+            try:
+                forecast_signals = normalize_forecast_signals(forecast_payload)
+                for key, value in forecast_signals.items():
+                    numeric = _safe_float(value)
+                    if numeric is not None:
+                        signals.setdefault(str(key), numeric)
+            except Exception as exc:  # noqa: BLE001
+                warnings.append(f"forecast_signal_normalization_failed: {exc}")
 
     growth_payload = payload_of(state.get("growth_data")) or {}
     horizons = growth_payload.get("primary_horizons")

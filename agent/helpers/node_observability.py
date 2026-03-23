@@ -39,16 +39,22 @@ def _build_degraded_envelope(
 
     # For envelope-style keys (kpi_data, forecast_data, etc.) return a failed envelope.
     # For scalar keys (pipeline_status, prioritization, etc.) return a safe default.
+    # NOTE: final_response is deliberately excluded — returning None would
+    # overwrite a valid blocked response set by synthesis_gate.  If the llm
+    # node degrades, returning {} preserves whatever final_response already
+    # exists in state.
     _SCALAR_DEFAULTS: dict[str, Any] = {
         "pipeline_status": "partial",
         "synthesis_blocked": False,
-        "final_response": None,
         "prioritization": {
             "priority_level": "low",
             "recommended_focus": f"node {node_name} degraded: {error_msg[:120]}",
             "confidence_score": 0.0,
         },
     }
+    if output_key == "final_response":
+        # Never overwrite final_response with None on degradation.
+        return {}
     if output_key in _SCALAR_DEFAULTS:
         return {output_key: _SCALAR_DEFAULTS[output_key]}
 

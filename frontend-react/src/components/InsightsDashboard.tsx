@@ -8,6 +8,8 @@ import {
   DriverAnalysis,
   ForecastScenarios,
   RisksRecommendations,
+  BusinessIntelligence,
+  DiagnosticsPanel,
 } from "./sections";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -105,7 +107,7 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
   executionTime,
   entityName,
   reportInsight,
-  biData: _biData,
+  biData,
 }) => {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -146,6 +148,23 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
   // Scenarios from derived signals
   const scenarios = derivedSignals.multivariate_scenario?.scenario_simulation?.scenarios ?? null;
 
+  // Business intelligence data
+  const hasBiData = !!biData && (
+    biData.context != null ||
+    biData.insights != null ||
+    biData.strategy != null ||
+    (biData.warnings?.length ?? 0) > 0 ||
+    (biData.pipeline?.length ?? 0) > 0
+  );
+
+  // Diagnostics available
+  const hasDiagnostics = analyzeResult.diagnostics && (
+    (analyzeResult.diagnostics.missing_signal?.length ?? 0) > 0 ||
+    (analyzeResult.diagnostics.confidence_adjustments?.length ?? 0) > 0 ||
+    (analyzeResult.diagnostics.warnings?.length ?? 0) > 0 ||
+    ps?.synthesis_blocked != null
+  );
+
   return (
     <div ref={ref} className="ia-section-gap-lg">
       {/* ── Section 1: Hero Insight ── */}
@@ -163,7 +182,7 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
         metricSeries={metricSeries}
       />
 
-      {/* ── Section 3: Strategies & Recommendations (above charts) ── */}
+      {/* ── Section 3: Strategies & Recommendations ── */}
       <RisksRecommendations
         result={reportInsight ?? analyzeResult}
         prioritization={ps?.prioritization}
@@ -171,7 +190,14 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
         entityName={chartEntityName}
       />
 
-      {/* ── Section 4: Trends ── */}
+      {/* Competitive benchmark section intentionally disabled for data-only insights. */}
+
+      {/* ── Section 5: Business Intelligence ── */}
+      {hasBiData && (
+        <BusinessIntelligence biData={biData!} />
+      )}
+
+      {/* ── Section 6: Trends ── */}
       <TrendCharts
         kpiRows={kpiRows}
         revenueTrend={dashboardData?.revenue_trend ?? []}
@@ -179,7 +205,7 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
         entityName={chartEntityName}
       />
 
-      {/* ── Section 5: Driver Analysis ── */}
+      {/* ── Section 7: Driver Analysis ── */}
       {ps && (
         <DriverAnalysis
           signals={ps}
@@ -187,13 +213,22 @@ const InsightsDashboard: FC<InsightsDashboardProps> = ({
         />
       )}
 
-      {/* ── Section 6: Forecast & Scenarios ── */}
+      {/* ── Section 8: Forecast & Scenarios ── */}
       <ForecastScenarios
         dashboardData={dashboardData}
         scenarios={scenarios}
         entityName={chartEntityName}
         unitEconomics={ps?.unit_economics}
       />
+
+      {/* ── Section 9: Pipeline Diagnostics ── */}
+      {hasDiagnostics && analyzeResult.diagnostics && (
+        <DiagnosticsPanel
+          diagnostics={analyzeResult.diagnostics}
+          pipelineSignals={ps}
+          pipelineStatus={analyzeResult.pipeline_status}
+        />
+      )}
 
       {/* ── Classification badge ── */}
       {dashboardData?.classification && (

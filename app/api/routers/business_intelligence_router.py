@@ -107,7 +107,10 @@ def _build_llm_adapter():
     if adapter_type == "mock":
         return MockLLMAdapter()
 
-    model = str(os.getenv("LLM_MODEL", "gpt-4o") or "").strip() or "gpt-4o"
+    model = (
+        str(os.getenv("LLM_MODEL", "gpt-5.4") or "").strip()
+        or "gpt-5.4"
+    )
     api_key = os.getenv("LLM_API_KEY", "").strip() or os.getenv("OPENAI_API_KEY", "").strip()
     return OpenAILLMAdapter(model=model, api_key=api_key or None)
 
