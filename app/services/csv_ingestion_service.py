@@ -763,7 +763,7 @@ class CSVIngestionService:
         # Phase 4: Timestamp policy + parsing.
         # Required for specific categories; optional for static/other datasets.
         active = ~invalid
-        ts_parsed = pd.Series(pd.NaT, index=chunk.index)
+        ts_parsed = pd.Series(pd.NaT, index=chunk.index, dtype="datetime64[ns, UTC]")
         ts_raw = (
             stripped["timestamp"]
             if "timestamp" in stripped.columns

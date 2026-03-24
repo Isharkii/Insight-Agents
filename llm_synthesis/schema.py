@@ -135,24 +135,6 @@ def _compact_failure_reason(reason: str, *, limit: int = 180) -> str:
     return f"{text[: limit - 3].rstrip()}..."
 
 
-def _is_timeout_reason(reason: str) -> bool:
-    normalized = _normalize(reason)
-    return any(term in normalized for term in ("timed out", "timeout", "deadline exceeded"))
-
-
-def _is_missing_metric_reason(reason: str) -> bool:
-    normalized = _normalize(reason)
-    if (
-        "metric" in normalized
-        and any(term in normalized for term in ("missing", "insufficient", "incomplete", "gap"))
-    ):
-        return True
-    # Also matches when the LLM couldn't produce specific recommendations
-    # due to insufficient data context
-    if "must reference specific context" in normalized:
-        return True
-    return False
-
 
 class ConfidenceAdjustment(BaseModel):
     """Machine-readable confidence penalty entry (diagnostic utility type)."""
@@ -355,119 +337,39 @@ class InsightOutput(BaseModel):
     ) -> "InsightOutput":
         del pipeline_status  # Preserved for backward call compatibility.
         reason_text = _compact_failure_reason(reason)
-        timeout_reason = _is_timeout_reason(reason_text)
-        missing_metric_reason = _is_missing_metric_reason(reason_text)
-        if get_self_analysis_mode():
-            return cls(
-                competitive_analysis=CompetitiveAnalysis(
-                    summary=(
-                        "Conditional: performance trend insight is limited "
-                        "due to insufficient metric coverage."
-                    ),
-                    market_position=(
-                        "Conditional: growth trajectory remains uncertain "
-                        "due to limited revenue and retention data."
-                    ),
-                    relative_performance=(
-                        f"Conditional: performance vulnerability assessment is limited ({reason_text})."
-                    ),
-                    key_advantages=[
-                        "Conditional: no validated revenue strength can be confirmed with current data."
-                    ],
-                    key_vulnerabilities=[
-                        "Conditional: metric gaps are a weakness in current risk assessment reliability."
-                    ],
-                    confidence=0.0,
-                ),
-                strategic_recommendations=StrategicRecommendations(
-                    immediate_actions=[
-                        "Conditional: close metric coverage gaps to reduce revenue risk exposure."
-                    ],
-                    mid_term_moves=[
-                        "Conditional: build retention tracking to improve growth trend confidence."
-                    ],
-                    defensive_strategies=[
-                        "Conditional: address churn risk vulnerability where retention data is incomplete."
-                    ],
-                    offensive_strategies=[
-                        "Conditional: target revenue growth opportunity only after metric gaps are resolved."
-                    ],
-                ),
-            )
-        if timeout_reason and missing_metric_reason:
-            summary = (
-                "Conditional: critical priority - competitor benchmark insight is limited "
-                "because competitor metrics are incomplete and the run timed out."
-            )
-            immediate_action = (
-                "Conditional: ingest missing competitor metrics and rerun competitor gap analysis "
-                "with a smaller dataset scope."
-            )
-        elif timeout_reason:
-            summary = (
-                "Conditional: critical priority - competitor benchmark insight timed out before "
-                "competitor metric comparisons could complete."
-            )
-            immediate_action = (
-                "Conditional: rerun competitor gap analysis on a smaller dataset and shorter timeframe "
-                "to restore benchmark coverage."
-            )
-        elif missing_metric_reason:
-            summary = (
-                "Conditional: critical priority - competitor benchmark insight is limited "
-                "due to missing competitor metrics."
-            )
-            immediate_action = (
-                "Conditional: close competitor metric gaps before acting on strength/weakness assumptions."
-            )
-        else:
-            summary = (
-                "Conditional: critical priority - competitor benchmark insight is limited "
-                "due to competitor data constraints."
-            )
-            immediate_action = (
-                "Conditional: resolve competitor data and metric gaps before acting on "
-                "strength/weakness assumptions."
-            )
-
-        relative_performance = (
-            "Conditional: competitor gap/strength/weakness assessment is limited "
-            f"({reason_text})."
-            if timeout_reason
-            else (
-                "Conditional: competitor gap/strength/weakness assessment is limited "
-                f"({reason_text})."
-            )
-        )
-
         return cls(
             competitive_analysis=CompetitiveAnalysis(
-                summary=summary,
-                market_position=(
-                    "Conditional: market position remains uncertain relative to competitors, "
-                    "raising near-term revenue and retention risk."
+                summary=(
+                    "Performance trend insight is limited "
+                    "due to insufficient metric coverage."
                 ),
-                relative_performance=relative_performance,
+                market_position=(
+                    "Growth trajectory remains uncertain "
+                    "due to limited revenue and retention data."
+                ),
+                relative_performance=(
+                    f"Performance vulnerability assessment is limited ({reason_text})."
+                ),
                 key_advantages=[
-                    "Conditional: no validated competitor strength advantage can be confirmed."
+                    "No validated revenue strength can be confirmed with current data."
                 ],
                 key_vulnerabilities=[
-                    "Conditional: competitor data gaps are a weakness in current assessment reliability."
+                    "Metric gaps are a weakness in current risk assessment reliability."
                 ],
                 confidence=0.0,
             ),
             strategic_recommendations=StrategicRecommendations(
                 immediate_actions=[
-                    immediate_action
+                    "Close metric coverage gaps to reduce revenue risk exposure."
                 ],
                 mid_term_moves=[
-                    "Conditional: build benchmark coverage to validate competitor weaknesses against metric trends."
+                    "Build retention tracking to improve growth trend confidence."
                 ],
                 defensive_strategies=[
-                    "Conditional: protect against competitor strength where risk and churn metrics are incomplete."
+                    "Address churn risk vulnerability where retention data is incomplete."
                 ],
                 offensive_strategies=[
-                    "Conditional: target competitor weakness only after benchmark gaps are resolved."
+                    "Target revenue growth opportunity only after metric gaps are resolved."
                 ],
             ),
         )

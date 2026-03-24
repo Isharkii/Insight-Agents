@@ -46,7 +46,6 @@ _OUTPUT_KEY_BY_NODE: dict[str, str] = {
     "pipeline_status": "pipeline_status",
     "signal_enrichment": "signal_enrichment",
     "synthesis_gate": "final_response",
-    "competitor_intelligence": "competitive_context",
     "llm": "final_response",
 }
 
@@ -67,7 +66,6 @@ def _lazy_import_nodes() -> dict[str, NodeFn]:
     from agent.nodes.business_router import business_router_node
     from agent.nodes.category_formula_node import category_formula_node
     from agent.nodes.cohort_analytics_node import cohort_analytics_node
-    from agent.nodes.competitor_node import competitor_node
     from agent.nodes.ecommerce_kpi_node import ecommerce_kpi_fetch_node
     from agent.nodes.forecast_node import forecast_fetch_node
     from agent.nodes.growth_engine_node import growth_engine_node
@@ -99,6 +97,12 @@ def _lazy_import_nodes() -> dict[str, NodeFn]:
         degrade_on_failure=False,
     )
 
+    def _signal_aggregation_barrier(state: AgentState) -> AgentState:
+        """No-op barrier node: ensures role_analytics and forecast_fetch
+        both complete before signal_conflict runs (prevents LangGraph
+        superstep re-execution of downstream pipeline)."""
+        return {}
+
     raw_nodes = {
         "intent": intent_node,
         "business_router": business_router_node,
@@ -115,13 +119,13 @@ def _lazy_import_nodes() -> dict[str, NodeFn]:
         "multivariate_scenario": multivariate_scenario_node,
         "role_analytics": role_analytics_node,
         "forecast_fetch": guarded_forecast_fetch,
+        "signal_aggregation": _signal_aggregation_barrier,
         "signal_conflict": signal_conflict_node,
         "risk": risk_node,
         "prioritization": prioritization_node,
         "pipeline_status": pipeline_status_node,
         "signal_enrichment": signal_enrichment_node,
         "synthesis_gate": synthesis_gate_node,
-        "competitor_intelligence": competitor_node,
         "llm": llm_node,
     }
 
@@ -155,14 +159,16 @@ def _lazy_import_nodes() -> dict[str, NodeFn]:
 # Phase 2b — Forecast (parallel with enrichment, needs only entity_name):
 #   growth_engine → forecast_fetch ─────────────────────┐
 #                                                       ↓
-# Phase 3 — Signal Aggregation (fan-in):
-#   role_analytics ─→ signal_conflict ←─ forecast_fetch
+# Phase 3 — Signal Aggregation (fan-in via barrier):
+#   role_analytics ─→ signal_aggregation ←─ forecast_fetch
+#                          ↓
+#                    signal_conflict
 #
 # Phase 4 — Decision Layer:
 #   signal_conflict → risk → prioritization → pipeline_status → synthesis_gate
 #
 # Phase 5 — Synthesis:
-#   synthesis_gate → [conditional] → competitor_intelligence → llm → END
+#   synthesis_gate → [conditional] → llm → END
 #
 
 # Edges that form the enrichment fan-out from growth_engine.
@@ -189,21 +195,15 @@ ENRICHMENT_FAN_IN_TO_ROLE: list[str] = [
     "benchmark",
 ]
 
-# competitor_intelligence depends on role_analytics (for peer names)
-# and must complete before signal_conflict so competitive data reaches
-# the synthesis gate and confidence scoring.
-COMPETITOR_CHAIN: list[tuple[str, str]] = [
-    ("role_analytics", "competitor_intelligence"),
-]
-
-# All nodes that must complete before signal_conflict.
+# All nodes that must complete before signal_aggregation barrier.
 AGGREGATION_FAN_IN: list[str] = [
-    "competitor_intelligence",
+    "role_analytics",
     "forecast_fetch",
 ]
 
 # The decision pipeline after signal aggregation.
 DECISION_PIPELINE: list[tuple[str, str]] = [
+    ("signal_aggregation", "signal_conflict"),
     ("signal_conflict", "risk"),
     ("risk", "prioritization"),
     ("prioritization", "pipeline_status"),
@@ -227,7 +227,6 @@ INSIGHT_PIPELINE_SEQUENCE: list[tuple[str, str]] = [
     *ENRICHMENT_FAN_OUT,
     *ENRICHMENT_CHAINS,
     *[(node, "role_analytics") for node in ENRICHMENT_FAN_IN_TO_ROLE],
-    *COMPETITOR_CHAIN,
-    *[(node, "signal_conflict") for node in AGGREGATION_FAN_IN],
+    *[(node, "signal_aggregation") for node in AGGREGATION_FAN_IN],
     *DECISION_PIPELINE,
 ]

@@ -120,6 +120,7 @@ class AgentStateModel(BaseModel):
     user_query: str
     business_type: str
     entity_name: str
+    peer_entities: list[str] | None = None
 
     kpi_data: NodeEnvelope[KpiPayloadModel] | None = None
     saas_kpi_data: NodeEnvelope[KpiPayloadModel] | None = None
@@ -152,6 +153,7 @@ class AgentStateModel(BaseModel):
     block_reasons: list[str] | None = None
     final_response: str | None = None
     competitors: list[str] | None = None
+    self_analysis_only: bool | None = None
     llm_model_override: str | None = None
 
     @classmethod
@@ -175,6 +177,7 @@ class AgentStatePatchModel(BaseModel):
     user_query: str | None = None
     business_type: str | None = None
     entity_name: str | None = None
+    peer_entities: list[str] | None = None
 
     kpi_data: NodeEnvelope[KpiPayloadModel] | None = None
     saas_kpi_data: NodeEnvelope[KpiPayloadModel] | None = None
@@ -207,4 +210,5 @@ class AgentStatePatchModel(BaseModel):
     block_reasons: list[str] | None = None
     final_response: str | None = None
     competitors: list[str] | None = None
+    self_analysis_only: bool | None = None
     llm_model_override: str | None = None

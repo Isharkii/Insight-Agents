@@ -348,6 +348,12 @@ def synthesis_gate_node(state: AgentState) -> AgentState:
 
     _gate_logger = _logging.getLogger("agent.nodes.synthesis_gate")
 
+    # Guard: LangGraph Pregel model may re-trigger this node via superstep
+    # re-execution.  If we already made a decision, skip the re-run.
+    if state.get("synthesis_blocked") is not None:
+        _gate_logger.debug("synthesis_gate: skipping re-execution (already decided)")
+        return {}
+
     # Compute integrity safely — fall back to empty dict on failure.
     try:
         integrity = UnifiedSignalIntegrity.compute(state)

@@ -279,12 +279,8 @@ def export_report(
             "business_type": resolved,
             "entity_name": entity_name,
         }
-        if competitors:
-            invoke_state["competitors"] = [
-                name.strip() for name in competitors.split(",") if name.strip()
-            ]
-        if self_analysis_only:
-            invoke_state["self_analysis_only"] = True
+        # Competitor intelligence disabled — always self-analysis mode.
+        invoke_state["self_analysis_only"] = True
         state = insight_graph.invoke(invoke_state)
         response_raw = state.get("final_response")
         if not isinstance(response_raw, str):

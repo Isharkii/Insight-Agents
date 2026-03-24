@@ -282,6 +282,14 @@ def _public_failure_reason(error: Exception) -> str:
     return f"LLM synthesis failed ({error_type}). Check server logs for details."
 
 
+def _strip_conditional_prefix(text: str) -> str:
+    """Remove 'Conditional:' prefix if present — mode flag replaces it."""
+    value = str(text or "").strip()
+    if value.lower().startswith("conditional:"):
+        value = value[len("conditional:"):].strip()
+    return value
+
+
 def _ensure_conditional_recommendations(
     payload: FinalInsightResponse,
     *,
@@ -292,26 +300,17 @@ def _ensure_conditional_recommendations(
 
     recommendations = payload.strategic_recommendations
 
-    def _tag(items: list[str]) -> list[str]:
-        out: list[str] = []
-        for item in items:
-            text = str(item or "").strip()
-            if not text:
-                continue
-            if text.lower().startswith("conditional:"):
-                out.append(text)
-            else:
-                out.append(f"Conditional: {text}")
-        return out
+    def _clean(items: list[str]) -> list[str]:
+        return [_strip_conditional_prefix(item) for item in items if str(item or "").strip()]
 
     return payload.model_copy(
         update={
             "strategic_recommendations": recommendations.model_copy(
                 update={
-                    "immediate_actions": _tag(recommendations.immediate_actions),
-                    "mid_term_moves": _tag(recommendations.mid_term_moves),
-                    "defensive_strategies": _tag(recommendations.defensive_strategies),
-                    "offensive_strategies": _tag(recommendations.offensive_strategies),
+                    "immediate_actions": _clean(recommendations.immediate_actions),
+                    "mid_term_moves": _clean(recommendations.mid_term_moves),
+                    "defensive_strategies": _clean(recommendations.defensive_strategies),
+                    "offensive_strategies": _clean(recommendations.offensive_strategies),
                 }
             )
         }
@@ -328,19 +327,19 @@ def _ensure_low_confidence_tone(
 
     analysis = payload.competitive_analysis
 
-    def _tag(text: str) -> str:
-        value = str(text or "").strip()
+    def _clean(text: str) -> str:
+        value = _strip_conditional_prefix(str(text or "").strip())
         if not value:
-            return "Conditional: analysis context remains uncertain due to limited data."
-        return value if value.lower().startswith("conditional:") else f"Conditional: {value}"
+            return "Analysis context remains uncertain due to limited data."
+        return value
 
     return payload.model_copy(
         update={
             "competitive_analysis": analysis.model_copy(
                 update={
-                    "summary": _tag(analysis.summary),
-                    "market_position": _tag(analysis.market_position),
-                    "relative_performance": _tag(analysis.relative_performance),
+                    "summary": _clean(analysis.summary),
+                    "market_position": _clean(analysis.market_position),
+                    "relative_performance": _clean(analysis.relative_performance),
                 }
             )
         }
@@ -365,31 +364,31 @@ def _degraded_recommendations(
         if uncertainty_mode:
             return {
                 "immediate_actions": [
-                    "Conditional: basic data-only improvement plan: resolve revenue, retention, and churn conflicts before execution."
+                    "basic data-only improvement plan: resolve revenue, retention, and churn conflicts before execution."
                 ],
                 "mid_term_moves": [
-                    "Conditional: strengthen macro and trend signal coverage to validate growth trajectory and forecast direction."
+                    "strengthen macro and trend signal coverage to validate growth trajectory and forecast direction."
                 ],
                 "defensive_strategies": [
-                    "Conditional: protect retention in high-risk segments while uncertainty in data signals remains elevated."
+                    "protect retention in high-risk segments while uncertainty in data signals remains elevated."
                 ],
                 "offensive_strategies": [
-                    "Conditional: pursue growth opportunities with small tests after risk-adjusted revenue trends stabilize."
+                    "pursue growth opportunities with small tests after risk-adjusted revenue trends stabilize."
                 ],
             }
 
         return {
             "immediate_actions": [
-                "Conditional: close internal data gaps across revenue, retention, and churn before acting on strategic assumptions."
+                "close internal data gaps across revenue, retention, and churn before acting on strategic assumptions."
             ],
             "mid_term_moves": [
-                "Conditional: expand historical metric coverage and macro context to improve confidence in growth trend and risk analysis."
+                "expand historical metric coverage and macro context to improve confidence in growth trend and risk analysis."
             ],
             "defensive_strategies": [
-                "Conditional: reduce churn risk in vulnerable segments where signal quality is currently limited."
+                "reduce churn risk in vulnerable segments where signal quality is currently limited."
             ],
             "offensive_strategies": [
-                "Conditional: target revenue growth opportunities after key KPI and forecast signals are validated."
+                "target revenue growth opportunities after key KPI and forecast signals are validated."
             ],
         }
 
@@ -419,47 +418,47 @@ def _degraded_recommendations(
         second_ref = f"{second[0]}: {second[1]}"
         return {
             "immediate_actions": [
-                f"Conditional: most critical competitor news signal ({top_ref}) indicates a risk window; protect revenue retention and close the competitor gap immediately."
+                f"most critical competitor news signal ({top_ref}) indicates a risk window; protect revenue retention and close the competitor gap immediately."
             ],
             "mid_term_moves": [
-                f"Conditional: convert competitor weakness from recent news ({second_ref}) into a growth and positioning advantage with clearer packaging and onboarding."
+                f"convert competitor weakness from recent news ({second_ref}) into a growth and positioning advantage with clearer packaging and onboarding."
             ],
             "defensive_strategies": [
-                f"Conditional: defend retention strength against {peer_label} by prioritizing churn-risk segments linked to news-driven competitor pressure."
+                f"defend retention strength against {peer_label} by prioritizing churn-risk segments linked to news-driven competitor pressure."
             ],
             "offensive_strategies": [
-                f"Conditional: launch targeted campaigns around competitor vulnerability themes from recent news to capture revenue growth where peer weakness is visible."
+                f"launch targeted campaigns around competitor vulnerability themes from recent news to capture revenue growth where peer weakness is visible."
             ],
         }
 
     if uncertainty_mode:
         return {
             "immediate_actions": [
-                f"Conditional: basic competitor improvement plan for {peer_label}: resolve competitor gap, revenue, and retention conflicts before execution."
+                f"basic competitor improvement plan for {peer_label}: resolve competitor gap, revenue, and retention conflicts before execution."
             ],
             "mid_term_moves": [
-                "Conditional: use recent competitor news tracking plus benchmark reconciliation to validate growth and churn trend gaps."
+                "use recent competitor news tracking plus benchmark reconciliation to validate growth and churn trend gaps."
             ],
             "defensive_strategies": [
-                "Conditional: protect retention strength in high-risk segments while competitor strength and weakness signals remain conflicting."
+                "protect retention strength in high-risk segments while competitor strength and weakness signals remain conflicting."
             ],
             "offensive_strategies": [
-                "Conditional: pursue competitor weakness opportunities with small tests after risk-adjusted revenue benchmarks stabilize."
+                "pursue competitor weakness opportunities with small tests after risk-adjusted revenue benchmarks stabilize."
             ],
         }
 
     return {
         "immediate_actions": [
-            f"Conditional: basic competitor improvement plan for {peer_label}: close competitor and revenue metric gaps before acting on inferred strengths or weaknesses."
+            f"basic competitor improvement plan for {peer_label}: close competitor and revenue metric gaps before acting on inferred strengths or weaknesses."
         ],
         "mid_term_moves": [
-            "Conditional: expand growth and retention coverage, including recent competitor news signals, to validate benchmark position."
+            "expand growth and retention coverage, including recent competitor news signals, to validate benchmark position."
         ],
         "defensive_strategies": [
-            "Conditional: reduce churn risk in vulnerable segments where competitor weakness signals lack benchmark depth."
+            "reduce churn risk in vulnerable segments where competitor weakness signals lack benchmark depth."
         ],
         "offensive_strategies": [
-            "Conditional: target revenue growth opportunities after competitor strength and weakness signals are confirmed against peer benchmarks."
+            "target revenue growth opportunities after competitor strength and weakness signals are confirmed against peer benchmarks."
         ],
     }
 
@@ -489,6 +488,13 @@ def _self_analysis_only_enabled(state: AgentState) -> bool:
 
 def llm_node(state: AgentState) -> AgentState:
     """LangGraph node: synthesize available outputs into a structured insight."""
+    # Guard: LangGraph Pregel model may re-trigger this node via superstep
+    # re-execution.  If the LLM already produced output, skip the re-run.
+    _existing = state.get("final_response")
+    if isinstance(_existing, str) and _existing.strip() and not state.get("synthesis_blocked"):
+        logger.debug("llm_node: skipping re-execution (final_response already set)")
+        return {}
+
     load_env_files()
 
     kpi_data = _usable_payload(_resolve_kpi_result(state))
@@ -499,6 +505,7 @@ def llm_node(state: AgentState) -> AgentState:
     diagnostics = _collect_diagnostics(state)
     logger.info("Signal integrity scores: %s", json.dumps(diagnostics.get("signal_integrity_scores") or {}, sort_keys=True))
 
+    # Determine analysis mode from state flag and available data.
     self_analysis_only = _self_analysis_only_enabled(state)
     has_competitors = False if self_analysis_only else _has_competitor_data(state)
     set_self_analysis_mode(True if self_analysis_only else not has_competitors)
@@ -544,13 +551,7 @@ def llm_node(state: AgentState) -> AgentState:
                 (_composite or {}).get("overall_score", 0.0),
                 benchmark_intelligence["peer_count"],
             )
-            # If benchmark data is available but competitive_context is not,
-            # the LLM should still receive this deterministic intelligence
-            # and operate in competitor-aware mode — but ONLY if there's
-            # enough substance (ranking + composite + 2+ peers).  Thin/partial
-            # benchmark data stays as supplementary context in self-analysis
-            # mode rather than switching to competitor mode where the LLM
-            # would fail specificity validation.
+            # If benchmark has enough substance, bridge to competitor mode.
             _has_ranking = bool(_ranking and _ranking.get("overall_rank") is not None)
             _has_composite = bool(_composite and _composite.get("overall_score") is not None)
             _enough_peers = benchmark_intelligence.get("peer_count", 0) >= 2
@@ -562,17 +563,8 @@ def llm_node(state: AgentState) -> AgentState:
                     "to competitor mode from benchmark",
                     benchmark_intelligence["peer_count"],
                 )
-            elif not has_competitors:
-                logger.info(
-                    "benchmark_data available but insufficient for competitor "
-                    "mode (ranking=%s composite=%s peers=%d) — staying in "
-                    "self-analysis mode with benchmark as supplementary context",
-                    _has_ranking, _has_composite,
-                    benchmark_intelligence.get("peer_count", 0),
-                )
 
     # ── Extract numeric-only competitive signals for the prompt ────
-    # Only structured numeric data reaches the LLM; no raw web text.
     competitor_signals: dict[str, Any] | None = None
     if has_competitors:
         numeric_signals = ctx.get("numeric_signals", [])
@@ -583,34 +575,8 @@ def llm_node(state: AgentState) -> AgentState:
                 "peers": ctx.get("peers", []),
                 "signals": numeric_signals,
             }
-        news_highlights = ctx.get("news_highlights", [])
-        if isinstance(news_highlights, list) and news_highlights:
-            competitor_signals = competitor_signals or {
-                "source": ctx_source,
-                "peer_count": ctx.get("peer_count", 0),
-                "peers": ctx.get("peers", []),
-                "signals": [],
-            }
-            competitor_signals["recent_news_highlights"] = news_highlights[:5]
 
-    # ── Confidence penalty for external_fetch source ───────────────
-    # External web-sourced competitive data is inherently less reliable
-    # than deterministic local computation.  Apply a confidence penalty.
     confidence_score = float(diagnostics.get("confidence_score", 1.0))
-    if ctx_source == "external_fetch" and has_competitors:
-        _EXTERNAL_CONFIDENCE_PENALTY = -0.15
-        confidence_score = max(0.0, round(confidence_score + _EXTERNAL_CONFIDENCE_PENALTY, 6))
-        diagnostics["confidence_adjustments"].append({
-            "signal": "competitive_context",
-            "delta": _EXTERNAL_CONFIDENCE_PENALTY,
-            "reason": "external_fetch_confidence_penalty",
-        })
-        diagnostics["confidence_score"] = confidence_score
-        logger.info(
-            "Applied external_fetch confidence penalty: delta=%.2f new_score=%.4f",
-            _EXTERNAL_CONFIDENCE_PENALTY,
-            confidence_score,
-        )
 
     # Extract enriched signal summary for the prompt
     signal_enrichment = _usable_payload(state.get("signal_enrichment"))
@@ -642,12 +608,17 @@ def llm_node(state: AgentState) -> AgentState:
 
     adapter = _build_adapter(model_override=state.get("llm_model_override"))
 
+    import time as _time
+    _llm_start = _time.perf_counter()
     try:
-        synthesis = generate_with_retry(adapter, prompt, max_retries=2)
+        synthesis = generate_with_retry(adapter, prompt, max_retries=1)
         final_payload = FinalInsightResponse.model_validate(synthesis.model_dump())
+        logger.info("LLM synthesis succeeded in %.1fs", _time.perf_counter() - _llm_start)
     except Exception as error:  # noqa: BLE001
+        _llm_elapsed = _time.perf_counter() - _llm_start
         logger.error(
-            "LLM synthesis failed [%s]: %s",
+            "LLM synthesis failed in %.1fs [%s]: %s",
+            _llm_elapsed,
             type(error).__name__,
             str(error)[:500],
             exc_info=True,
@@ -742,19 +713,15 @@ def llm_node(state: AgentState) -> AgentState:
 
     # ── Benchmark transparency ───────────────────────────────────
     diagnostics["benchmark_status"] = {
-        "available": False if self_analysis_only else bool(benchmark_intelligence),
-        "source": (
-            "self_analysis_only"
-            if self_analysis_only
-            else (benchmark_intelligence or {}).get("source", "unavailable")
-        ),
+        "available": bool(benchmark_intelligence),
+        "source": (benchmark_intelligence or {}).get("source", "unavailable"),
         "peer_count": (benchmark_intelligence or {}).get("peer_count", 0),
         "market_position": (
             (benchmark_intelligence or {}).get("market_position", {}).get("position")
             if benchmark_intelligence
             else None
         ),
-        "surfaced_to_llm": False if self_analysis_only else bool(benchmark_intelligence),
+        "surfaced_to_llm": bool(benchmark_intelligence),
         "competitive_context_available": bool(ctx.get("available", False)),
     }
 

@@ -58,7 +58,13 @@ class OpenAILLMAdapter(BaseLLMAdapter):
             ) from exc
 
         resolved_key = api_key or os.environ.get("OPENAI_API_KEY", "")
-        client_kwargs: dict = {"api_key": resolved_key, "timeout": timeout}
+        client_kwargs: dict = {
+            "api_key": resolved_key,
+            "timeout": timeout,
+            # Disable SDK-level retries — we handle retries in generate_with_retry()
+            # to avoid compounding (SDK retries × app retries × timeout = hang).
+            "max_retries": 0,
+        }
         if base_url:
             client_kwargs["base_url"] = base_url
 

@@ -14,7 +14,6 @@ def test_graph_contains_deterministic_timeseries_pipeline_nodes() -> None:
     assert "multivariate_scenario" in node_names
     assert "signal_conflict" in node_names
     assert "signal_enrichment" in node_names
-    assert "competitor_intelligence" in node_names
 
 
 def test_graph_wiring_order_matches_required_sequence() -> None:
@@ -37,12 +36,10 @@ def test_graph_wiring_order_matches_required_sequence() -> None:
     assert ("unit_economics", "role_analytics") in edges
     assert ("multivariate_scenario", "role_analytics") in edges
 
-    # Competitor chain: role_analytics → competitor_intelligence.
-    assert ("role_analytics", "competitor_intelligence") in edges
-
-    # Fan-in to signal_conflict (aggregation).
-    assert ("competitor_intelligence", "signal_conflict") in edges
-    assert ("forecast_fetch", "signal_conflict") in edges
+    # Fan-in to signal_aggregation barrier, then signal_conflict.
+    assert ("role_analytics", "signal_aggregation") in edges
+    assert ("forecast_fetch", "signal_aggregation") in edges
+    assert ("signal_aggregation", "signal_conflict") in edges
 
     # Decision pipeline.
     assert ("signal_conflict", "risk") in edges

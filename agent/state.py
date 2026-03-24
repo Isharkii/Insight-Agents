@@ -55,6 +55,7 @@ class AgentState(TypedDict):
     user_query: str
     business_type: str
     entity_name: str
+    peer_entities: Optional[list[str]]
 
     kpi_data: Optional[dict]
     saas_kpi_data: Optional[dict]
@@ -87,4 +88,5 @@ class AgentState(TypedDict):
     block_reasons: Annotated[Optional[list], _last_writer_wins]
     final_response: Annotated[Optional[str], _last_writer_wins]
     competitors: Optional[list[str]]
+    self_analysis_only: Optional[bool]
     llm_model_override: Optional[str]

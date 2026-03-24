@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useMemo } from "react";
 
 import Sidebar, { type SidebarState } from "./components/Sidebar";
 import CsvUpload from "./components/CsvUpload";
+import EntitySelector from "./components/EntitySelector";
 import InsightsDashboard from "./components/InsightsDashboard";
 import ExportPanel from "./components/ExportPanel";
 import IntelligenceDashboard from "./components/IntelligenceDashboard";
@@ -138,6 +139,8 @@ export default function App() {
 
   const [prompt, setPrompt] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [csvEntities, setCsvEntities] = useState<string[]>([]);
+  const [selectedEntity, setSelectedEntity] = useState("");
 
   const [analyzeResult, setAnalyzeResult] = useState<AnalyzeResult | null>(
     null,
@@ -165,11 +168,19 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const handleEntitiesDetected = useCallback((entities: string[]) => {
+    setCsvEntities(entities);
+    // Auto-select first entity when detected; clear when file removed.
+    setSelectedEntity(entities.length > 0 ? entities[0] : "");
+  }, []);
+
   const requestedEntity = useMemo(() => {
+    // Priority: CSV entity selection > sidebar entity override > sidebar client
+    if (selectedEntity) return selectedEntity;
     const override = sidebar.entityOverride.trim();
     if (override) return override;
     return sidebar.clientId !== "default" ? sidebar.clientId : "";
-  }, [sidebar.entityOverride, sidebar.clientId]);
+  }, [selectedEntity, sidebar.entityOverride, sidebar.clientId]);
 
   const requestedBusinessType = useMemo(
     () => (sidebar.businessType === "auto" ? undefined : sidebar.businessType),
@@ -238,6 +249,7 @@ export default function App() {
           return null;
         });
 
+      const hasCsvPeers = csvEntities.length > 1 && !!selectedEntity;
       const run = await runAnalysis({
         prompt: prompt.trim(),
         file: file ?? undefined,
@@ -245,9 +257,9 @@ export default function App() {
         businessType: requestedBusinessType,
         multiEntityBehavior:
           sidebar.multiEntityBehavior === "auto"
-            ? undefined
+            ? (hasCsvPeers ? "split" : undefined)
             : sidebar.multiEntityBehavior,
-        selfAnalysisOnly: true,
+        selfAnalysisOnly: !hasCsvPeers,
         model: sidebar.model,
       });
       const result = run.result;
@@ -302,6 +314,8 @@ export default function App() {
     setResolvedContext({});
     setPrompt("");
     setFile(null);
+    setCsvEntities([]);
+    setSelectedEntity("");
   }, []);
 
   useEffect(() => {
@@ -425,8 +439,18 @@ export default function App() {
                 Upload a CSV dataset to run analysis from raw records.
               </p>
             </div>
-            <CsvUpload file={file} onFileChange={setFile} />
+            <CsvUpload
+              file={file}
+              onFileChange={setFile}
+              onEntitiesDetected={handleEntitiesDetected}
+            />
           </section>
+
+          <EntitySelector
+            entities={csvEntities}
+            selected={selectedEntity}
+            onSelect={setSelectedEntity}
+          />
 
           <section className="ia-surface ia-fade-up p-5 sm:p-6">
             <div className="mb-4 flex items-start justify-between gap-4">

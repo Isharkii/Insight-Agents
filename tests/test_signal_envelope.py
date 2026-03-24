@@ -453,9 +453,10 @@ class TestInsightOutputDiagnostics(unittest.TestCase):
 
         output = InsightOutput.failure("something broke")
         self.assertEqual(output.competitive_analysis.confidence, 0.0)
+        # "Conditional:" prefix removed — mode flag replaces it.
         self.assertTrue(
             all(
-                item.lower().startswith("conditional:")
+                len(item.strip()) > 0
                 for item in output.strategic_recommendations.immediate_actions
             )
         )

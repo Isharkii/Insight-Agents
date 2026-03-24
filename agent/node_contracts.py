@@ -118,7 +118,6 @@ _INPUT_CONTRACT_BY_NODE: dict[str, type[BaseModel]] = {
     "forecast_fetch": EntityBusinessInputContract,
     "risk": EntityInputContract,
     "prioritization": EntityInputContract,
-    "competitor_intelligence": EntityInputContract,
 }
 
 

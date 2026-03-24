@@ -133,7 +133,9 @@ def test_export_report_forwards_competitors_to_graph(monkeypatch) -> None:
         },
     )
     assert response.status_code == 200
-    assert captured_state.get("competitors") == ["Slack", "Notion", "Asana"]
+    # Competitor intelligence disabled — competitors no longer forwarded.
+    assert captured_state.get("competitors") is None
+    assert captured_state.get("self_analysis_only") is True
 
 
 def test_export_report_forwards_self_analysis_only_to_graph(monkeypatch) -> None:

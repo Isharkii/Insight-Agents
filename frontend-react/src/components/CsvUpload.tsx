@@ -3,12 +3,49 @@ import { useState, useCallback, useRef, type FC, type DragEvent } from "react";
 interface CsvUploadProps {
   file: File | null;
   onFileChange: (file: File | null) => void;
+  onEntitiesDetected?: (entities: string[]) => void;
 }
 
 interface CsvPreview {
   headers: string[];
   rows: string[][];
   totalRows: number;
+}
+
+function extractEntities(text: string): string[] {
+  const lines = text.split(/\r?\n/).filter((l) => l.trim() !== "");
+  if (lines.length < 2) return [];
+
+  const parseLine = (line: string): string[] => {
+    const result: string[] = [];
+    let current = "";
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        inQuotes = !inQuotes;
+      } else if (ch === "," && !inQuotes) {
+        result.push(current.trim());
+        current = "";
+      } else {
+        current += ch;
+      }
+    }
+    result.push(current.trim());
+    return result;
+  };
+
+  const headers = parseLine(lines[0]).map((h) => h.toLowerCase());
+  const entityIdx = headers.indexOf("entity_name");
+  if (entityIdx === -1) return [];
+
+  const entities = new Set<string>();
+  for (let i = 1; i < lines.length; i++) {
+    const cols = parseLine(lines[i]);
+    const val = (cols[entityIdx] ?? "").trim();
+    if (val) entities.add(val);
+  }
+  return Array.from(entities).sort();
 }
 
 function parseCsvText(text: string, maxRows: number): CsvPreview {
@@ -41,7 +78,7 @@ function parseCsvText(text: string, maxRows: number): CsvPreview {
   return { headers, rows, totalRows: dataLines.length };
 }
 
-const CsvUpload: FC<CsvUploadProps> = ({ file, onFileChange }) => {
+const CsvUpload: FC<CsvUploadProps> = ({ file, onFileChange, onEntitiesDetected }) => {
   const [preview, setPreview] = useState<CsvPreview | null>(null);
   const [previewRows, setPreviewRows] = useState(20);
   const [dragging, setDragging] = useState(false);
@@ -54,11 +91,12 @@ const CsvUpload: FC<CsvUploadProps> = ({ file, onFileChange }) => {
         const text = e.target?.result;
         if (typeof text === "string") {
           setPreview(parseCsvText(text, rows));
+          onEntitiesDetected?.(extractEntities(text));
         }
       };
       reader.readAsText(f);
     },
-    [],
+    [onEntitiesDetected],
   );
 
   const handleFile = useCallback(
@@ -68,6 +106,7 @@ const CsvUpload: FC<CsvUploadProps> = ({ file, onFileChange }) => {
         loadPreview(f, previewRows);
       } else {
         setPreview(null);
+        onEntitiesDetected?.([]);
       }
     },
     [onFileChange, loadPreview, previewRows],

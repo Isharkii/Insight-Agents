@@ -347,6 +347,32 @@ def _extract_distinct_entity_names_from_canonical_records(
     return sorted({str(value).strip() for value in values if str(value).strip()})
 
 
+def _count_records_per_entity(
+    *,
+    db: Session,
+    entities: list[str],
+    created_since: datetime | None = None,
+) -> dict[str, int]:
+    """Return record counts per entity for deterministic target selection.
+
+    When *created_since* is ``None`` all records for the given entities are
+    counted — this is the correct behaviour when rows were deduped and no
+    new records were created during this ingestion cycle.
+    """
+
+    stmt = (
+        select(
+            CanonicalInsightRecord.entity_name,
+            func.count().label("cnt"),
+        )
+        .where(CanonicalInsightRecord.entity_name.in_(entities))
+        .group_by(CanonicalInsightRecord.entity_name)
+    )
+    if created_since is not None:
+        stmt = stmt.where(CanonicalInsightRecord.created_at >= created_since)
+    return {str(row[0]).strip(): int(row[1]) for row in db.execute(stmt).all()}
+
+
 def _infer_analytics_strategy_from_dataset(*, db: Session, entity_name: str) -> str | None:
     """Infer KPI strategy from categories present for the resolved entity."""
     repository = DatasetRepository(db)
@@ -708,10 +734,11 @@ def analyze(
             finally:
                 file.file.close()
 
-        # Step 3: Strict entity_name resolution order.
-        # 1) If client_id provided -> use it.
-        # 2) Else if dataset uploaded -> extract distinct entity_name from canonical records.
-        # 3) Else -> structured validation error.
+        # Step 3: Entity resolution — select ONE target, treat rest as peers.
+        # 1) If client_id provided → use it as target.
+        # 2) Else if dataset uploaded → pick target deterministically.
+        # 3) Else → structured validation error.
+        peer_entities: list[str] = []
         if requested_entity:
             resolved_entity_name = requested_entity
         elif dataset_uploaded:
@@ -719,7 +746,9 @@ def analyze(
                 db=db,
                 created_since=ingestion_started_at,
             )
+            used_fallback_entities = False
             if not dataset_entities and fallback_upload_entities:
+                used_fallback_entities = True
                 dataset_entities = sorted(
                     {
                         str(entity).strip()
@@ -736,17 +765,28 @@ def analyze(
                         error_type="entity_resolution_failed",
                     ),
                 )
-            if len(dataset_entities) > 1:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=build_error_detail(
-                        code=SCHEMA_CONFLICT,
-                        message="Multiple entity_name values detected in dataset.",
-                        error_type="entity_resolution_failed",
-                        context={"entity_names": dataset_entities},
-                    ),
+            if len(dataset_entities) == 1:
+                resolved_entity_name = dataset_entities[0]
+            else:
+                # Multi-entity dataset: pick the entity with the most records
+                # as the analysis target; the rest become benchmark peers.
+                # When rows were deduped (fallback path), count ALL records
+                # instead of only recently created ones.
+                entity_counts = _count_records_per_entity(
+                    db=db,
+                    entities=dataset_entities,
+                    created_since=None if used_fallback_entities else ingestion_started_at,
                 )
-            resolved_entity_name = dataset_entities[0]
+                resolved_entity_name = max(
+                    dataset_entities, key=lambda e: entity_counts.get(e, 0),
+                )
+                peer_entities = [e for e in dataset_entities if e != resolved_entity_name]
+                logger.info(
+                    "Multi-entity dataset: resolved_entity=%r peer_entities=%r entity_count=%d",
+                    resolved_entity_name,
+                    peer_entities,
+                    len(dataset_entities),
+                )
         else:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -756,13 +796,24 @@ def analyze(
                     error_type="entity_resolution_failed",
                 ),
             )
+        # If client_id was provided explicitly, detect peers from DB.
+        if requested_entity and dataset_uploaded and not peer_entities:
+            dataset_entities = _extract_distinct_entity_names_from_canonical_records(
+                db=db, created_since=ingestion_started_at,
+            )
+            peer_entities = [e for e in dataset_entities if e != resolved_entity_name]
         assert_entity_allowed_for_tenant(entity_name=resolved_entity_name, security=security)
 
         if response is not None:
             response.headers["X-Resolved-Entity-Name"] = resolved_entity_name
             response.headers["X-Tenant-ID"] = security.tenant_id
 
-        if dataset_uploaded and not analytics_strategy and not business_type:
+        if dataset_uploaded and not business_type:
+            # Dataset category is authoritative over prompt-inferred business
+            # type.  Reset analytics_strategy so the dataset gets a chance to
+            # override whatever the intent node guessed from the prompt.
+            dataset_inferred_strategy: str | None = None
+
             # Prefer category inference from ingestion (confidence-scored)
             if (
                 ingestion_inferred_category
@@ -770,8 +821,7 @@ def analyze(
             ):
                 inferred_pack_strategy = get_processing_strategy(ingestion_inferred_category)
                 if inferred_pack_strategy and inferred_pack_strategy in supported:
-                    processing_strategy = inferred_pack_strategy
-                    analytics_strategy = inferred_pack_strategy
+                    dataset_inferred_strategy = inferred_pack_strategy
                     logger.info(
                         "Analyze: inferred processing_strategy=%r from category inference "
                         "(confidence=%.2f) for entity=%r",
@@ -781,20 +831,23 @@ def analyze(
                     )
 
             # Fallback to dataset category scan
-            if not analytics_strategy:
+            if not dataset_inferred_strategy:
                 inferred_strategy = _infer_analytics_strategy_from_dataset(
                     db=db,
                     entity_name=resolved_entity_name,
                 )
                 if inferred_strategy:
-                    processing_strategy = inferred_strategy
-                    analytics_strategy = inferred_strategy
+                    dataset_inferred_strategy = inferred_strategy
                     logger.info(
                         "Analyze: inferred processing_strategy=%r from dataset categories "
                         "for entity=%r",
                         inferred_strategy,
                         resolved_entity_name,
                     )
+
+            if dataset_inferred_strategy:
+                processing_strategy = dataset_inferred_strategy
+                analytics_strategy = dataset_inferred_strategy
 
         # Step 4: Ensure KPI + forecast data exist for the resolved entity.
         # On first upload the computed_kpis table is empty for this entity;
@@ -817,7 +870,7 @@ def analyze(
             return InsightOutput.failure(
                 "Could not determine category from prompt. "
                 f"Specify business_type/category as one of: {supported}."
-            )
+            ).model_dump()
 
         # Pre-flight: verify KPI data exists before invoking the graph.
         # The graph's risk_node calls normalize_signals() which raises
@@ -828,7 +881,7 @@ def analyze(
                 f"No KPI records found for entity '{resolved_entity_name}'. "
                 "Ensure the uploaded CSV contains valid metric data "
                 "(entity_name, metric_name, metric_value, timestamp)."
-            )
+            ).model_dump()
 
         # Step 5: Invoke graph
         invoke_state: dict[str, Any] = {
@@ -836,7 +889,13 @@ def analyze(
             "user_query": prompt,
             "business_type": processing_strategy,
             "entity_name": resolved_entity_name,
+            "peer_entities": peer_entities,
         }
+        if peer_entities:
+            logger.info(
+                "Graph invoke: entity=%r peers=%r (%d peers)",
+                resolved_entity_name, peer_entities, len(peer_entities),
+            )
         dataset_confidence = (
             ingestion_confidence
             if dataset_uploaded
@@ -853,21 +912,22 @@ def analyze(
             invoke_state["ingestion_warnings"] = ingestion_warnings
         if ingestion_provenance:
             invoke_state["ingestion_provenance"] = ingestion_provenance
-        if competitors:
-            invoke_state["competitors"] = [
-                name.strip() for name in competitors.split(",") if name.strip()
-            ]
-        if isinstance(self_analysis_only, bool):
-            invoke_state["self_analysis_only"] = self_analysis_only
+        # Self-analysis mode unless peers are available from multi-entity dataset.
+        # When peers exist, benchmark_node can run competitive analysis locally.
+        invoke_state["self_analysis_only"] = len(peer_entities) == 0
 
-        graph_timeout = float(os.getenv("GRAPH_INVOKE_TIMEOUT_SECONDS", "90"))
+        graph_timeout = float(os.getenv("GRAPH_INVOKE_TIMEOUT_SECONDS", "180"))
+        import time as _time
+        _graph_start = _time.perf_counter()
         try:
             with ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(insight_graph.invoke, invoke_state)
                 state = future.result(timeout=graph_timeout)
         except FuturesTimeoutError:
+            _elapsed = _time.perf_counter() - _graph_start
             logger.error(
-                "Analyze: graph invocation timed out after %.0fs entity=%r",
+                "Analyze: graph invocation timed out after %.1fs (limit=%.0fs) entity=%r",
+                _elapsed,
                 graph_timeout,
                 resolved_entity_name,
             )
@@ -881,6 +941,8 @@ def analyze(
             result["pipeline_signals"] = pipeline_signals
             return result
 
+        _elapsed = _time.perf_counter() - _graph_start
+        logger.info("Analyze: graph completed in %.1fs entity=%r", _elapsed, resolved_entity_name)
         integrity_payload = state.get("signal_integrity")
         if not isinstance(integrity_payload, dict):
             integrity_payload = UnifiedSignalIntegrity.compute(state)
@@ -929,7 +991,25 @@ def analyze(
         result = output_model.model_dump()
         result["pipeline_signals"] = pipeline_signals
 
-        # Step 8: Merge envelope_diagnostics into response (generated by
+        # Step 8: Reconcile top-level pipeline_status with signal integrity.
+        # The InsightOutput.pipeline_status property derives from confidence,
+        # but the authoritative status comes from signal_integrity.insight_quality.
+        _insight_quality = str(
+            (integrity_payload or {}).get("insight_quality", "")
+        ).lower()
+        _quality_to_status = {
+            "full_insight": "success",
+            "partial_insight": "partial",
+            "blocked": "failed",
+        }
+        if _insight_quality in _quality_to_status:
+            result["pipeline_status"] = _quality_to_status[_insight_quality]
+
+        # Expose insight mode as a top-level flag so the frontend can
+        # adjust UX without parsing prefixes from every text field.
+        result["mode"] = _insight_quality or "full_insight"
+
+        # Step 9: Merge envelope_diagnostics into response (generated by
         # synthesis_gate / llm_node but not part of InsightOutput schema).
         envelope_diag = state.get("envelope_diagnostics")
         if isinstance(envelope_diag, dict):
